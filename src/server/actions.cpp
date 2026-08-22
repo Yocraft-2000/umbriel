@@ -3,6 +3,8 @@
 #include "config/config.h"
 #include "input/cursor.h"
 #include "input/seat.h"
+#include "layout/drop_target.h"
+#include "layout/layout.h"
 #include "layout/scrolling.h"
 #include "output/direction.h"
 #include "output/output.h"
@@ -143,18 +145,32 @@ namespace umbriel {
     // land proportionally via their remembered usable-area fraction.
     void moveViewToWorkspace(Server& server, View& view, Workspace& target) {
       const bool floating = view.floating();
-      const bool fullWidth = !floating && view.workspace() != nullptr && [&] {
-        const int column = view.workspace()->layout().columnOf(&view);
-        return column >= 0 && view.workspace()->layout().isFullWidth(column);
-      }();
+      std::optional<double> widthFrac;
+      bool fullWidth = false;
+      if (!floating && view.workspace() != nullptr) {
+        const Layout& layout = view.workspace()->layout();
+        if (const int column = layout.columnOf(&view); column >= 0) {
+          fullWidth = layout.isFullWidth(column);
+          if (const auto captured = captureDropColumnWidth(*view.workspace(), &view)) {
+            widthFrac = captured->fraction;
+          } else if (!fullWidth) {
+            widthFrac = layout.widthFraction(column);
+          }
+        }
+      }
       if (floating) {
         view.rememberFloatingPosition();
       }
       view.setWorkspace(&target); // layoutAttach self-guards on tiled()
-      if (fullWidth) {
+      if (widthFrac || fullWidth) {
         const int column = target.layout().columnOf(&view);
-        if (column >= 0 && !target.layout().isFullWidth(column)) {
-          target.layout().toggleFullWidth(column);
+        if (column >= 0) {
+          if (widthFrac.has_value()) {
+            target.layout().setWidthFraction(column, *widthFrac);
+          }
+          if (fullWidth && !target.layout().isFullWidth(column)) {
+            target.layout().toggleFullWidth(column);
+          }
           target.markArrange(true);
         }
       }
