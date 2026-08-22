@@ -143,10 +143,21 @@ namespace umbriel {
     // land proportionally via their remembered usable-area fraction.
     void moveViewToWorkspace(Server& server, View& view, Workspace& target) {
       const bool floating = view.floating();
+      const bool fullWidth = !floating && view.workspace() != nullptr && [&] {
+        const int column = view.workspace()->layout().columnOf(&view);
+        return column >= 0 && view.workspace()->layout().isFullWidth(column);
+      }();
       if (floating) {
         view.rememberFloatingPosition();
       }
       view.setWorkspace(&target); // layoutAttach self-guards on tiled()
+      if (fullWidth) {
+        const int column = target.layout().columnOf(&view);
+        if (column >= 0 && !target.layout().isFullWidth(column)) {
+          target.layout().toggleFullWidth(column);
+          target.markArrange(true);
+        }
+      }
       target.group()->activate(&target);
       if (floating) {
         view.restoreFloatingPosition();
