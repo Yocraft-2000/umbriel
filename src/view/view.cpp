@@ -2397,7 +2397,7 @@ namespace umbriel {
     if (changedInitialRule(rule.defaultFullscreen, initiallyApplied.defaultFullscreen)
         && *rule.defaultFullscreen
         && !m_toplevel->scheduled.fullscreen) {
-        setFullscreen(true);
+      setFullscreen(true);
     }
 
     if (changedInitialRule(rule.defaultMaximizeToEdges, initiallyApplied.defaultMaximizeToEdges)
