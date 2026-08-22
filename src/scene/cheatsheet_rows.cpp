@@ -272,6 +272,7 @@ namespace {
     case A::WindowFocusDown:
     case A::WindowFocusNext:
     case A::WindowFocusId:
+    case A::WindowFocusFloatingOrTiling:
       return Group::Focus;
     case A::ColumnMoveLeft:
     case A::ColumnMoveRight:
