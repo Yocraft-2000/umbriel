@@ -1543,13 +1543,15 @@ namespace umbriel {
       setMaximized(true);
     }
 
-    // Fullscreen after workspace + focus so the view lands in the right place.
-    if (rule.defaultFullscreen && *rule.defaultFullscreen) {
-        setFullscreen(true);
-    }
-
+    // After default_maximize so maximize-to-edges wins the column, but before
+    // fullscreen: setFullscreen leaves and restores the maximize-to-edges state.
     if (rule.defaultMaximizeToEdges && *rule.defaultMaximizeToEdges) {
       setMaximizedToEdges(true);
+    }
+
+    // Fullscreen after workspace + focus so the view lands in the right place.
+    if (rule.defaultFullscreen && *rule.defaultFullscreen) {
+      setFullscreen(true);
     }
 
     if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
