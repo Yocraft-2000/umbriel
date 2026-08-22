@@ -144,7 +144,10 @@ namespace umbriel {
         resolved.defaultWorkspace = rule.defaultWorkspace;
       }
       if (rule.defaultFullscreen) {
-        resolved.defaultFullscreen = rule.defaultFullscreen;
+          resolved.defaultFullscreen = rule.defaultFullscreen;
+      }
+      if (rule.defaultMaximizeToEdges) {
+        resolved.defaultMaximizeToEdges = rule.defaultMaximizeToEdges;
       }
       if (rule.defaultMaximize) {
         resolved.defaultMaximize = rule.defaultMaximize;
