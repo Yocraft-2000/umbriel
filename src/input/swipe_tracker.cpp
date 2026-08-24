@@ -29,7 +29,7 @@ namespace umbriel {
       return 0.0;
     }
 
-    const double totalTimeMsec =
+    const auto totalTimeMsec =
         static_cast<double>(static_cast<int32_t>(m_history.back().timeMsec - m_history.front().timeMsec));
     if (totalTimeMsec == 0.0) {
       return 0.0;

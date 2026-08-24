@@ -445,9 +445,7 @@ namespace umbriel {
 
   // ===== Scroll finish (Step 5) =====
 
-  double Gestures::scrollNormFactor() const {
-    return static_cast<double>(m_viewportPrimary) / kViewGestureMovementPx;
-  }
+  double Gestures::scrollNormFactor() const { return static_cast<double>(m_viewportPrimary) / kViewGestureMovementPx; }
 
   void Gestures::finishScroll(bool cancelled, uint32_t timeMsec) {
     m_state = State::Idle;
@@ -487,8 +485,8 @@ namespace umbriel {
     double bestDist = 1e18;
     double bestSnap = currentScroll;
     for (int i = 0; i < columnCount; ++i) {
-      const double x = static_cast<double>(scrolling->columnX(i, m_viewportPrimary));
-      const double w = static_cast<double>(scrolling->columnWidth(i, m_viewportPrimary));
+      const auto x = static_cast<double>(scrolling->columnX(i, m_viewportPrimary));
+      const auto w = static_cast<double>(scrolling->columnWidth(i, m_viewportPrimary));
       const double snaps[2] = {
           std::clamp(x, 0.0, maxScroll),
           std::clamp(x + w - static_cast<double>(m_viewportPrimary), 0.0, maxScroll),
@@ -508,8 +506,8 @@ namespace umbriel {
     const bool forward = projected >= currentScroll;
     if (forward) {
       for (int i = best + 1; i < columnCount; ++i) {
-        const double x = static_cast<double>(scrolling->columnX(i, m_viewportPrimary));
-        const double w = static_cast<double>(scrolling->columnWidth(i, m_viewportPrimary));
+        const auto x = static_cast<double>(scrolling->columnX(i, m_viewportPrimary));
+        const auto w = static_cast<double>(scrolling->columnWidth(i, m_viewportPrimary));
         if (x < bestSnap || x + w > bestSnap + static_cast<double>(m_viewportPrimary)) {
           break;
         }
@@ -517,8 +515,8 @@ namespace umbriel {
       }
     } else {
       for (int i = best - 1; i >= 0; --i) {
-        const double x = static_cast<double>(scrolling->columnX(i, m_viewportPrimary));
-        const double w = static_cast<double>(scrolling->columnWidth(i, m_viewportPrimary));
+        const auto x = static_cast<double>(scrolling->columnX(i, m_viewportPrimary));
+        const auto w = static_cast<double>(scrolling->columnWidth(i, m_viewportPrimary));
         if (x < bestSnap || x + w > bestSnap + static_cast<double>(m_viewportPrimary)) {
           break;
         }

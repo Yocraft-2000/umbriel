@@ -1,9 +1,9 @@
 #pragma once
 
+#include "input/swipe_tracker.h"
+
 #include <cstdint>
 #include <wayland-server-core.h>
-
-#include "input/swipe_tracker.h"
 
 namespace umbriel {
 
