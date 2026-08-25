@@ -1723,6 +1723,7 @@ namespace umbriel {
       m_pendingUnfullscreenSize = false;
       m_unfullscreenGraceStartMsec = 0;
       if (m_mapped && m_tiled && m_workspace != nullptr) {
+        m_workspace->snapFocusedVisible();
         m_workspace->markArrange(true);
       }
     }
@@ -1902,9 +1903,7 @@ namespace umbriel {
     }
     showDecorations(!maximized && !m_toplevel->scheduled.fullscreen);
     if (m_workspace != nullptr) {
-      if (maximized) {
-        m_workspace->ensureFocusedVisible();
-      }
+      m_workspace->snapFocusedVisible();
       m_workspace->markArrange(true);
     }
     updateForeignState();
@@ -1949,6 +1948,7 @@ namespace umbriel {
       m_pendingUnfullscreenSize = false;
       m_unfullscreenGraceStartMsec = 0;
       if (m_tiled && m_workspace != nullptr) {
+        m_workspace->snapFocusedVisible();
         m_workspace->markArrange(true);
       }
     }
@@ -2195,7 +2195,7 @@ namespace umbriel {
     // setFullscreen(true) is not re-run on this path, so its scroll snap does not happen; without it the strip can rest
     // showing the neighbor column beside a viewport-wide fullscreen column.
     if (wantFullscreen && m_workspace != nullptr) {
-      m_workspace->ensureFocusedVisible();
+      m_workspace->snapFocusedVisible();
       m_workspace->markArrange(false);
     }
     updateForeignState();
@@ -2257,7 +2257,7 @@ namespace umbriel {
       wlr_scene_node_raise_to_top(&m_sceneTree->node);
       // Snap scroll to the now viewport-wide column and reflow neighbors.
       if (m_workspace != nullptr) {
-        m_workspace->ensureFocusedVisible();
+        m_workspace->snapFocusedVisible();
         // arrange() sends the full-output size even when this workspace is hidden.
         m_workspace->markArrange(true);
       }
@@ -2297,6 +2297,8 @@ namespace umbriel {
           wlr_xdg_toplevel_set_size(m_toplevel, 0, 0);
           // The grace countdown runs on frame ticks; make sure one is coming.
           scheduleFrame();
+        } else {
+          m_workspace->snapFocusedVisible();
         }
         m_workspace->markArrange(!m_xwayland);
       } else if (!restoreFloating) {
