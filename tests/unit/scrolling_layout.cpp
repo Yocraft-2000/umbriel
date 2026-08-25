@@ -367,25 +367,25 @@ UMBRIEL_TEST(constraintsNeverExceedTheViewport) {
   CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
 }
 
-UMBRIEL_TEST(fullscreenColumnFillsTheViewportIgnoringFractions) {
+UMBRIEL_TEST(fullscreenColumnFillsTheUsableAreaIgnoringFractions) {
   Fixture fixture;
   fixture.addColumns(2);
   CHECK(fixture.layout.setWidthFraction(0, 1.0 / 3));
   fixture.layout.setConstraints([](const View* view) { return LayoutConstraints{.fullscreen = view == stub(0)}; });
-  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport + 2 * fixture.config.edgePad);
   CHECK(fixture.layout.isFullWidth(0));
   // The other column is untouched.
   CHECK(!fixture.layout.isFullWidth(1));
 }
 
-UMBRIEL_TEST(maximizedToEdgesColumnFillsTheViewportIgnoringFractions) {
+UMBRIEL_TEST(maximizedToEdgesColumnFillsTheUsableAreaIgnoringFractions) {
   Fixture fixture;
   fixture.addColumns(2);
   CHECK(fixture.layout.setWidthFraction(0, 1.0 / 3));
   fixture.layout.setConstraints([](const View* view) {
     return LayoutConstraints{.maximizedToEdges = view == stub(0)};
   });
-  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport + 2 * fixture.config.edgePad);
   CHECK(fixture.layout.isFullWidth(0));
   CHECK(!fixture.layout.isFullWidth(1));
 }
