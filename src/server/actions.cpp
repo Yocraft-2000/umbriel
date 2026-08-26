@@ -3,8 +3,6 @@
 #include "config/config.h"
 #include "input/cursor.h"
 #include "input/seat.h"
-#include "layout/drop_target.h"
-#include "layout/layout.h"
 #include "layout/scrolling.h"
 #include "output/direction.h"
 #include "output/output.h"
@@ -81,11 +79,12 @@ namespace umbriel {
       Output* preferred = server.outputFromWlr(server.preferredOutput());
       WorkspaceGroup* preferredGroup = preferred != nullptr ? preferred->workspaceGroup() : nullptr;
 
-      // Dynamic numbered workspaces belong to their output. Resolve this first
-      // so an existing number elsewhere cannot steal a local request.
+      // Numeric selectors address positions on the focused output. Resolve
+      // them first so an existing numeric name elsewhere cannot steal a local
+      // request from a static group with custom workspace names.
       const bool numericSelector = !selector->name.empty()
           && std::ranges::all_of(selector->name, [](char value) { return value >= '0' && value <= '9'; });
-      if (preferredGroup != nullptr && preferredGroup->dynamic() && numericSelector) {
+      if (preferredGroup != nullptr && numericSelector) {
         if (Workspace* target = preferredGroup->workspaceForSelector(selector->name)) {
           return target;
         }
@@ -147,29 +146,30 @@ namespace umbriel {
       const bool floating = view.floating();
       std::optional<double> widthFrac;
       bool fullWidth = false;
-      if (!floating && view.workspace() != nullptr) {
-        const Layout& layout = view.workspace()->layout();
-        if (const int column = layout.columnOf(&view); column >= 0) {
-          fullWidth = layout.isFullWidth(column);
-          if (const auto captured = captureDropColumnWidth(*view.workspace(), &view)) {
-            widthFrac = captured->fraction;
-          } else if (!fullWidth) {
-            widthFrac = layout.widthFraction(column);
+      if (!floating && target.scrollingLayout() != nullptr) {
+        const Workspace* source = view.workspace();
+        const ScrollingLayout* sourceLayout = source != nullptr ? source->scrollingLayout() : nullptr;
+        if (sourceLayout != nullptr) {
+          const int column = sourceLayout->columnOf(&view);
+          const auto& columns = sourceLayout->columns();
+          if (column >= 0 && column < static_cast<int>(columns.size())) {
+            const Column& sourceColumn = columns[static_cast<size_t>(column)];
+            widthFrac = sourceColumn.savedWidthFrac > 0.0 ? sourceColumn.savedWidthFrac : sourceColumn.widthFrac;
+            fullWidth = sourceLayout->isFullWidth(column);
           }
         }
       }
       if (floating) {
         view.rememberFloatingPosition();
       }
-      view.setWorkspace(&target); // layoutAttach self-guards on tiled()
-      if (widthFrac || fullWidth) {
-        const int column = target.layout().columnOf(&view);
+      view.moveToWorkspace(&target); // layoutAttach self-guards on tiled()
+      if (widthFrac.has_value()) {
+        ScrollingLayout* targetLayout = target.scrollingLayout();
+        const int column = targetLayout != nullptr ? targetLayout->columnOf(&view) : -1;
         if (column >= 0) {
-          if (widthFrac.has_value()) {
-            target.layout().setWidthFraction(column, *widthFrac);
-          }
-          if (fullWidth && !target.layout().isFullWidth(column)) {
-            target.layout().toggleFullWidth(column);
+          targetLayout->setWidthFraction(column, *widthFrac);
+          if (fullWidth && !targetLayout->isFullWidth(column)) {
+            targetLayout->toggleFullWidth(column);
           }
           target.markArrange(true);
         }
@@ -296,6 +296,37 @@ namespace umbriel {
       return true;
     }
 
+    template <bool Powered> bool actionDpms(Server& server, const Keybind& bind, std::string* error) {
+      const auto* arg = payloadIf<OutputArg>(bind);
+      const std::string requested = arg != nullptr ? arg->output : std::string{};
+      bool found = false;
+      bool changed = false;
+      for (const auto& output : server.outputs()) {
+        const char* name = output->wlr()->name;
+        if (!requested.empty() && (name == nullptr || requested != name)) {
+          continue;
+        }
+        found = true;
+        if (!output->configuredEnabled()) {
+          if (!requested.empty()) {
+            return reject(error, "output is disabled by config: " + requested);
+          }
+          continue;
+        }
+        if (!output->setPowered(Powered)) {
+          return reject(error, "failed to change output power: " + std::string(name != nullptr ? name : "unknown"));
+        }
+        changed = true;
+      }
+      if (!found) {
+        return reject(error, "unknown output: " + requested);
+      }
+      if (!changed) {
+        return reject(error, "no configured outputs");
+      }
+      return true;
+    }
+
     bool actionKeyboardLayoutNext(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       return server.cycleKeyboardLayout();
     }
@@ -372,9 +403,8 @@ namespace umbriel {
         return;
       }
       const auto step = static_cast<double>(config().input.mouse.scrollWheelStep * multiplier);
-      const int viewportWidth =
-          std::max(1, workspace->group()->output()->usableArea().width - 2 * workspace->layoutConfig().edgePad);
-      const auto maxScroll = static_cast<double>(scrolling->maxScroll(viewportWidth));
+      const int viewportPrimary = workspace->scrollViewportExtent();
+      const auto maxScroll = static_cast<double>(scrolling->maxScroll(viewportPrimary));
       scrolling->setScroll(std::clamp(scrolling->scroll() + Sign * step, 0.0, maxScroll));
       workspace->markArrange();
     }
@@ -433,9 +463,9 @@ namespace umbriel {
       return true;
     }
 
-    bool actionCycleWidth(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+    template <int Direction> bool actionCycleWidth(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       if (Workspace* workspace = activeWorkspace(server)) {
-        workspace->cycleFocusedWidth();
+        workspace->cycleFocusedWidth(Direction);
       }
       return true;
     }
@@ -535,6 +565,31 @@ namespace umbriel {
       return true;
     }
 
+    bool actionFocusSwitchFloating(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+      Workspace* workspace = activeWorkspace(server);
+      if (workspace == nullptr) {
+        return true;
+      }
+      View* focused = workspace->focusedView();
+      const bool seekFloating = focused == nullptr || !focused->floating();
+      View* target = nullptr;
+      for (const auto& entry : server.registry().all()) {
+        View* view = entry.get();
+        if (view == focused || !view->mapped() || view->workspace() != workspace) {
+          continue;
+        }
+        if (view->floating() != seekFloating) {
+          continue;
+        }
+        target = view;
+        break;
+      }
+      if (target != nullptr && target != focused) {
+        server.focusView(target, FocusReason::Directional);
+      }
+      return true;
+    }
+
     // Workspaces
     bool actionWorkspace(Server& server, const Keybind& bind, std::string* error) {
       const std::expected<Workspace*, std::string> target = resolveWorkspaceSelector(server, bind);
@@ -624,6 +679,15 @@ namespace umbriel {
       return true;
     }
 
+    template <int Direction> bool actionWorkspaceMove(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+      Workspace* workspace = activeWorkspace(server);
+      if (workspace == nullptr || workspace->group() == nullptr) {
+        return true;
+      }
+      workspace->group()->moveActiveWorkspace(Direction);
+      return true;
+    }
+
     template <int Sign> bool actionLayoutScroll(Server& server, const Keybind& bind, std::string* /*error*/) {
       const int multiplier = bind.wheel != WheelDirection::None && tiledDragActive(server) ? 2 : 1;
       scrollActiveLayout<Sign>(server, multiplier);
@@ -695,14 +759,14 @@ namespace umbriel {
       const double width = source->layout().columns()[static_cast<size_t>(column)].widthFrac;
 
       View* first = columnViews.front();
-      first->setWorkspace(destination, /*attachToLayout=*/false);
+      first->moveToWorkspace(destination, /*attachToLayout=*/false);
       destination->layout().insertView(first, static_cast<int>(destination->layout().columns().size()));
       if (destination->scrollingLayout() != nullptr) {
         destination->layout().setWidthFraction(destination->layout().columnOf(first), width);
       }
       for (size_t i = 1; i < columnViews.size(); ++i) {
         View* view = columnViews[i];
-        view->setWorkspace(destination, /*attachToLayout=*/false);
+        view->moveToWorkspace(destination, /*attachToLayout=*/false);
         destination->layout().insertViewIntoColumn(view, destination->layout().columnOf(first), static_cast<int>(i));
       }
       destination->markArrange();
@@ -752,20 +816,20 @@ namespace umbriel {
           continue;
         }
         View* first = column.views.front();
-        first->setWorkspace(destination, /*attachToLayout=*/false);
+        first->moveToWorkspace(destination, /*attachToLayout=*/false);
         destination->layout().insertView(first, static_cast<int>(destination->layout().columns().size()));
         if (destination->scrollingLayout() != nullptr) {
           destination->layout().setWidthFraction(destination->layout().columnOf(first), column.widthFrac);
         }
         for (size_t i = 1; i < column.views.size(); ++i) {
           View* view = column.views[i];
-          view->setWorkspace(destination, /*attachToLayout=*/false);
+          view->moveToWorkspace(destination, /*attachToLayout=*/false);
           destination->layout().insertViewIntoColumn(view, destination->layout().columnOf(first), static_cast<int>(i));
         }
       }
       for (View* view : floats) {
         view->rememberFloatingPosition();
-        view->setWorkspace(destination);
+        view->moveToWorkspace(destination);
         view->restoreFloatingPosition();
       }
 
@@ -848,6 +912,26 @@ namespace umbriel {
       return scratchpad != nullptr && scratchpad->restoreFocused(output);
     }
 
+    // Toggles the focused window's scratchpad membership: if the focused
+    // window is currently the scratchpad's focused entry, restore it (same as
+    // actionRestoreFromScratchpad); otherwise move it into the scratchpad
+    // (same as actionMoveToScratchpad).
+    bool actionToggleScratchpad(Server& server, const Keybind& bind, std::string* error) {
+      Output* output = scratchpadOutput(server, bind, error);
+      if (output == nullptr) {
+        return false;
+      }
+      ScratchpadManager* scratchpad = server.scratchpadManager();
+      if (scratchpad == nullptr) {
+        return false;
+      }
+      if (scratchpad->hasFocus(output)) {
+        return scratchpad->restoreFocused(output);
+      }
+      Workspace* workspace = activeWorkspace(server);
+      return workspace != nullptr && scratchpad->moveToScratchpad(workspace->focusedView(), output);
+    }
+
     bool actionScratchpadFocusNext(Server& server, const Keybind& bind, std::string* error) {
       Output* output = scratchpadOutput(server, bind, error);
       if (output == nullptr) {
@@ -866,13 +950,15 @@ namespace umbriel {
         &actionFocusAdjacent<1>,
         &actionFocusVertical<-1>,
         &actionFocusVertical<1>,
+        &actionFocusSwitchFloating,
         &actionMoveColumn<-1>,
         &actionMoveColumn<1>,
         &actionMoveVertical<-1>,
         &actionMoveVertical<1>,
         &actionConsumeLeft,
         &actionExpelRight,
-        &actionCycleWidth,
+        &actionCycleWidth<1>,
+        &actionCycleWidth<-1>,
         &actionSetWidth,
         &actionToggleMaximize,
         &actionToggleMaximizeToEdges,
@@ -888,6 +974,8 @@ namespace umbriel {
         &actionKeyboardLayoutNext,
         &actionLayoutScroll<-1>,
         &actionLayoutScroll<1>,
+        &actionLayoutScroll<-1>,
+        &actionLayoutScroll<1>,
         &actionOverviewToggle,
         &actionOverviewOpen,
         &actionOverviewClose,
@@ -897,6 +985,7 @@ namespace umbriel {
         &actionMoveToScratchpad,
         &actionScratchpadToggle,
         &actionRestoreFromScratchpad,
+        &actionToggleScratchpad,
         &actionScratchpadFocusNext,
         &actionSubmap,
         &actionWindowFocusId,
@@ -921,6 +1010,10 @@ namespace umbriel {
         &actionModifyWidth,
         &actionWindowCenter,
         &actionWorkspaceSetLayout,
+        &actionDpms<false>,
+        &actionDpms<true>,
+        &actionWorkspaceMove<1>,
+        &actionWorkspaceMove<-1>,
     };
 
     consteval bool everyActionHasHandler() {

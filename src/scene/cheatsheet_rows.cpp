@@ -272,6 +272,7 @@ namespace {
     case A::WindowFocusDown:
     case A::WindowFocusNext:
     case A::WindowFocusId:
+    case A::WindowFocusSwitchFloating:
       return Group::Focus;
     case A::ColumnMoveLeft:
     case A::ColumnMoveRight:
@@ -280,6 +281,7 @@ namespace {
     case A::WindowConsumeLeft:
     case A::WindowExpelRight:
     case A::WindowCycleWidth:
+    case A::WindowCycleWidthBack:
     case A::WindowSetWidth:
     case A::WindowModifyWidth:
     case A::WindowCenter:
@@ -306,6 +308,8 @@ namespace {
     case A::WindowMoveToWorkspacePrevious:
     case A::WorkspaceNext:
     case A::WorkspacePrevious:
+    case A::WorkspaceMoveDown:
+    case A::WorkspaceMoveUp:
     case A::WorkspaceSetLayout:
     case A::WorkspaceMoveToOutputLeft:
     case A::WorkspaceMoveToOutputRight:
@@ -322,6 +326,8 @@ namespace {
     case A::OverviewClose:
       return Group::Overview;
     case A::ConfigReload:
+    case A::DpmsOff:
+    case A::DpmsOn:
     case A::SessionQuit:
     case A::Submap:
     case A::CheatsheetToggle:

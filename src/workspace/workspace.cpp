@@ -15,7 +15,9 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
+#include <utility>
 #include "wlr.h"
 // clang-format on
 
@@ -109,6 +111,10 @@ namespace umbriel {
     return m_layoutMode == LayoutMode::Scrolling ? static_cast<const ScrollingLayout*>(m_layout.get()) : nullptr;
   }
 
+  bool Workspace::scrollingVertical() const {
+    return scrollingLayout() != nullptr && m_layoutConfig.scrolling.direction == ScrollingDirection::Vertical;
+  }
+
   void Workspace::setActive(bool active) {
     if (m_active == active) {
       return;
@@ -119,6 +125,7 @@ namespace umbriel {
     if (active) {
       markArrange(false);
       m_group->output()->updateVrr();
+      m_group->output()->updateHdr();
     }
   }
 
@@ -182,7 +189,7 @@ namespace umbriel {
     m_group->reconcileDynamic();
   }
 
-  View* Workspace::removeView(View* view, std::optional<std::pair<double, double>> focusPoint, bool reconcile) {
+  View* Workspace::removeView(View* view, bool reconcile) {
     if (view == nullptr) {
       return nullptr;
     }
@@ -193,41 +200,14 @@ namespace umbriel {
       );
       view->reparentShadow(nullptr);
     }
-    const int removedColumn = m_layout->columnOf(view);
-    View* adjacentReplacement = m_focusedView == view ? focusReplacementForRemoval(view) : nullptr;
+    View* replacement = m_focusedView == view ? focusReplacementForRemoval(view) : nullptr;
     detachFromLayout(view);
     std::erase(m_views, view);
     updateUrgent();
     std::erase(m_floatingStack, view);
     std::erase(m_switchViews, view);
 
-    View* replacement = nullptr;
     if (m_focusedView == view) {
-      m_focusedView = nullptr;
-      if (focusPoint && m_group != nullptr && m_group->output() != nullptr) {
-        wlr_box usable = m_group->output()->usableArea();
-        if (usable.width <= 0 || usable.height <= 0) {
-          wlr_output_layout_get_box(m_group->server()->outputLayout(), m_group->output()->wlr(), &usable);
-        }
-        if (usable.width > 0 && usable.height > 0) {
-          // Removal changes both column indices and the scrolling offset. Refresh layout targets before deciding which
-          // survivor now occupies a stationary pointer; the scene nodes catch up on the next frame.
-          m_layout->arrange(usable);
-          for (View* candidate : m_views) {
-            if (candidate == nullptr || !candidate->mapped() || !candidate->tiled()) {
-              continue;
-            }
-            const wlr_box box = m_layout->targetBox(candidate);
-            if (wlr_box_contains_point(&box, focusPoint->first, focusPoint->second)) {
-              replacement = candidate;
-              break;
-            }
-          }
-        }
-      }
-      if (replacement == nullptr && removedColumn >= 0) {
-        replacement = adjacentReplacement;
-      }
       m_focusedView = replacement;
     }
     // Re-anchor the strip on whatever is focused now, the way every other focus-moving operation does. Activating an
@@ -248,9 +228,20 @@ namespace umbriel {
     const int focusedColumn = m_layout->columnOf(m_focusedView);
     const int index = focusedColumn >= 0 ? focusedColumn + 1 : static_cast<int>(m_layout->columns().size());
     m_layout->insertView(view, index);
-    // default_width is a viewport fraction: scrolling only. Dwindle ignores it.
-    if (ScrollingLayout* scrolling = scrollingLayout(); initialWidth && scrolling != nullptr) {
-      scrolling->setWidthFraction(scrolling->columnOf(view), *initialWidth);
+    if (ScrollingLayout* scrolling = scrollingLayout(); scrolling != nullptr) {
+      const int column = scrolling->columnOf(view);
+      const std::optional<double> configuredWidth =
+          initialWidth ? initialWidth : m_layoutConfig.scrolling.defaultWidthFraction;
+      if (configuredWidth) {
+        // default_width is a viewport fraction: scrolling only. Dwindle ignores it.
+        scrolling->setWidthFraction(column, *configuredWidth);
+      } else {
+        const wlr_box& geometry = view->toplevel()->base->geometry;
+        const int primary = scrollingVertical() ? geometry.height : geometry.width;
+        if (primary > 0) {
+          scrolling->setWidthFromPixels(column, scrollViewportExtent(), primary);
+        }
+      }
     }
     markArrange(true);
   }
@@ -265,18 +256,21 @@ namespace umbriel {
     markArrange(animate);
   }
 
-  int Workspace::viewportWidth() const {
+  int Workspace::scrollViewportExtent() const {
     if (m_group == nullptr || m_group->output() == nullptr) {
       return 1;
     }
-    return std::max(1, m_group->output()->usableArea().width - 2 * m_layoutConfig.edgePad);
+    const wlr_box usable = m_group->output()->usableArea();
+    const int extent = scrollingVertical() ? usable.height : usable.width;
+    return std::max(1, extent - 2 * m_layoutConfig.edgePad);
   }
 
   void Workspace::detachFromLayout(View* view) {
     ScrollingLayout* scrolling = scrollingLayout();
     // Measured before the removal, because it depends on where the column is.
-    const double shift =
-        scrolling != nullptr ? scrolling->scrollShiftForColumnRemoval(scrolling->columnOf(view), viewportWidth()) : 0.0;
+    const double shift = scrolling != nullptr
+        ? scrolling->scrollShiftForColumnRemoval(scrolling->columnOf(view), scrollViewportExtent())
+        : 0.0;
     m_layout->removeView(view);
     if (scrolling != nullptr && shift != 0.0) {
       scrolling->setScroll(scrolling->scroll() - shift);
@@ -288,7 +282,7 @@ namespace umbriel {
     if (scrolling == nullptr) {
       return;
     }
-    const auto maxScroll = static_cast<double>(scrolling->maxScroll(viewportWidth()));
+    const auto maxScroll = static_cast<double>(scrolling->maxScroll(scrollViewportExtent()));
     scrolling->setScroll(std::clamp(scrolling->scroll(), 0.0, maxScroll));
   }
 
@@ -462,7 +456,7 @@ namespace umbriel {
     if (usable.width <= 0 || usable.height <= 0) {
       usable = outputBox;
     }
-    const int viewportWidth = std::max(1, output->usableArea().width - 2 * m_layoutConfig.edgePad);
+    const int viewportPrimary = scrollViewportExtent();
 
     // Position first, then let syncViewPresentation derive enable + clip from
     // the node's current position so animated and resting views share one path.
@@ -475,9 +469,14 @@ namespace umbriel {
         wlr_box target = outputBox;
         if (col >= 0) {
           if (const ScrollingLayout* scrolling = scrollingLayout()) {
-            target.x = outputBox.x
-                + scrolling->columnX(col, viewportWidth)
+            const int position = (scrollingVertical() ? outputBox.y : outputBox.x)
+                + scrolling->columnX(col, viewportPrimary)
                 - static_cast<int>(std::lround(scrolling->scroll()));
+            if (scrollingVertical()) {
+              target.y = position;
+            } else {
+              target.x = position;
+            }
           }
         }
         if (animate) {
@@ -510,17 +509,26 @@ namespace umbriel {
       return target;
     }
     if (scrollingLayout() != nullptr) {
-      target.x -= m_layoutConfig.edgePad;
+      if (scrollingVertical()) {
+        target.y -= m_layoutConfig.edgePad;
+        target.x = usable.x;
+      } else {
+        target.x -= m_layoutConfig.edgePad;
+        target.y = usable.y;
+      }
     } else {
       target.x = usable.x;
+      target.y = usable.y;
     }
-    target.y = usable.y;
     target.width = usable.width;
     target.height = usable.height;
     return target;
   }
 
-  View* Workspace::focusAdjacent(int direction) const {
+  View* Workspace::focusAlongStrip(int direction) const {
+    if (const auto horizontal = m_layout->focusHorizontalLeaf(m_focusedView, direction)) {
+      return *horizontal;
+    }
     const int current = m_layout->columnOf(m_focusedView);
     const int target = current + direction;
     if (current < 0 || target < 0 || target >= static_cast<int>(m_layout->columns().size())) {
@@ -530,9 +538,9 @@ namespace umbriel {
     return column.views.empty() ? nullptr : column.views.front();
   }
 
-  View* Workspace::focusVertical(int direction) const {
-    if (View* vertical = m_layout->focusVerticalLeaf(m_focusedView, direction)) {
-      return vertical;
+  View* Workspace::focusWithinLane(int direction) const {
+    if (const auto vertical = m_layout->focusVerticalLeaf(m_focusedView, direction)) {
+      return *vertical;
     }
     const int column = m_layout->columnOf(m_focusedView);
     const int row = m_layout->rowOf(m_focusedView);
@@ -542,6 +550,14 @@ namespace umbriel {
     const auto& views = m_layout->columns()[static_cast<size_t>(column)].views;
     const int target = row + direction;
     return target < 0 || target >= static_cast<int>(views.size()) ? nullptr : views[static_cast<size_t>(target)];
+  }
+
+  View* Workspace::focusAdjacent(int direction) const {
+    return scrollingVertical() ? focusWithinLane(direction) : focusAlongStrip(direction);
+  }
+
+  View* Workspace::focusVertical(int direction) const {
+    return scrollingVertical() ? focusAlongStrip(direction) : focusWithinLane(direction);
   }
 
   View* Workspace::focusReplacementForRemoval(const View* view) const {
@@ -555,6 +571,14 @@ namespace umbriel {
     const auto mappedCandidate = [view](View* candidate) {
       return candidate != nullptr && candidate != view && candidate->mapped();
     };
+
+    const wlr_xdg_toplevel* toplevel = view->toplevel();
+    if (toplevel != nullptr && toplevel->parent != nullptr && toplevel->parent->base != nullptr) {
+      View* parent = View::fromSurface(toplevel->parent->base->surface);
+      if (mappedCandidate(parent) && parent->workspace() == this) {
+        return parent;
+      }
+    }
 
     if (columnIndex >= 0 && columnIndex < static_cast<int>(columns.size())) {
       const auto& column = columns[static_cast<size_t>(columnIndex)].views;
@@ -600,9 +624,13 @@ namespace umbriel {
     return nullptr;
   }
 
-  bool Workspace::moveFocusedColumn(int direction) {
+  bool Workspace::moveLaneAlongStrip(int direction) {
+    View* destination = focusAlongStrip(direction);
+    if (destination == nullptr) {
+      return false;
+    }
     const int current = m_layout->columnOf(m_focusedView);
-    const int target = current + direction;
+    const int target = m_layout->columnOf(destination);
     if (current < 0 || target < 0 || target >= static_cast<int>(m_layout->columns().size())) {
       return false;
     }
@@ -630,7 +658,7 @@ namespace umbriel {
     return true;
   }
 
-  bool Workspace::moveFocusedVertical(int direction) {
+  bool Workspace::moveWithinLane(int direction) {
     if (!m_layout->moveViewVertical(m_focusedView, direction)) {
       return false;
     }
@@ -638,12 +666,20 @@ namespace umbriel {
     return true;
   }
 
-  bool Workspace::cycleFocusedWidth() {
+  bool Workspace::moveFocusedColumn(int direction) {
+    return scrollingVertical() ? moveWithinLane(direction) : moveLaneAlongStrip(direction);
+  }
+
+  bool Workspace::moveFocusedVertical(int direction) {
+    return scrollingVertical() ? moveLaneAlongStrip(direction) : moveWithinLane(direction);
+  }
+
+  bool Workspace::cycleFocusedWidth(int direction) {
     if (m_focusedView != nullptr && m_focusedView->maximizedToEdges()) {
       m_focusedView->setMaximizedToEdges(false);
     }
     const int column = m_layout->columnOf(m_focusedView);
-    if (!m_layout->cycleWidth(column)) {
+    if (!m_layout->cycleWidth(column, direction)) {
       return false;
     }
     wlr_xdg_toplevel_set_maximized(m_focusedView->toplevel(), false);
@@ -720,7 +756,7 @@ namespace umbriel {
     if (scrolling == nullptr || m_group == nullptr || m_group->output() == nullptr) {
       return;
     }
-    scrolling->ensureVisible(scrolling->columnOf(m_focusedView), viewportWidth());
+    scrolling->ensureVisible(scrolling->columnOf(m_focusedView), scrollViewportExtent());
   }
 
   double Workspace::scrollFractionToReveal(const View* view) const {
@@ -729,8 +765,7 @@ namespace umbriel {
       return 0.0;
     }
     const int column = scrolling->columnOf(view);
-    const int viewportWidth = std::max(1, m_group->output()->usableArea().width - 2 * m_layoutConfig.edgePad);
-    return scrolling->scrollAmountToEnsureVisible(column, viewportWidth);
+    return scrolling->scrollAmountToEnsureVisible(column, scrollViewportExtent());
   }
 
   void Workspace::applyVisibility() {
@@ -754,6 +789,17 @@ namespace umbriel {
 
   void Workspace::beginSwitchTransition() {
     m_inSwitchTransition = true;
+    wlr_box clip{};
+    if (m_group != nullptr && m_group->output() != nullptr) {
+      wlr_output_layout_get_box(m_group->server()->outputLayout(), m_group->output()->wlr(), &clip);
+    }
+    const wlr_box* usedClip = clip.width > 0 && clip.height > 0 ? &clip : nullptr;
+    if (m_tree != nullptr) {
+      wlr_scene_tree_set_clip(m_tree, usedClip);
+    }
+    if (m_fullscreenTree != nullptr) {
+      wlr_scene_tree_set_clip(m_fullscreenTree, usedClip);
+    }
     m_switchViews.clear();
     for (View* view : m_views) {
       if (!view->pinned() && view->mapped() && (view->sceneTree()->node.enabled || !m_active)) {
@@ -789,6 +835,12 @@ namespace umbriel {
     // Put every view back at its resting position while transition visibility is still active: an inactive workspace
     // deliberately skips presentation sync once m_inSwitchTransition is cleared.
     setSlideOffset(0);
+    if (m_tree != nullptr) {
+      wlr_scene_tree_set_clip(m_tree, nullptr);
+    }
+    if (m_fullscreenTree != nullptr) {
+      wlr_scene_tree_set_clip(m_fullscreenTree, nullptr);
+    }
     m_inSwitchTransition = false;
     for (View* view : m_switchViews) {
       view->setFadeAlpha(1.0F);
@@ -947,6 +999,41 @@ namespace umbriel {
       overview->onWorkspaceInventoryChanged(this);
     }
     return result;
+  }
+
+  bool WorkspaceGroup::moveActiveWorkspace(int direction) {
+    if (m_active == nullptr || m_workspaces.size() < 2 || direction == 0 || m_output == nullptr) {
+      return false;
+    }
+    const size_t index = m_active->index();
+    const auto target = static_cast<std::ptrdiff_t>(index) + direction;
+    if (target < 0 || target >= static_cast<std::ptrdiff_t>(m_workspaces.size())) {
+      return false;
+    }
+    if (m_dynamic && direction > 0) {
+      const bool targetIsTrailingEmpty = static_cast<size_t>(target) == m_workspaces.size() - 1
+          && !m_workspaces[static_cast<size_t>(target)]->hasViews();
+      if (targetIsTrailingEmpty) {
+        return false;
+      }
+    }
+    slideFinish();
+    std::swap(m_workspaces[index], m_workspaces[static_cast<size_t>(target)]);
+    if (m_dynamic) {
+      refreshDynamicWorkspaceMetadata();
+      if (m_workspaces.back()->hasViews()) {
+        appendDynamicWorkspace();
+      }
+    } else {
+      for (const size_t slot : {index, static_cast<size_t>(target)}) {
+        Workspace* moved = m_workspaces[slot].get();
+        moved->rename(moved->name(), slot);
+      }
+    }
+    if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
+      overview->onWorkspaceInventoryChanged(this);
+    }
+    return true;
   }
 
   void WorkspaceGroup::reconcileInventory() {
@@ -1129,15 +1216,16 @@ namespace umbriel {
     if (Workspace* workspace = workspaceNamed(name)) {
       return workspace;
     }
-    if (!m_dynamic || name.empty() || !std::ranges::all_of(name, [](char value) {
-          return value >= '0' && value <= '9';
-        })) {
+    if (name.empty() || !std::ranges::all_of(name, [](char value) { return value >= '0' && value <= '9'; })) {
       return nullptr;
     }
     size_t index = 0;
     const auto [end, error] = std::from_chars(name.data(), name.data() + name.size(), index);
     if (error != std::errc{} || end != name.data() + name.size() || index < 1 || m_workspaces.empty()) {
       return nullptr;
+    }
+    if (!m_dynamic) {
+      return index <= m_workspaces.size() ? m_workspaces[index - 1].get() : nullptr;
     }
     return m_workspaces.back().get();
   }

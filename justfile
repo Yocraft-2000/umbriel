@@ -49,6 +49,9 @@ release: (build "release")
 install: (build "release")
     meson install -C build-release --no-rebuild
 
+uninstall:
+    sudo ninja -C build-release uninstall
+
 run m=mode startup="": (build m)
     #!/usr/bin/env bash
     set -euo pipefail
@@ -61,16 +64,32 @@ run m=mode startup="": (build m)
     fi
     exec ./build-{{m}}/umbriel "${args[@]}"
 
-test m=mode: (_ensure-configured m)
+test m=mode: (configure m)
+    meson compile -C build-{{m}} unit-tests
     meson test -C build-{{m}} --print-errorlogs
 
-verify m=mode filter="": (build m)
+# Whole harness suite, or the checks whose names contain any given fragment. Each
+# check runs against its own headless compositor instance, so a fragment selects
+# a group as readily as a single check.
+# The build is silent unless it fails: the run's own report is the output.
+[no-exit-message]
+verify m=mode *filters: (_ensure-configured m)
     #!/usr/bin/env bash
     set -euo pipefail
-    # The harness drives the cursor through a virtual-pointer client.
-    meson compile -C build-{{m}} pointer-client
-    meson compile -C build-{{m}} unmap-client
-    bash tests/harness/verify.sh ./build-{{m}}/umbriel "{{filter}}"
+    if ! build_log=$(meson compile -C build-{{m}} umbriel harness-clients 2>&1); then
+        printf '%s\n' "$build_log" >&2
+        exit 1
+    fi
+    bash tests/harness/verify.sh ./build-{{m}}/umbriel {{filters}}
+
+# One check, a group, or a few, on the default build, without naming the mode:
+# `just check 310`, `just check drag`, `just check 310 -v` for full output.
+[no-exit-message]
+check +filters: (verify mode filters)
+
+# Names of every harness check. Boots nothing.
+checks:
+    @bash tests/harness/verify.sh ./build-{{mode}}/umbriel --list
 
 format:
     find src tests \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i

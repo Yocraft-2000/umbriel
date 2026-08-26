@@ -21,10 +21,23 @@
 #include "workspace/scratchpad.h"
 #include "workspace/workspace.h"
 
+#include <algorithm>
+#include <charconv>
+#include <limits>
+#include <optional>
+#include <vector>
+
 namespace umbriel {
 
   namespace {
     constexpr Logger kLog("server");
+
+    // Dynamic workspaces are numbered, static ones can be named; sort the numbers by value and push names to the end.
+    size_t workspaceOrder(std::string_view name) {
+      size_t index = 0;
+      const auto [end, error] = std::from_chars(name.data(), name.data() + name.size(), index);
+      return error == std::errc{} && end == name.data() + name.size() ? index : std::numeric_limits<size_t>::max();
+    }
 
     View* viewForSurface(Server& server, wlr_surface* surface) {
       if (surface == nullptr) {
@@ -164,59 +177,74 @@ namespace umbriel {
     }
 
     void applyMouseAcceleration(
-        libinput_device* libinputDevice, const wlr_input_device* device, const AccelProfile& configuredProfile,
-        double sensitivity
+        libinput_device* libinputDevice, const wlr_input_device* device,
+        const std::optional<AccelProfile>& configuredProfile, const std::optional<double>& configuredSensitivity,
+        std::string_view accelSetting, std::string_view sensitivitySetting
     ) {
       if (libinput_device_config_accel_is_available(libinputDevice) == 0) {
         return;
       }
 
-      enum libinput_config_accel_profile profile = LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT;
-      const char* profileName = "flat";
-      switch (configuredProfile.kind) {
-      case AccelProfile::Kind::Flat:
-        break;
-      case AccelProfile::Kind::Adaptive:
-        profile = LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE;
-        profileName = "adaptive";
-        break;
-      case AccelProfile::Kind::Custom:
-        profile = LIBINPUT_CONFIG_ACCEL_PROFILE_CUSTOM;
-        profileName = "custom";
-        break;
-      }
-      if ((libinput_device_config_accel_get_profiles(libinputDevice) & profile) == 0) {
-        kLog.warn("input: '{}' does not support the {} acceleration profile", deviceName(device), profileName);
-        return;
-      }
-
-      if (configuredProfile.kind == AccelProfile::Kind::Custom) {
-        libinput_config_accel* acceleration = libinput_config_accel_create(profile);
-        if (acceleration == nullptr) {
-          kLog.warn("input: failed to create custom acceleration profile for '{}'", deviceName(device));
+      if (!configuredProfile) {
+        const auto profile = libinput_device_config_accel_get_default_profile(libinputDevice);
+        if (libinput_device_config_accel_set_profile(libinputDevice, profile) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+          kLog.warn("input: failed to restore the default acceleration profile for '{}'", deviceName(device));
           return;
         }
-        const auto pointsStatus = libinput_config_accel_set_points(
-            acceleration, LIBINPUT_ACCEL_TYPE_MOTION, configuredProfile.step, configuredProfile.points.size(),
-            configuredProfile.points.data()
-        );
-        const auto applyStatus = pointsStatus == LIBINPUT_CONFIG_STATUS_SUCCESS
-            ? libinput_device_config_accel_apply(libinputDevice, acceleration)
-            : pointsStatus;
-        libinput_config_accel_destroy(acceleration);
-        if (applyStatus != LIBINPUT_CONFIG_STATUS_SUCCESS) {
-          kLog.warn("input: failed to apply input.mouse.accel_profile to '{}'", deviceName(device));
+      } else {
+        enum libinput_config_accel_profile profile = LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT;
+        const char* profileName = "flat";
+        switch (configuredProfile->kind) {
+        case AccelProfile::Kind::Flat:
+          break;
+        case AccelProfile::Kind::Adaptive:
+          profile = LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE;
+          profileName = "adaptive";
+          break;
+        case AccelProfile::Kind::Custom:
+          profile = LIBINPUT_CONFIG_ACCEL_PROFILE_CUSTOM;
+          profileName = "custom";
+          break;
         }
-        return;
+        if ((libinput_device_config_accel_get_profiles(libinputDevice) & profile) == 0) {
+          kLog.warn("input: '{}' does not support the {} acceleration profile", deviceName(device), profileName);
+          return;
+        }
+
+        if (configuredProfile->kind == AccelProfile::Kind::Custom) {
+          libinput_config_accel* acceleration = libinput_config_accel_create(profile);
+          if (acceleration == nullptr) {
+            kLog.warn("input: failed to create custom acceleration profile for '{}'", deviceName(device));
+            return;
+          }
+          const auto pointsStatus = libinput_config_accel_set_points(
+              acceleration, LIBINPUT_ACCEL_TYPE_MOTION, configuredProfile->step, configuredProfile->points.size(),
+              configuredProfile->points.data()
+          );
+          const auto applyStatus = pointsStatus == LIBINPUT_CONFIG_STATUS_SUCCESS
+              ? libinput_device_config_accel_apply(libinputDevice, acceleration)
+              : pointsStatus;
+          libinput_config_accel_destroy(acceleration);
+          if (applyStatus != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+            kLog.warn("input: failed to apply {} to '{}'", accelSetting, deviceName(device));
+          }
+          return;
+        }
+
+        if (libinput_device_config_accel_set_profile(libinputDevice, profile) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+          kLog.warn("input: failed to apply {} to '{}'", accelSetting, deviceName(device));
+          return;
+        }
       }
 
-      if (libinput_device_config_accel_set_profile(libinputDevice, profile) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
-        kLog.warn("input: failed to apply input.mouse.accel_profile to '{}'", deviceName(device));
-        return;
-      }
-
+      const double sensitivity =
+          configuredSensitivity.value_or(libinput_device_config_accel_get_default_speed(libinputDevice));
       if (libinput_device_config_accel_set_speed(libinputDevice, sensitivity) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
-        kLog.warn("input: failed to apply input.mouse.sensitivity to '{}'", deviceName(device));
+        if (configuredSensitivity) {
+          kLog.warn("input: failed to apply {} to '{}'", sensitivitySetting, deviceName(device));
+        } else {
+          kLog.warn("input: failed to restore the default acceleration speed for '{}'", deviceName(device));
+        }
       }
     }
 
@@ -244,28 +272,35 @@ namespace umbriel {
               override != nullptr && override->tap ? "input.device.tap" : "input.touchpad.tap", deviceName(device)
           );
         }
-
-        const std::optional<bool>& naturalScroll =
-            override != nullptr && override->naturalScroll ? override->naturalScroll : input.touchpad.naturalScroll;
-        applyNaturalScroll(
-            libinputDevice, device, naturalScroll,
-            override != nullptr && override->naturalScroll ? "input.device.natural_scroll"
-                                                           : "input.touchpad.natural_scroll"
-        );
-        return;
       }
 
-      const std::optional<bool>& naturalScroll =
-          override != nullptr && override->naturalScroll ? override->naturalScroll : input.mouse.naturalScroll;
+      const std::optional<bool>& naturalScroll = override != nullptr && override->naturalScroll
+          ? override->naturalScroll
+          : isTouchpad ? input.touchpad.naturalScroll
+                       : input.mouse.naturalScroll;
       applyNaturalScroll(
           libinputDevice, device, naturalScroll,
-          override != nullptr && override->naturalScroll ? "input.device.natural_scroll" : "input.mouse.natural_scroll"
+          override != nullptr && override->naturalScroll ? "input.device.natural_scroll"
+              : isTouchpad                               ? "input.touchpad.natural_scroll"
+                                                         : "input.mouse.natural_scroll"
       );
-      const AccelProfile& accelProfile =
-          override != nullptr && override->accelProfile ? *override->accelProfile : input.mouse.accelProfile;
-      const double sensitivity =
-          override != nullptr && override->sensitivity ? *override->sensitivity : input.mouse.sensitivity;
-      applyMouseAcceleration(libinputDevice, device, accelProfile, sensitivity);
+
+      const std::optional<AccelProfile> accelProfile = override != nullptr && override->accelProfile
+          ? override->accelProfile
+          : isTouchpad ? input.touchpad.accelProfile
+                       : std::optional{input.mouse.accelProfile};
+      const std::optional<double> sensitivity = override != nullptr && override->sensitivity ? override->sensitivity
+          : isTouchpad ? input.touchpad.sensitivity
+                       : std::optional{input.mouse.sensitivity};
+      applyMouseAcceleration(
+          libinputDevice, device, accelProfile, sensitivity,
+          override != nullptr && override->accelProfile ? "input.device.accel_profile"
+              : isTouchpad                              ? "input.touchpad.accel_profile"
+                                                        : "input.mouse.accel_profile",
+          override != nullptr && override->sensitivity ? "input.device.sensitivity"
+              : isTouchpad                             ? "input.touchpad.sensitivity"
+                                                       : "input.mouse.sensitivity"
+      );
     }
   } // namespace
   void Server::applyConfig(const ConfigEffects& effects) {
@@ -322,6 +357,7 @@ namespace umbriel {
         }
         reassignOutputViews(output.get(), fallback);
       }
+      scheduleDisplacedViewRestore();
       updateOutputManagerConfig();
       // A disabled output must not keep keyboard focus: pull it onto a live one.
       refocus();
@@ -817,11 +853,53 @@ namespace umbriel {
   }
 
   void Server::updateIdleInhibit() {
-    const bool inhibited = !wl_list_empty(&m_idleInhibitManager->inhibitors);
+    bool inhibited = false;
+    wlr_idle_inhibitor_v1* inhibitor;
+    wl_list_for_each(inhibitor, &m_idleInhibitManager->inhibitors, link) {
+      wlr_surface* root = wlr_surface_get_root_surface(inhibitor->surface);
+      if (root == nullptr) {
+        continue;
+      }
+
+      if (m_sessionLocked) {
+        wlr_session_lock_surface_v1* lockSurface = wlr_session_lock_surface_v1_try_from_wlr_surface(root);
+        inhibited =
+            lockSurface != nullptr && root->mapped && lockSurface->output != nullptr && lockSurface->output->enabled;
+      } else if (View* view = View::fromSurface(root)) {
+        int x = 0;
+        int y = 0;
+        inhibited = view->mapped() && wlr_scene_node_coords(&view->sceneTree()->node, &x, &y);
+      } else if (wlr_layer_surface_v1* wlrLayer = wlr_layer_surface_v1_try_from_wlr_surface(root)) {
+        auto* layer = static_cast<LayerSurface*>(wlrLayer->data);
+        Output* output = layer != nullptr ? layer->output() : nullptr;
+        int x = 0;
+        int y = 0;
+        inhibited = layer != nullptr
+            && layer->mapped()
+            && output != nullptr
+            && output->wlr()->enabled
+            && wlr_scene_node_coords(&layer->scene()->tree->node, &x, &y);
+      }
+
+      if (inhibited) {
+        break;
+      }
+    }
     wlr_idle_notifier_v1_set_inhibited(m_idleNotifier, inhibited);
   }
 
-  void Server::notifyIdleActivity() { wlr_idle_notifier_v1_notify_activity(m_idleNotifier, m_seat->wlr()); }
+  void Server::notifyIdleActivity() {
+    wakeDpmsOutputs();
+    wlr_idle_notifier_v1_notify_activity(m_idleNotifier, m_seat->wlr());
+  }
+
+  void Server::wakeDpmsOutputs() {
+    for (const auto& output : m_outputs) {
+      if (output->dpmsOff()) {
+        (void)output->setPowered(true);
+      }
+    }
+  }
 
   void Server::beginSessionLock(wlr_session_lock_v1* lock) {
     if (m_sessionLock != nullptr) {
@@ -842,6 +920,7 @@ namespace umbriel {
     m_cursor->resetMode();
     m_cursor->clearConstraint();
     clearNormalFocus();
+    updateIdleInhibit();
     updateLockBlank();
     setLockBlankEnabled(true);
     raiseLockTree();
@@ -850,6 +929,7 @@ namespace umbriel {
 
   void Server::unlockSession() {
     m_sessionLocked = false;
+    updateIdleInhibit();
     wlr_scene_node_set_enabled(&m_lockBlank->node, false);
     if (View* recent = m_registry.mostRecent()) {
       focusView(recent);
@@ -904,7 +984,12 @@ namespace umbriel {
   void Server::raiseLockTree() { wlr_scene_node_raise_to_top(&m_lockTree->node); }
 
   void Server::addOutput(wlr_output* output) {
+    if (!m_pendingOutputName.empty()) {
+      // Before the Output exists: adding it to the layout advertises the name to clients, and it cannot change after.
+      wlr_output_set_name(output, m_pendingOutputName.c_str());
+    }
     m_outputs.push_back(std::make_unique<Output>(*this, output));
+    scheduleDisplacedViewRestore();
     markDirty(Dirty::Backdrop | Dirty::Banner | Dirty::Cheatsheet | Dirty::QuitConfirm);
     if (m_sessionLocked) {
       updateLockBlank();
@@ -1315,16 +1400,123 @@ namespace umbriel {
     Workspace* targetWorkspace = destination != nullptr && destination->workspaceGroup() != nullptr
         ? destination->workspaceGroup()->active()
         : nullptr;
+    const char* sourceName = source->wlr()->name;
     if (sourceGroup != nullptr) {
+      // Record every home before the first move; setWorkspace empties workspaces as views leave and a dynamic group
+      // renumbers what is left, under the windows that have not been read yet.
+      std::vector<View*> leaving;
       for (const auto& view : m_registry.all()) {
         Workspace* workspace = view->workspace();
-        if (workspace != nullptr && workspace->group() == sourceGroup) {
-          view->setWorkspace(targetWorkspace);
+        if (workspace == nullptr || workspace->group() != sourceGroup) {
+          continue;
+        }
+        if (!view->displacedHome() && sourceName != nullptr) {
+          view->markDisplaced({.outputName = sourceName, .workspaceName = workspace->name()});
+        }
+        leaving.push_back(view.get());
+      }
+      for (View* view : leaving) {
+        const bool floating = view->floating();
+        if (floating) {
+          view->rememberFloatingPosition();
+        }
+        view->setWorkspace(targetWorkspace);
+        if (floating && targetWorkspace != nullptr) {
+          view->restoreFloatingPosition();
         }
       }
     }
     if (m_scratchpadManager != nullptr) {
       m_scratchpadManager->moveOutput(source, destination);
+    }
+  }
+
+  // Deferred to idle: outputs come back one at a time, and a returning one has no workspace group until addOutput is
+  // done with it.
+  void Server::scheduleDisplacedViewRestore() {
+    if (m_displacedRestoreIdle != nullptr) {
+      return;
+    }
+    m_displacedRestoreIdle = wl_event_loop_add_idle(wl_display_get_event_loop(m_display), onDisplacedRestoreIdle, this);
+    if (m_displacedRestoreIdle == nullptr) {
+      kLog.error("failed to register displaced window restore idle source");
+      restoreDisplacedViews();
+    }
+  }
+
+  void Server::onDisplacedRestoreIdle(void* data) {
+    auto* server = static_cast<Server*>(data);
+    server->m_displacedRestoreIdle = nullptr;
+    server->restoreDisplacedViews();
+  }
+
+  void Server::restoreDisplacedViews() {
+    Output* fallback = outputFromWlr(preferredOutput());
+    if (fallback == nullptr) {
+      return;
+    }
+    std::vector<View*> displaced;
+    for (const auto& entry : m_registry.all()) {
+      if (entry->displacedHome()) {
+        displaced.push_back(entry.get());
+      }
+    }
+    // Restore in workspace order; a dynamic group only grows workspace N+1 once N is occupied, and a higher home
+    // reaching it first lands on the trailing empty workspace instead.
+    std::ranges::sort(displaced, [](const View* lhs, const View* rhs) {
+      const View::DisplacedHome& left = *lhs->displacedHome();
+      const View::DisplacedHome& right = *rhs->displacedHome();
+      if (left.outputName != right.outputName) {
+        return left.outputName < right.outputName;
+      }
+      const size_t leftIndex = workspaceOrder(left.workspaceName);
+      const size_t rightIndex = workspaceOrder(right.workspaceName);
+      return leftIndex != rightIndex ? leftIndex < rightIndex : left.workspaceName < right.workspaceName;
+    });
+    size_t restored = 0;
+    for (View* view : displaced) {
+      const View::DisplacedHome home = *view->displacedHome();
+      Output* target = outputFromName(home.outputName);
+      WorkspaceGroup* group = target != nullptr ? target->workspaceGroup() : nullptr;
+      const bool atHome = group != nullptr;
+      if (!atHome) {
+        // The home output is still gone: rescue only a view left with no workspace at all, and leave the rest put.
+        if (view->workspace() != nullptr) {
+          continue;
+        }
+        group = fallback->workspaceGroup();
+        if (group == nullptr) {
+          continue;
+        }
+      }
+      Workspace* workspace = atHome ? group->workspaceForSelector(home.workspaceName) : nullptr;
+      if (workspace == nullptr) {
+        workspace = group->active();
+      }
+      if (workspace == nullptr) {
+        continue;
+      }
+      if (atHome) {
+        view->clearDisplaced();
+      }
+      if (workspace == view->workspace()) {
+        continue;
+      }
+      const bool floating = view->floating();
+      view->setWorkspace(workspace);
+      if (floating) {
+        view->restoreFloatingPosition();
+      }
+      ++restored;
+    }
+    if (m_scratchpadManager != nullptr) {
+      restored += m_scratchpadManager->restoreDisplaced(fallback);
+    }
+    if (restored > 0) {
+      kLog.info("restored {} displaced windows", restored);
+      refreshSurfaceScales();
+      refocus();
+      scheduleIpcWindowsEvent();
     }
   }
 
@@ -1337,8 +1529,10 @@ namespace umbriel {
     if (view == nullptr) {
       return;
     }
+    for (const auto& output : m_outputs) {
+      output->forgetHdrView(view);
+    }
     const bool hadKeyboardFocus = m_seat->wlr()->keyboard_state.focused_surface == view->toplevel()->base->surface;
-    bool restorePointerFocus = false;
     if (m_scratchpadManager != nullptr) {
       m_scratchpadManager->remove(view);
     }
@@ -1348,23 +1542,11 @@ namespace umbriel {
       if (workspace->group() != nullptr) {
         output = workspace->group()->output();
       }
-      std::optional<std::pair<double, double>> focusPoint;
-      if (workspace->focusedView() == view
-          && config().input.focus.followsMouse
-          && view->tiled()
-          && workspace->scrollingLayout() == nullptr
-          && workspace->active()
-          && m_cursor != nullptr
-          && output != nullptr
-          && wlr_output_layout_output_at(m_outputLayout, m_cursor->wlr()->x, m_cursor->wlr()->y) == output->wlr()) {
-        focusPoint = std::pair{m_cursor->wlr()->x, m_cursor->wlr()->y};
-        restorePointerFocus = true;
-      }
-      replacement = workspace->removeView(view, focusPoint);
+      replacement = workspace->removeView(view);
       view->detachWorkspace();
     }
     m_registry.remove(view);
-    if (hadKeyboardFocus || restorePointerFocus) {
+    if (hadKeyboardFocus) {
       wlr_seat_keyboard_notify_clear_focus(m_seat->wlr());
       if (replacement != nullptr) {
         focusView(replacement);

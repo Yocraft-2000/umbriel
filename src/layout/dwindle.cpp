@@ -115,26 +115,13 @@ namespace umbriel {
     return true;
   }
 
-  bool DwindleLayout::isHorizontal(const Node* node) const {
-    if (node == nullptr) {
-      return false;
-    }
-    int depth = 0;
-    Node* current = node->parent;
-    while (current != nullptr) {
-      ++depth;
-      current = current->parent;
-    }
-    return (depth % 2) == 0;
-  }
-
-  void DwindleLayout::splitNodeDirected(Node* node, View* newView, bool horizontal, bool newFirst) {
+  void DwindleLayout::splitLeaf(Node* node, View* newView, Node::Type split, bool newFirst) {
     if (node == nullptr) {
       return;
     }
     View* oldView = node->view;
     node->view = nullptr;
-    node->type = horizontal ? Node::HSplit : Node::VSplit;
+    node->type = split;
     node->ratio = 0.5;
 
     auto first = std::make_unique<Node>();
@@ -150,11 +137,6 @@ namespace umbriel {
 
     node->left = std::move(first);
     node->right = std::move(second);
-    ++m_splitCounter;
-  }
-
-  void DwindleLayout::splitNode(Node* node, View* newView) {
-    splitNodeDirected(node, newView, isHorizontal(node), /*newFirst=*/false);
   }
 
   void DwindleLayout::detachNode(Node* node) {
@@ -220,6 +202,13 @@ namespace umbriel {
         });
       }
       return;
+    }
+
+    if (node->type == Node::AutoSplit) {
+      // Split the longer edge, so a portrait output stacks first instead of tiling side by side. Resolved on the first
+      // arrange after the split and then frozen: an interactive resize elsewhere in the tree must never rotate a split
+      // the user is not touching.
+      node->type = area.width >= area.height ? Node::HSplit : Node::VSplit;
     }
 
     const int gap = m_config->totalGap;
@@ -289,6 +278,28 @@ namespace umbriel {
     collectColumns(m_root.get());
   }
 
+  bool DwindleLayout::swapLeafViews(Node* first, Node* second) {
+    if (first == nullptr
+        || second == nullptr
+        || first == second
+        || first->type != Node::Leaf
+        || second->type != Node::Leaf) {
+      return false;
+    }
+    View* firstView = first->view;
+    View* secondView = second->view;
+    std::swap(first->view, second->view);
+    for (Target& target : m_targets) {
+      if (target.view == firstView) {
+        target.view = secondView;
+      } else if (target.view == secondView) {
+        target.view = firstView;
+      }
+    }
+    rebuildFlatColumns();
+    return true;
+  }
+
   // Public Layout interface
   int DwindleLayout::columnOf(const View* view) const {
     for (size_t i = 0; i < m_flatColumns.size(); ++i) {
@@ -322,11 +333,11 @@ namespace umbriel {
       target = nodeAtFlatIndex(targetIndex);
     }
     if (target != nullptr && target->type == Node::Leaf) {
-      splitNode(target, view);
+      splitLeaf(target, view, Node::AutoSplit, /*newFirst=*/false);
     } else if (targetIndex < count) {
       target = nodeAtFlatIndex(targetIndex);
       if (target != nullptr && target->type == Node::Leaf) {
-        splitNode(target, view);
+        splitLeaf(target, view, Node::AutoSplit, /*newFirst=*/false);
       }
     }
     rebuildFlatColumns();
@@ -346,9 +357,7 @@ namespace umbriel {
     if (b == nullptr || b->type != Node::Leaf) {
       return false;
     }
-    std::swap(a->view, b->view);
-    rebuildFlatColumns();
-    return true;
+    return swapLeafViews(a, b);
   }
 
   bool DwindleLayout::expelRight(View* view) {
@@ -361,31 +370,11 @@ namespace umbriel {
     if (b == nullptr || b->type != Node::Leaf) {
       return false;
     }
-    std::swap(a->view, b->view);
-    rebuildFlatColumns();
-    return true;
+    return swapLeafViews(a, b);
   }
 
   bool DwindleLayout::moveViewVertical(View* view, int direction) {
-    Node* a = findNode(view);
-    if (a == nullptr || a->parent == nullptr) {
-      return false;
-    }
-    if (a->parent->type != Node::VSplit) {
-      return false;
-    }
-    Node* sibling = nullptr;
-    if (direction < 0 && a->parent->right.get() == a) {
-      sibling = a->parent->left.get();
-    } else if (direction > 0 && a->parent->left.get() == a) {
-      sibling = a->parent->right.get();
-    }
-    if (sibling == nullptr || sibling->type != Node::Leaf) {
-      return false;
-    }
-    std::swap(a->view, sibling->view);
-    rebuildFlatColumns();
-    return true;
+    return swapLeafViews(findNode(view), findNode(directionalNeighbor(view, false, direction)));
   }
 
   void DwindleLayout::removeView(View* view) {
@@ -409,10 +398,7 @@ namespace umbriel {
     }
     Node* a = nodeAtFlatIndex(from);
     Node* b = nodeAtFlatIndex(destination);
-    if (a != nullptr && b != nullptr && a->type == Node::Leaf && b->type == Node::Leaf) {
-      std::swap(a->view, b->view);
-      rebuildFlatColumns();
-    }
+    swapLeafViews(a, b);
   }
 
   void DwindleLayout::arrange(const wlr_box& usable) {
@@ -434,14 +420,24 @@ namespace umbriel {
   DwindleLayout::initialSize(const wlr_box& usable, std::optional<double> /*ruleWidthFraction*/) const {
     const wlr_box content = contentArea(usable);
     // A window rule's default_width is a viewport fraction, which a splitting layout has no use for. The first leaf
-    // owns the whole area; any later one lands in a split of the target leaf, and half is the closest guess before the
-    // target is known.
+    // owns the whole area.
     if (m_flatColumns.empty()) {
       return {.width = content.width, .height = content.height};
     }
-    return {
-        .width = fractionalWidth(content.width, m_config->scrolling.defaultWidthFraction), .height = content.height
+    // Any later view splits an existing leaf along that leaf's longer edge, so the answer has to follow the same rule
+    // arrange() will apply, or a portrait output configures every new window at half width and full height and the
+    // client visibly resizes on its first paint. The append target is the best available guess: which leaf an insert
+    // lands on depends on the caller's focused column, which the layout cannot see.
+    const Node* target = nodeAtFlatIndex(static_cast<int>(m_flatColumns.size()) - 1);
+    const int width = target != nullptr && target->areaW > 0 ? target->areaW : content.width;
+    const int height = target != nullptr && target->areaH > 0 ? target->areaH : content.height;
+    const auto half = [gap = m_config->totalGap](int span) {
+      return std::max(1, static_cast<int>(std::lround(0.5 * span)) - gap / 2);
     };
+    if (width >= height) {
+      return {.width = half(width), .height = height};
+    }
+    return {.width = width, .height = half(height)};
   }
 
   wlr_box DwindleLayout::targetBox(const View* view) const {
@@ -470,31 +466,64 @@ namespace umbriel {
     return {.x = t.x, .y = t.y, .width = t.width, .height = t.height};
   }
 
-  View* DwindleLayout::verticalSibling(const View* view, int direction) const {
-    Node* node = findNode(view);
-    if (node == nullptr || node->parent == nullptr) {
+  View* DwindleLayout::directionalNeighbor(const View* view, bool horizontal, int direction) const {
+    if (view == nullptr || direction == 0) {
       return nullptr;
     }
-    if (node->parent->type != Node::VSplit) {
+
+    const auto sourceIt = std::ranges::find_if(m_targets, [view](const Target& target) { return target.view == view; });
+    if (sourceIt == m_targets.end()) {
       return nullptr;
     }
-    Node* sibling = nullptr;
-    if (direction < 0 && node->parent->right.get() == node) {
-      sibling = node->parent->left.get();
-    } else if (direction > 0 && node->parent->left.get() == node) {
-      sibling = node->parent->right.get();
+
+    const Target& source = *sourceIt;
+    View* best = nullptr;
+    int bestGap = std::numeric_limits<int>::max();
+    int bestOverlap = -1;
+    int bestCenterDistance = std::numeric_limits<int>::max();
+
+    for (const Target& candidate : m_targets) {
+      if (candidate.view == nullptr || candidate.view == view) {
+        continue;
+      }
+
+      int gap = 0;
+      int overlap = 0;
+      int centerDistance = 0;
+      if (horizontal) {
+        gap = direction < 0 ? source.x - (candidate.x + candidate.width) : candidate.x - (source.x + source.width);
+        overlap = std::min(source.y + source.height, candidate.y + candidate.height) - std::max(source.y, candidate.y);
+        centerDistance = std::abs((2 * source.y + source.height) - (2 * candidate.y + candidate.height));
+      } else {
+        gap = direction < 0 ? source.y - (candidate.y + candidate.height) : candidate.y - (source.y + source.height);
+        overlap = std::min(source.x + source.width, candidate.x + candidate.width) - std::max(source.x, candidate.x);
+        centerDistance = std::abs((2 * source.x + source.width) - (2 * candidate.x + candidate.width));
+      }
+
+      if (gap < 0 || overlap <= 0) {
+        continue;
+      }
+      if (gap < bestGap
+          || (gap == bestGap && overlap > bestOverlap)
+          || (gap == bestGap && overlap == bestOverlap && centerDistance < bestCenterDistance)) {
+        best = candidate.view;
+        bestGap = gap;
+        bestOverlap = overlap;
+        bestCenterDistance = centerDistance;
+      }
     }
-    if (sibling == nullptr || sibling->type != Node::Leaf) {
-      return nullptr;
-    }
-    return sibling->view;
+    return best;
   }
 
-  View* DwindleLayout::focusVerticalLeaf(const View* view, int direction) const {
-    return verticalSibling(view, direction);
+  std::optional<View*> DwindleLayout::focusHorizontalLeaf(const View* view, int direction) const {
+    return directionalNeighbor(view, true, direction);
   }
 
-  bool DwindleLayout::cycleWidth(int columnIndex) {
+  std::optional<View*> DwindleLayout::focusVerticalLeaf(const View* view, int direction) const {
+    return directionalNeighbor(view, false, direction);
+  }
+
+  bool DwindleLayout::cycleWidth(int columnIndex, int direction) {
     Node* node = nodeAtFlatIndex(columnIndex);
     const std::vector<WidthSplit> splits = widthSplits(node);
     if (splits.empty()) {
@@ -505,8 +534,16 @@ namespace umbriel {
       current *= widthShare(split);
     }
     const auto& presets = m_config->widthPresets;
-    const auto it = std::ranges::find_if(presets, [current](double preset) { return preset > current + 0.0001; });
-    const double next = (it == presets.end()) ? presets[0] : *it;
+    double next = 0.0;
+    if (direction < 0) {
+      const auto it = std::ranges::find_if(presets | std::views::reverse, [current](double preset) {
+        return preset < current - 0.0001;
+      });
+      next = it == presets.rend() ? presets.back() : *it;
+    } else {
+      const auto it = std::ranges::find_if(presets, [current](double preset) { return preset > current + 0.0001; });
+      next = it == presets.end() ? presets[0] : *it;
+    }
     return applyWidthFraction(splits, next);
   }
 
@@ -572,13 +609,13 @@ namespace umbriel {
       return;
     }
     if (edge == 0) {
-      splitNode(target, newView);
+      splitLeaf(target, newView, Node::AutoSplit, /*newFirst=*/false);
       rebuildFlatColumns();
       return;
     }
     const bool horizontal = (edge & (WLR_EDGE_LEFT | WLR_EDGE_RIGHT)) != 0;
     const bool newFirst = (edge & (WLR_EDGE_LEFT | WLR_EDGE_TOP)) != 0;
-    splitNodeDirected(target, newView, horizontal, newFirst);
+    splitLeaf(target, newView, horizontal ? Node::HSplit : Node::VSplit, newFirst);
     rebuildFlatColumns();
   }
 
@@ -689,51 +726,7 @@ namespace umbriel {
     if (box.width <= 0 || box.height <= 0) {
       return 0;
     }
-    const double distLeft = std::abs(cx - box.x);
-    const double distRight = std::abs(cx - (box.x + box.width));
-    const double distTop = std::abs(cy - box.y);
-    const double distBottom = std::abs(cy - (box.y + box.height));
-    const double nearestH = std::min(distLeft, distRight);
-    const double nearestV = std::min(distTop, distBottom);
-
-    const uint32_t avail = resizableEdges(view);
-    if (avail == 0) {
-      return 0;
-    }
-    constexpr double kInfinity = std::numeric_limits<double>::max();
-    uint32_t hEdge = 0;
-    double hDist = kInfinity;
-    if ((avail & WLR_EDGE_LEFT) != 0 && (avail & WLR_EDGE_RIGHT) != 0) {
-      hEdge = distLeft <= distRight ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT;
-      hDist = nearestH;
-    } else if ((avail & WLR_EDGE_LEFT) != 0) {
-      hEdge = WLR_EDGE_LEFT;
-      hDist = distLeft;
-    } else if ((avail & WLR_EDGE_RIGHT) != 0) {
-      hEdge = WLR_EDGE_RIGHT;
-      hDist = distRight;
-    }
-    uint32_t vEdge = 0;
-    double vDist = kInfinity;
-    if ((avail & WLR_EDGE_TOP) != 0 && (avail & WLR_EDGE_BOTTOM) != 0) {
-      vEdge = distTop <= distBottom ? WLR_EDGE_TOP : WLR_EDGE_BOTTOM;
-      vDist = nearestV;
-    } else if ((avail & WLR_EDGE_TOP) != 0) {
-      vEdge = WLR_EDGE_TOP;
-      vDist = distTop;
-    } else if ((avail & WLR_EDGE_BOTTOM) != 0) {
-      vEdge = WLR_EDGE_BOTTOM;
-      vDist = distBottom;
-    }
-    // Resize both axes at once near a corner; otherwise the nearest boundary.
-    constexpr double kCornerSlop = 60.0;
-    if (hEdge != 0 && vEdge != 0 && hDist < kCornerSlop && vDist < kCornerSlop) {
-      return hEdge | vEdge;
-    }
-    if (hEdge != 0 && (vEdge == 0 || hDist <= vDist)) {
-      return hEdge;
-    }
-    return vEdge;
+    return sanitizeResizeEdges(view, resizeEdgesForPoint(box, cx, cy));
   }
 
   uint32_t DwindleLayout::sanitizeResizeEdges(const View* view, uint32_t edges) const {

@@ -32,7 +32,7 @@ add_project_arguments(
   language: 'c',
 )
 
-wayland_server_dep = dependency('wayland-server')
+wayland_server_dep = dependency('wayland-server', version: '>=1.23')
 wayland_client_dep = dependency('wayland-client')
 wayland_protocols_dep = dependency('wayland-protocols', version: '>=1.32')
 wlroots_dep = dependency('wlroots-0.20')
@@ -78,6 +78,19 @@ if pkgconfig.found()
       'scenefx/types/wlr_scene.h',
       'wlr_scene_tree_set_clip',
       args: scenefx_cflags,
+    ) and cpp.has_header_symbol(
+      'scenefx/types/wlr_scene.h',
+      'wlr_scene_output_set_sdr_white_level',
+      args: scenefx_cflags,
+    ) and cpp.has_header_symbol(
+      'scenefx/types/wlr_scene.h',
+      'wlr_scene_buffer_set_luminance_multiplier',
+      args: scenefx_cflags,
+    ) and cpp.has_member(
+      'struct wlr_scene_output_state_options',
+      'capture_sdr',
+      prefix: '#include <scenefx/types/wlr_scene.h>',
+      args: scenefx_cflags,
     )
   endif
 endif
@@ -90,7 +103,13 @@ else
     error('SceneFX submodule is missing, run git submodule update --init')
   endif
   scenefx_header_source = fs.read(scenefx_header)
-  if not scenefx_header_source.contains('wlr_scene_blur_set_ignore_alpha') or not scenefx_header_source.contains('wlr_scene_tree_set_clip')
+  if (
+    not scenefx_header_source.contains('wlr_scene_blur_set_ignore_alpha')
+    or not scenefx_header_source.contains('wlr_scene_tree_set_clip')
+    or not scenefx_header_source.contains('wlr_scene_output_set_sdr_white_level')
+    or not scenefx_header_source.contains('wlr_scene_buffer_set_luminance_multiplier')
+    or not scenefx_header_source.contains('capture_sdr')
+  )
     error('SceneFX submodule must provide Umbriel patched APIs')
   endif
   scenefx_proj = subproject(
@@ -148,6 +167,57 @@ xdg_shell_client_c = custom_target(
   'xdg-shell-client-protocol.c',
   input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'stable/xdg-shell/xdg-shell.xml',
   output: 'xdg-shell-client-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+color_management_client_h = custom_target(
+  'color-management-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/color-management/color-management-v1.xml',
+  output: 'color-management-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+color_management_client_c = custom_target(
+  'color-management-v1-client-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/color-management/color-management-v1.xml',
+  output: 'color-management-v1-client-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+color_management_server_h = custom_target(
+  'color-management-v1-server-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/color-management/color-management-v1.xml',
+  output: 'color-management-v1-server-protocol.h',
+  command: [wayland_scanner, 'server-header', '@INPUT@', '@OUTPUT@'],
+)
+color_management_server_c = custom_target(
+  'color-management-v1-server-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/color-management/color-management-v1.xml',
+  output: 'color-management-v1-server-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+idle_inhibit_client_h = custom_target(
+  'idle-inhibit-unstable-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
+  output: 'idle-inhibit-unstable-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+idle_inhibit_client_c = custom_target(
+  'idle-inhibit-unstable-v1-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
+  output: 'idle-inhibit-unstable-v1-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+ext_idle_notify_client_h = custom_target(
+  'ext-idle-notify-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/ext-idle-notify/ext-idle-notify-v1.xml',
+  output: 'ext-idle-notify-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+ext_idle_notify_client_c = custom_target(
+  'ext-idle-notify-v1-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/ext-idle-notify/ext-idle-notify-v1.xml',
+  output: 'ext-idle-notify-v1-protocol.c',
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
@@ -260,6 +330,7 @@ core_sources = files(
   'src/config/config_merge.cpp',
   'src/config/config_watcher.cpp',
   'src/layout/drop_target.cpp',
+  'src/server/wine_color_manager.cpp',
   'src/server/server.cpp',
   'src/server/server_events.cpp',
   'src/server/server_keybinds.cpp',
@@ -318,7 +389,13 @@ umbriel_core_deps = [
 
 umbriel_core = static_library(
   'umbriel-core',
-  core_sources + [layer_shell_protocol_h, output_mgmt_client_h, output_mgmt_client_c],
+  core_sources + [
+    layer_shell_protocol_h,
+    output_mgmt_client_h,
+    output_mgmt_client_c,
+    color_management_server_h,
+    color_management_server_c,
+  ],
   include_directories: include_directories('src'),
   link_with: umbriel_pure,
   dependencies: umbriel_core_deps,
@@ -343,32 +420,36 @@ umbriel = executable(
 # Unit tests. Each entry is [name, test sources, extra dependencies]. Every test gets umbriel_pure_dep; add umbriel_core_dep to the third field for a test that
 # needs compositor code. Either way a test never lists or recompiles a source.
 unit_tests = [
-  ['presented-crop', ['tests/presented_crop.cpp'], []],
-  ['scene-node', ['tests/scene_node.cpp'], []],
-  ['scene-clip', ['tests/scene_clip.cpp'], [wayland_server_dep]],
-  ['value-parse', ['tests/value_parse.cpp'], []],
-  ['keybind-parse', ['tests/keybind_parse.cpp'], []],
-  ['modifier-tap', ['tests/modifier_tap.cpp'], []],
-  ['output-direction', ['tests/output_direction.cpp'], []],
-  ['scrolling-layout', ['tests/scrolling_layout.cpp'], []],
-  ['dwindle-layout', ['tests/dwindle_layout.cpp'], []],
-  ['cheatsheet-rows', ['tests/cheatsheet_rows.cpp'], []],
-  ['border-ring', ['tests/border_ring.cpp'], []],
-  ['floating', ['tests/floating.cpp'], []],
-  ['maximize', ['tests/maximize.cpp'], []],
-  ['config-section', ['tests/config_section.cpp'], []],
-  ['config-change', ['tests/config_change.cpp'], []],
-  ['config-load', ['tests/config_load.cpp'], [umbriel_core_dep]],
-  ['action-registry', ['tests/action_registry.cpp'], [umbriel_core_dep]],
-  ['config-resolve', ['tests/config_resolve.cpp'], []],
+  ['presented-crop', ['tests/unit/presented_crop.cpp'], []],
+  ['scene-node', ['tests/unit/scene_node.cpp'], []],
+  ['scene-clip', ['tests/unit/scene_clip.cpp'], [wayland_server_dep]],
+  ['presentation', ['tests/unit/presentation.cpp'], [umbriel_core_dep]],
+  ['window-opacity-blur', ['tests/unit/window_opacity_blur.cpp'], [umbriel_core_dep]],
+  ['value-parse', ['tests/unit/value_parse.cpp'], []],
+  ['keybind-parse', ['tests/unit/keybind_parse.cpp'], []],
+  ['modifier-tap', ['tests/unit/modifier_tap.cpp'], []],
+  ['output-direction', ['tests/unit/output_direction.cpp'], []],
+  ['output-frame-schedule', ['tests/unit/output_frame_schedule.cpp'], []],
+  ['hdr-format', ['tests/unit/hdr_format.cpp'], []],
+  ['scrolling-layout', ['tests/unit/scrolling_layout.cpp'], []],
+  ['dwindle-layout', ['tests/unit/dwindle_layout.cpp'], []],
+  ['cheatsheet-rows', ['tests/unit/cheatsheet_rows.cpp'], []],
+  ['border-ring', ['tests/unit/border_ring.cpp'], []],
+  ['floating', ['tests/unit/floating.cpp'], []],
+  ['maximize', ['tests/unit/maximize.cpp'], []],
+  ['config-section', ['tests/unit/config_section.cpp'], []],
+  ['config-change', ['tests/unit/config_change.cpp'], []],
+  ['config-load', ['tests/unit/config_load.cpp'], [umbriel_core_dep]],
+  ['action-registry', ['tests/unit/action_registry.cpp'], [umbriel_core_dep]],
+  ['config-resolve', ['tests/unit/config_resolve.cpp'], []],
 ]
 
 # Harness helper, not a unit test: drives virtual pointer and modifier input against a running compositor. The headless backend has no input devices, so protocol
 # input is the only way to exercise pointer hit-testing and grabs.
-executable(
+pointer_client = executable(
   'pointer-client',
   [
-    'tests/harness/pointer_client.cpp',
+    'tests/harness/clients/pointer_client.cpp',
     virtual_pointer_client_h,
     virtual_pointer_client_c,
     virtual_keyboard_client_h,
@@ -378,10 +459,10 @@ executable(
 )
 
 # Harness helper that reproduces the keyboard ownership of a real input method.
-executable(
+input_method_client = executable(
   'input-method-client',
   [
-    'tests/harness/input_method_client.cpp',
+    'tests/harness/clients/input_method_client.cpp',
     input_method_client_h,
     input_method_client_c,
     virtual_keyboard_client_h,
@@ -391,44 +472,99 @@ executable(
 )
 
 # Harness helper that owns a mapped surface and initiates a data-device drag.
-executable(
+drag_client = executable(
   'drag-client',
-  ['tests/harness/drag_client.cpp', layer_shell_client_h, layer_shell_client_c, xdg_shell_client_c],
+  ['tests/harness/clients/drag_client.cpp', layer_shell_client_h, layer_shell_client_c, xdg_shell_client_c],
   dependencies: [wayland_client_dep],
 )
 
 # Harness helper that checks whether a Wayland global is visible to a newly
 # connected client.
-executable(
+global_client = executable(
   'global-client',
-  'tests/harness/global_client.cpp',
+  'tests/harness/clients/global_client.cpp',
   dependencies: [wayland_client_dep],
 )
 
 # Harness helper that reports the active workspace through ext-workspace-v1.
-executable(
+workspace_client = executable(
   'workspace-client',
-  ['tests/harness/workspace_client.cpp', ext_workspace_client_h, ext_workspace_client_c],
+  ['tests/harness/clients/workspace_client.cpp', ext_workspace_client_h, ext_workspace_client_c],
   dependencies: [wayland_client_dep],
 )
 
 # Harness helper that unmaps its toplevel on a close request without destroying
 # it, so the compositor keeps the View registered but unmapped.
-executable(
+unmap_client = executable(
   'unmap-client',
-  ['tests/harness/unmap_client.cpp', xdg_shell_client_h, xdg_shell_client_c],
+  [
+    'tests/harness/clients/unmap_client.cpp',
+    xdg_shell_client_h,
+    xdg_shell_client_c,
+    color_management_client_h,
+    color_management_client_c,
+  ],
   dependencies: [wayland_client_dep],
 )
 
+# Harness helper that creates a grabbed XDG popup and reports its dismissal.
+popup_client = executable(
+  'popup-client',
+  ['tests/harness/clients/popup_client.cpp', xdg_shell_client_h, xdg_shell_client_c],
+  dependencies: [wayland_client_dep],
+)
+
+
+# Harness helper whose whole content is drawn by a full-window desynchronized
+# wl_subsurface, the way Firefox presents its chrome and web content.
+subsurface_client = executable(
+  'subsurface-client',
+  ['tests/harness/clients/subsurface_client.cpp', xdg_shell_client_h, xdg_shell_client_c],
+  dependencies: [wayland_client_dep],
+)
+
+# Harness helper that keeps an idle inhibitor attached to a mapped toplevel and
+# reports when the compositor starts honoring its idle notification.
+idle_inhibit_client = executable(
+  'idle-inhibit-client',
+  [
+    'tests/harness/clients/idle_inhibit_client.cpp',
+    xdg_shell_client_h,
+    xdg_shell_client_c,
+    idle_inhibit_client_h,
+    idle_inhibit_client_c,
+    ext_idle_notify_client_h,
+    ext_idle_notify_client_c,
+  ],
+  dependencies: [wayland_client_dep],
+)
+
+alias_target(
+  'harness-clients',
+  pointer_client,
+  input_method_client,
+  drag_client,
+  global_client,
+  workspace_client,
+  unmap_client,
+  popup_client,
+  subsurface_client,
+  idle_inhibit_client,
+)
+
+unit_test_targets = []
 foreach unit_test : unit_tests
   test_exe = executable(
     unit_test[0] + '-test',
     unit_test[1],
-    include_directories: include_directories('tests'),
+    include_directories: include_directories('tests/unit'),
     dependencies: [umbriel_pure_dep] + unit_test[2],
   )
+  unit_test_targets += test_exe
   test(unit_test[0], test_exe)
 endforeach
+
+alias_target('unit-tests', unit_test_targets)
 
 install_data(
   'data/umbriel.desktop',

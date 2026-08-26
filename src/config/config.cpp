@@ -58,6 +58,23 @@ namespace umbriel {
       return std::nullopt;
     }
 
+    std::optional<HdrMode> readHdrMode(const toml::node& node) {
+      const auto value = node.value<std::string>();
+      if (value == "off") {
+        return HdrMode::Off;
+      }
+      if (value == "on") {
+        return HdrMode::On;
+      }
+      if (value == "auto") {
+        return HdrMode::Auto;
+      }
+      if (value == "fullscreen") {
+        return HdrMode::Fullscreen;
+      }
+      return std::nullopt;
+    }
+
     void emitDiag(ConfigDiagnostic::Severity severity, const toml::source_region* src, std::string msg) {
       ConfigDiagnostic diag;
       diag.severity = severity;
@@ -154,6 +171,27 @@ namespace umbriel {
         return LayoutMode::Scrolling;
       }
       warnAt(node->source(), R"(unknown {}.mode "{}" (expected "scrolling" or "dwindle"))", context, mode);
+      return std::nullopt;
+    }
+
+    std::optional<ScrollingDirection> readScrollingDirection(Section& section, std::string_view context) {
+      const toml::node* node = section.take("direction");
+      if (node == nullptr) {
+        return std::nullopt;
+      }
+      const auto* value = node->as_string();
+      if (value == nullptr) {
+        warnAt(node->source(), R"({}.direction must be a string ("horizontal" or "vertical"))", context);
+        return std::nullopt;
+      }
+      const std::string_view direction = value->get();
+      if (direction == "horizontal") {
+        return ScrollingDirection::Horizontal;
+      }
+      if (direction == "vertical") {
+        return ScrollingDirection::Vertical;
+      }
+      warnAt(node->source(), R"(unknown {}.direction "{}" (expected "horizontal" or "vertical"))", context, direction);
       return std::nullopt;
     }
 
@@ -298,6 +336,9 @@ namespace umbriel {
               overrides.widthPresets = std::move(*presets);
             }
             s.sub("scrolling", [&](Section& sc) {
+              if (const auto direction = readScrollingDirection(sc, layoutContext + ".scrolling")) {
+                overrides.scrolling.direction = direction;
+              }
               sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
                   .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip);
             });
@@ -454,7 +495,7 @@ namespace umbriel {
       root.sub("appearance", [&](Section& s) {
         s.integer("border_width", 0, 100, a.borderWidth)
             .integer("outer_border_width", 0, 100, a.outerBorderWidth)
-            .integer("corner_radius", 0, 500, a.cornerRadius)
+            .integer("corner_radius", 0, 100, a.cornerRadius)
             .color("border_focused", a.borderFocused)
             .color("border_unfocused", a.borderUnfocused)
             .color("scratchpad_border_focused", a.scratchpadBorderFocused)
@@ -463,6 +504,7 @@ namespace umbriel {
             .color("insert_hint_color", a.insertHintColor)
             .color("backdrop_color", a.backdropColor)
             .integer("animation_ms", 1, 10000, a.animationMs)
+            .real("drag_opacity", 0.0, 1.0, a.dragOpacity)
             .boolean("prefer_no_csd", a.preferNoCsd);
         s.sub("blur", [&](Section& blur) {
           blur.boolean("enabled", a.blur.enabled)
@@ -487,6 +529,7 @@ namespace umbriel {
     void readOverview(Section& root, Config& loaded) {
       root.sub("overview", [&](Section& s) {
         s.real("zoom", 0.1, 0.75, loaded.overview.zoom)
+            .boolean("background_blur", loaded.overview.backgroundBlur)
             .color("background_tint", loaded.overview.backgroundTint)
             .color("workspace_background", loaded.overview.workspaceBackground);
       });
@@ -532,6 +575,9 @@ namespace umbriel {
           loaded.layout.widthPresets = std::move(*presets);
         }
         s.sub("scrolling", [&](Section& sc) {
+          if (const auto direction = readScrollingDirection(sc, "layout.scrolling")) {
+            loaded.layout.scrolling.direction = *direction;
+          }
           sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
               .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip);
         });
@@ -569,6 +615,7 @@ namespace umbriel {
         s.boolean("xwayland", loaded.general.xwayland)
             .boolean("show_cheatsheet", loaded.general.showCheatsheet)
             .boolean("focus_on_activate", loaded.general.focusOnActivate)
+            .boolean("honor_restored_maximize", loaded.general.honorRestoredMaximize)
             .strings("autostart", loaded.general.autostart);
       });
     }
@@ -707,7 +754,8 @@ namespace umbriel {
               .text("variant", in.keyboard.variant)
               .text("options", in.keyboard.options)
               .integer("repeat_rate", 0, 1000, in.keyboard.repeatRate)
-              .integer("repeat_delay", 0, 10000, in.keyboard.repeatDelay);
+              .integer("repeat_delay", 0, 10000, in.keyboard.repeatDelay)
+              .boolean("numlock_toggle", in.keyboard.numlockToggle);
         });
         if (const toml::node* keyboardNode = s.node("keyboard");
             keyboardNode != nullptr && !validateKeyboardInput(in.keyboard, keyboardNode->source(), "input.keyboard")) {
@@ -716,7 +764,10 @@ namespace umbriel {
           in.keyboard.options.clear();
         }
         s.sub("touchpad", [&](Section& t) {
-          t.boolean("tap", in.touchpad.tap).boolean("natural_scroll", in.touchpad.naturalScroll);
+          t.boolean("tap", in.touchpad.tap)
+              .boolean("natural_scroll", in.touchpad.naturalScroll)
+              .real("sensitivity", -1.0, 1.0, in.touchpad.sensitivity);
+          in.touchpad.accelProfile = readAccelProfile(t, "accel_profile", "input.touchpad");
         });
         s.sub("mouse", [&](Section& m) {
           m.boolean("natural_scroll", in.mouse.naturalScroll)
@@ -874,6 +925,17 @@ namespace umbriel {
             warnAt(vrrNode->source(), "ignoring output.{}.vrr (expected disabled|always|fullscreen)", name);
           }
         }
+
+        if (const toml::node* hdrNode = keys.take("hdr")) {
+          if (const auto value = readHdrMode(*hdrNode)) {
+            rule.hdr = *value;
+          } else {
+            warnAt(hdrNode->source(), "ignoring output.{}.hdr (expected off|on|auto|fullscreen)", name);
+          }
+        }
+        double sdrWhite = rule.sdrWhite;
+        keys.real("sdr_white", 80.0, 1000.0, sdrWhite);
+        rule.sdrWhite = static_cast<float>(sdrWhite);
 
         if (const toml::node* transformNode = keys.take("transform")) {
           const auto value = transformNode->value<std::string>();
@@ -1040,6 +1102,7 @@ namespace umbriel {
 
         keys.boolean("default_floating", rule.defaultFloating)
             .boolean("default_fullscreen", rule.defaultFullscreen)
+            .boolean("default_maximize_to_edges", rule.defaultMaximizeToEdges)
             .boolean("default_maximize", rule.defaultMaximize)
             .boolean("default_focused", rule.defaultFocused)
             .boolean("default_pinned", rule.defaultPinned)
@@ -1051,9 +1114,16 @@ namespace umbriel {
             .real("blur_ignore_alpha", 0.0, 1.0, rule.blurIgnoreAlpha);
         if (const toml::node* vrrNode = keys.take("vrr")) {
           if (const auto value = readVrrMode(*vrrNode)) {
-            rule.vrr = *value;
+            rule.vrr = value;
           } else {
             warnAt(vrrNode->source(), "ignoring window_rule.vrr (expected disabled|always|fullscreen)");
+          }
+        }
+        if (const toml::node* hdrNode = keys.take("hdr")) {
+          if (const auto value = readHdrMode(*hdrNode)) {
+            rule.hdr = value;
+          } else {
+            warnAt(hdrNode->source(), "ignoring window_rule.hdr (expected off|on|auto|fullscreen)");
           }
         }
         if (const toml::node* n = keys.take("default_output")) {

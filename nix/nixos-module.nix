@@ -8,6 +8,9 @@ let
   cfg = config.programs.umbriel;
 in
 {
+  # Disable the nixpkgs module to avoid conflicts
+  disabledModules = [ "programs/wayland/umbriel.nix" ];
+
   options.programs.umbriel = {
     enable = lib.mkEnableOption "Umbriel, a Wayland compositor built on wlroots and SceneFX.";
 
@@ -15,6 +18,14 @@ in
       type = lib.types.nullOr lib.types.package;
       default = null;
       description = "The umbriel package to install.";
+    };
+
+    portalPackage = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = ''
+        The xdg-desktop-portal-umbriel package to install.
+      '';
     };
   };
 
@@ -41,6 +52,14 @@ in
         # Required for greetd / noctalia-greeter to discover the session (Name=Umbriel).
         # Plain systemPackages .desktop files are not enough; NixOS aggregates via this.
         services.displayManager.sessionPackages = [ cfg.package ];
+      })
+
+      (lib.mkIf (cfg.portalPackage != null) {
+        xdg.portal = {
+          enable = lib.mkDefault true;
+          extraPortals = [ cfg.portalPackage ];
+          configPackages = [ cfg.portalPackage ];
+        };
       })
     ]
   );

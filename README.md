@@ -98,6 +98,34 @@ nix develop
 just debug
 ```
 
+### Testing
+
+The development shell includes the clients and command-line tools used by the
+test suite. Run unit tests and the contained headless compositor harness with:
+
+```sh
+nix develop
+just test
+just verify
+```
+
+While iterating, `just check` runs single harness checks by name fragment on the
+default build, and `just checks` lists the available names:
+
+```sh
+just check 310            # one check
+just check 310 520        # several
+just check overview       # every check in a group
+just check 310 -v         # keep the full output of passing checks
+```
+
+Each check gets its own contained headless compositor, so a failure stays local
+and checks run in any order. A run reports one line per check with its duration;
+passing checks are summarized to a single dimmed line while failing ones print
+their whole output. A failing check keeps its runtime directory (compositor log,
+config, per-client logs) and prints the path. `just verify <mode> [fragment ...]`
+selects another build.
+
 ## Running
 
 Installed display-manager sessions start through `start-umbriel`. On systemd,
@@ -170,12 +198,16 @@ See [`examples/config.toml`](examples/config.toml) for the packaged starting con
 Declarative configuration uses Nix attrsets serialized to TOML with `pkgs.formats.toml`.
 
 ```nix
-# flake input
-umbriel.url = "path:/path/to/umbriel"; # or github:noctalia-dev/umbriel
+# flake inputs
+umbriel.url = "git+https://github.com/noctalia-dev/umbriel";
+xdg-desktop-portal-umbriel.url = "github:noctalia-dev/xdg-desktop-portal-umbriel";
 
 # NixOS
 imports = [ inputs.umbriel.nixosModules.default ];
-programs.umbriel.enable = true;
+programs.umbriel = {
+  enable = true;
+  portalPackage = inputs.xdg-desktop-portal-umbriel.packages.${pkgs.stdenv.hostPlatform.system}.default;
+};
 
 # home-manager
 imports = [ inputs.umbriel.homeModules.default ];
@@ -193,6 +225,10 @@ programs.umbriel = {
   };
 };
 ```
+
+The portal lives in [a separate repository](https://github.com/noctalia-dev/xdg-desktop-portal-umbriel) and can
+be used via a separate flake input. Setting `portalPackage` will configure the `xdg.portal` backend and install
+the portal configuration, which is required for screencasting.
 
 When `settings` is omitted, the Home Manager and hjem modules leave the user path untouched so Umbriel loads its
 packaged configuration. Home Manager also accepts a raw TOML string or a path. The hjem module is exported as

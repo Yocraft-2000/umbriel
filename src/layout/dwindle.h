@@ -15,7 +15,11 @@ namespace umbriel {
   class DwindleLayout : public Layout {
   public:
     struct Node {
-      enum Type : uint8_t { Leaf, HSplit, VSplit };
+      // AutoSplit is a split whose axis has not been chosen yet: arrange() resolves it to HSplit or VSplit from the
+      // node's real area, then leaves it alone. The tree is built before any arrange (Workspace::applyConfig
+      // batch-inserts on a fresh layout), so the axis cannot be decided at insertion time without guessing the
+      // output's orientation.
+      enum Type : uint8_t { Leaf, AutoSplit, HSplit, VSplit };
       Type type = Leaf;
       std::unique_ptr<Node> left;
       std::unique_ptr<Node> right;
@@ -49,8 +53,8 @@ namespace umbriel {
 
     [[nodiscard]] int leafIndexAt(double cx, double cy) const;
     [[nodiscard]] wlr_box targetBoxByIndex(int index) const;
-    [[nodiscard]] View* verticalSibling(const View* view, int direction) const;
-    [[nodiscard]] View* focusVerticalLeaf(const View* view, int direction) const override;
+    [[nodiscard]] std::optional<View*> focusHorizontalLeaf(const View* view, int direction) const override;
+    [[nodiscard]] std::optional<View*> focusVerticalLeaf(const View* view, int direction) const override;
 
     // Drag-and-drop: split the target leaf and place the new view on the given
     // WLR edge (0 = default/automatic orientation, new view last).
@@ -66,7 +70,7 @@ namespace umbriel {
     [[nodiscard]] uint32_t sanitizeResizeEdges(const View* view, uint32_t edges) const override;
     std::unique_ptr<ResizeGrab> beginResize(View* view, uint32_t edges, const wlr_box& usable) override;
 
-    bool cycleWidth(int columnIndex) override;
+    bool cycleWidth(int columnIndex, int direction) override;
     bool toggleFullWidth(int columnIndex) override;
     [[nodiscard]] bool isFullWidth(int columnIndex) const override;
     bool setWidthFraction(int columnIndex, double fraction) override;
@@ -74,6 +78,8 @@ namespace umbriel {
     [[nodiscard]] double widthFraction(int columnIndex) const override;
 
   private:
+    [[nodiscard]] View* directionalNeighbor(const View* view, bool horizontal, int direction) const;
+
     struct Target {
       View* view = nullptr;
       int x = 0;
@@ -94,12 +100,11 @@ namespace umbriel {
     [[nodiscard]] static double widthShare(const WidthSplit& split);
     static void setWidthShare(const WidthSplit& split, double share);
     bool applyWidthFraction(const std::vector<WidthSplit>& splits, double fraction);
-    void splitNode(Node* node, View* newView);
-    void splitNodeDirected(Node* node, View* newView, bool horizontal, bool newFirst);
-    [[nodiscard]] bool isHorizontal(const Node* node) const;
+    void splitLeaf(Node* node, View* newView, Node::Type split, bool newFirst);
     [[nodiscard]] Node* boundaryNode(const View* view, uint32_t edge) const;
     void arrangeNode(Node* node, const wlr_box& area);
     void collectColumns(const Node* node);
+    bool swapLeafViews(Node* first, Node* second);
     // Refreshes the flat-column cache. Every operation that changes the tree or reassigns a leaf's view must call this
     // before returning: insertView reads the cache to locate its target leaf, so a caller that inserts twice with no
     // arrange() in between would otherwise silently drop the second view.
@@ -109,7 +114,6 @@ namespace umbriel {
     std::unique_ptr<Node> m_root;
     mutable std::vector<Column> m_flatColumns;
     mutable std::vector<Target> m_targets;
-    int m_splitCounter = 0;
   };
 
 } // namespace umbriel

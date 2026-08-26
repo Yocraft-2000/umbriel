@@ -43,8 +43,8 @@ session refresh.
 
 The relevant regression coverage is in:
 
-- [`tests/config_change.cpp`](../../tests/config_change.cpp), which checks
+- [`tests/unit/config_change.cpp`](../../tests/unit/config_change.cpp), which checks
   change classification and runtime effects.
-- [`tests/harness/checks/090_reload.sh`](../../tests/harness/checks/090_reload.sh),
+- [`tests/harness/checks/050_config_reload.sh`](../../tests/harness/checks/050_config_reload.sh),
   which checks inert reloads, selective layout updates, border dependencies,
   and recovery after an included file fails to parse.

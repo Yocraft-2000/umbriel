@@ -4,8 +4,11 @@
 #include "core/log.h"
 #include "input/seat.h"
 #include "layer/layer_surface.h"
+#include "output/frame_schedule.h"
+#include "output/hdr_format.h"
 #include "scene/node.h"
 #include "server/server.h"
+#include "server/wine_color_manager.h"
 #include "view/view.h"
 #include "wlr.h"
 #include "workspace/workspace.h"
@@ -14,11 +17,13 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <drm_fourcc.h>
 
 namespace umbriel {
 
   namespace {
     constexpr Logger kLog("output");
+    constexpr int kFrameRetryDelayMs = 16;
 
     const OutputRule* findRule(const char* name) {
       for (const OutputRule& rule : config().outputs) {
@@ -43,9 +48,13 @@ namespace umbriel {
     m_destroy.notify = onDestroy;
     wl_signal_add(&m_output->events.destroy, &m_destroy);
 
+    m_frameRetryTimer =
+        wl_event_loop_add_timer(wl_display_get_event_loop(m_server->display()), onFrameRetryTimer, this);
+
     applyCursorConfig();
-    applyConfiguredState();
+    (void)applyConfiguredState();
     m_sceneOutput = wlr_scene_output_create(m_server->scene(), m_output);
+    updateSceneSdrWhite();
     if (configuredEnabled()) {
       wlr_output_layout_output* layoutOutput = addToLayout();
       wlr_scene_output_layout_add_output(m_server->sceneLayout(), layoutOutput, m_sceneOutput);
@@ -67,14 +76,75 @@ namespace umbriel {
     return rule == nullptr || rule->enabled;
   }
 
-  void Output::applyConfiguredState() {
+  HdrMode Output::hdrMode() const {
     const OutputRule* rule = findRule(m_output->name);
-    const bool enabled = configuredEnabled();
+    return rule != nullptr ? rule->hdr : HdrMode::Off;
+  }
+
+  bool Output::hdrRequested() const {
+    if (wlr_surface* surface = m_server->seat()->wlr()->keyboard_state.focused_surface) {
+      if (View* view = View::fromSurface(surface); view != nullptr && view->mapped() && view->currentOutput() == this) {
+        if (const std::optional<HdrMode> mode = view->resolvedRules().hdr) {
+          const bool fullscreen = view->layoutFullscreen() || view->toplevel()->current.fullscreen;
+          return hdrEnabled(*mode, fullscreen, autoHdrEligible(view));
+        }
+      }
+    }
+    const HdrMode mode = hdrMode();
+    return hdrEnabled(mode, m_fullscreenHdrRequested, m_autoHdrOwner != nullptr);
+  }
+
+  bool Output::hdrActive() const { return m_output->image_description != nullptr; }
+
+  float Output::configuredSdrWhite() const {
+    const OutputRule* rule = findRule(m_output->name);
+    return rule != nullptr ? rule->sdrWhite : 203.0F;
+  }
+
+  void Output::setHdrFallbackReason(std::string_view reason) {
+    if (m_hdrFallbackReason == reason) {
+      return;
+    }
+    m_hdrFallbackReason = reason;
+    if (!reason.empty()) {
+      kLog.warn("output '{}': HDR unavailable: {}", m_output->name, reason);
+    }
+  }
+
+  void Output::updateSceneSdrWhite() {
+    if (m_sceneOutput == nullptr) {
+      return;
+    }
+    const float sdrWhite = hdrActive() ? configuredSdrWhite() : 0.0F;
+    wlr_scene_output_set_sdr_white_level(m_sceneOutput, sdrWhite);
+  }
+
+  void Output::rejectGammaControl(wlr_gamma_control_v1* control) {
+    if (control != nullptr) {
+      wlr_gamma_control_v1_send_failed_and_destroy(control);
+      if (!m_hdrGammaWarningLogged) {
+        kLog.warn("output '{}': gamma control is unavailable while HDR is active", m_output->name);
+        m_hdrGammaWarningLogged = true;
+      }
+    }
+    m_gammaDirty = false;
+  }
+
+  bool Output::applyConfiguredState() {
+    const OutputRule* rule = findRule(m_output->name);
+    const bool configured = configuredEnabled();
+    const bool enabled = configured && !m_dpmsOff;
     wlr_output_state state{};
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, enabled);
 
-    bool enableVrr = false;
+    const bool hdrWasActive = hdrActive();
+    const bool hdrRequested = this->hdrRequested();
+    m_lastHdrRequested = hdrRequested;
+    bool hdrAttempted = false;
+
+    bool vrrRequested = false;
+    bool vrrStaged = false;
     if (enabled) {
       if (rule != nullptr && rule->mode) {
         if (wlr_output_is_wl(m_output)) {
@@ -119,33 +189,134 @@ namespace umbriel {
       if (rule != nullptr && rule->transform) {
         wlr_output_state_set_transform(&state, static_cast<wl_output_transform>(*rule->transform));
       }
-      enableVrr = configuredVrrEnabled();
+      vrrRequested = configuredVrrEnabled();
       if (m_output->adaptive_sync_supported) {
-        wlr_output_state_set_adaptive_sync_enabled(&state, enableVrr);
-      } else if (enableVrr) {
+        wlr_output_state_set_adaptive_sync_enabled(&state, vrrRequested);
+        vrrStaged = vrrRequested;
+      } else if (vrrRequested) {
         kLog.warn("output '{}': VRR requested but adaptive sync is not supported", m_output->name);
+      }
+
+      std::string_view hdrFallback;
+      if (hdrRequested) {
+        if ((m_output->supported_transfer_functions & WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ) == 0) {
+          hdrFallback = "display does not advertise PQ";
+        } else if ((m_output->supported_primaries & WLR_COLOR_NAMED_PRIMARIES_BT2020) == 0) {
+          hdrFallback = "display does not advertise BT.2020 primaries";
+        } else if (!m_server->renderer()->features.output_color_transform) {
+          hdrFallback = "renderer lacks FP16 output transform";
+        } else {
+          const wlr_output_image_description description = {
+              .primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
+              .transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
+              .mastering_display_primaries = {},
+              .mastering_luminance = {},
+              .max_cll = 0,
+              .max_fall = 0,
+          };
+          if (!wlr_output_state_set_image_description(&state, &description)) {
+            hdrFallback = "failed to stage HDR image description";
+          } else {
+            const wlr_drm_format_set* primaryFormats =
+                wlr_output_get_primary_formats(m_output, m_server->allocator()->buffer_caps);
+            const auto selectFormat = [&]() {
+              return selectHdrRenderFormat(m_output->render_format, [&](uint32_t format) {
+                if (primaryFormats != nullptr && wlr_drm_format_set_get(primaryFormats, format) == nullptr) {
+                  return false;
+                }
+                wlr_output_state_set_render_format(&state, format);
+                return wlr_output_test_state(m_output, &state);
+              });
+            };
+
+            std::optional<uint32_t> renderFormat = selectFormat();
+            if (!renderFormat && vrrStaged) {
+              wlr_output_state_set_adaptive_sync_enabled(&state, false);
+              vrrStaged = false;
+              renderFormat = selectFormat();
+              if (renderFormat) {
+                kLog.warn("output '{}': HDR is incompatible with VRR, keeping VRR disabled", m_output->name);
+              } else {
+                wlr_output_state_set_adaptive_sync_enabled(&state, vrrRequested);
+                vrrStaged = vrrRequested;
+              }
+            }
+            if (renderFormat) {
+              hdrAttempted = true;
+              kLog.info(
+                  "output '{}': selected HDR render format {}", m_output->name,
+                  *renderFormat == DRM_FORMAT_XRGB2101010 ? "XR30" : "XB30"
+              );
+            } else {
+              hdrFallback = "backend rejected all 10-bit HDR render formats";
+            }
+          }
+        }
+      }
+      if (!hdrFallback.empty()) {
+        setHdrFallbackReason(hdrFallback);
       }
     }
 
-    bool committed = wlr_output_commit_state(m_output, &state);
-    if (!committed && enableVrr && m_output->adaptive_sync_supported) {
-      kLog.warn("output '{}': failed to enable VRR, retrying with VRR disabled", m_output->name);
-      wlr_output_state_set_adaptive_sync_enabled(&state, false);
-      committed = wlr_output_commit_state(m_output, &state);
+    if ((!hdrRequested && hdrWasActive) || (enabled && hdrRequested && !hdrAttempted)) {
+      wlr_output_state_set_image_description(&state, nullptr);
+      wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
+    }
+
+    const auto commitConfiguredState = [&]() {
+      bool success = wlr_output_commit_state(m_output, &state);
+      if (!success && vrrStaged) {
+        kLog.warn("output '{}': configured state commit failed, retrying with VRR disabled", m_output->name);
+        wlr_output_state_set_adaptive_sync_enabled(&state, false);
+        vrrStaged = false;
+        success = wlr_output_commit_state(m_output, &state);
+      }
+      return success;
+    };
+
+    bool committed = commitConfiguredState();
+    if (!committed && hdrAttempted) {
+      setHdrFallbackReason("HDR commit rejected by backend");
+      wlr_output_state_set_image_description(&state, nullptr);
+      wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
+      if (m_output->adaptive_sync_supported) {
+        wlr_output_state_set_adaptive_sync_enabled(&state, vrrRequested);
+        vrrStaged = vrrRequested;
+      }
+      committed = commitConfiguredState();
     }
     wlr_output_state_finish(&state);
     if (!committed) {
       kLog.error("output '{}': failed to commit configured state", m_output->name);
-      return;
+      return false;
     }
+    const bool hdrIsActive = hdrActive();
+    if (hdrIsActive) {
+      setHdrFallbackReason({});
+      rejectGammaControl(wlr_gamma_control_manager_v1_get_control(m_server->gammaManager(), m_output));
+    } else {
+      if (!hdrRequested) {
+        setHdrFallbackReason({});
+      }
+      if (hdrWasActive) {
+        m_gammaDirty = true;
+      }
+      m_hdrGammaWarningLogged = false;
+    }
+    updateSceneSdrWhite();
+    m_server->updateIdleInhibit();
     if (enabled) {
       kLog.info(
           "output '{}': applied mode={}x{}@{}mHz scale={} transform={}", m_output->name, m_output->width,
           m_output->height, m_output->refresh, m_output->scale, static_cast<int>(m_output->transform)
       );
-    } else {
+    } else if (!configured) {
       kLog.info("output '{}': disabled by config", m_output->name);
+    } else {
+      kLog.info("output '{}': powered off", m_output->name);
     }
+    m_server->updateColorPreferences();
+    return true;
   }
 
   bool Output::configuredVrrEnabled() const {
@@ -164,11 +335,68 @@ namespace umbriel {
     return effectiveVrrEnabled(outputMode, fullscreen, focusedMode, focusedFullscreen);
   }
 
-  bool Output::hasFullscreenView() const {
+  bool Output::hasFullscreenView(const View* ignored) const {
     const Workspace* workspace = m_workspaceGroup != nullptr ? m_workspaceGroup->active() : nullptr;
-    return workspace != nullptr && std::ranges::any_of(workspace->allViews(), [](const View* view) {
-             return view->mapped() && (view->layoutFullscreen() || view->toplevel()->current.fullscreen);
+    return workspace != nullptr && std::ranges::any_of(workspace->allViews(), [ignored](const View* view) {
+             return view != ignored
+                 && view->mapped()
+                 && (view->layoutFullscreen() || view->toplevel()->current.fullscreen);
            });
+  }
+
+  bool Output::autoHdrEligible(const View* view) const {
+    if (view == nullptr
+        || !view->mapped()
+        || !view->onActiveWorkspace()
+        || view->currentOutput() != this
+        || (!view->layoutFullscreen() && !view->toplevel()->current.fullscreen)) {
+      return false;
+    }
+    const wlr_image_description_v1_data* description =
+        m_server->surfaceImageDescription(view->toplevel()->base->surface);
+    return description != nullptr
+        && description->tf_named == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ
+        && description->primaries_named == WP_COLOR_MANAGER_V1_PRIMARIES_BT2020;
+  }
+
+  View* Output::findAutoHdrCandidate() const {
+    const auto candidate =
+        std::ranges::find_if(m_server->views(), [this](const auto& view) { return autoHdrEligible(view.get()); });
+    return candidate != m_server->views().end() ? candidate->get() : nullptr;
+  }
+
+  void Output::updateHdr() {
+    const HdrMode mode = hdrMode();
+    if (mode == HdrMode::Fullscreen) {
+      m_autoHdrOwner = nullptr;
+      m_fullscreenHdrRequested = hasFullscreenView();
+    } else if (mode == HdrMode::Auto) {
+      m_fullscreenHdrRequested = false;
+      if (!autoHdrEligible(m_autoHdrOwner)) {
+        m_autoHdrOwner = findAutoHdrCandidate();
+      }
+    } else {
+      m_fullscreenHdrRequested = false;
+      m_autoHdrOwner = nullptr;
+    }
+
+    if (hdrRequested() != m_lastHdrRequested && applyConfiguredState()) {
+      m_server->updateOutputManagerConfig();
+    }
+    m_server->updateColorPreferences();
+  }
+
+  void Output::forgetHdrView(const View* view) {
+    if (hdrMode() == HdrMode::Fullscreen && !hasFullscreenView(view)) {
+      m_fullscreenHdrRequested = false;
+    }
+    if (m_autoHdrOwner == view) {
+      m_autoHdrOwner = nullptr;
+    }
+    if (hdrRequested() != m_lastHdrRequested && applyConfiguredState()) {
+      m_server->updateOutputManagerConfig();
+    }
+    m_server->updateColorPreferences();
   }
 
   void Output::updateVrr() {
@@ -204,7 +432,22 @@ namespace umbriel {
   }
 
   void Output::applyOutputState() {
-    applyConfiguredState();
+    const HdrMode nextHdrMode = hdrMode();
+    if (nextHdrMode == HdrMode::Auto) {
+      m_fullscreenHdrRequested = false;
+      if (!autoHdrEligible(m_autoHdrOwner)) {
+        m_autoHdrOwner = findAutoHdrCandidate();
+      }
+    } else if (nextHdrMode == HdrMode::Fullscreen) {
+      m_autoHdrOwner = nullptr;
+      m_fullscreenHdrRequested = hasFullscreenView();
+    } else {
+      m_autoHdrOwner = nullptr;
+      m_fullscreenHdrRequested = false;
+    }
+    if (!applyConfiguredState()) {
+      return;
+    }
     if (configuredEnabled()) {
       wlr_output_layout_output* layoutOutput = addToLayout();
       // Re-bind the scene output after a disable removed it from the layout.
@@ -218,6 +461,34 @@ namespace umbriel {
       m_server->updateLockBlank();
     }
     wlr_output_schedule_frame(m_output);
+  }
+
+  bool Output::setPowered(bool powered) {
+    if (!configuredEnabled()) {
+      return false;
+    }
+    const bool dpmsOff = !powered;
+    if (m_dpmsOff == dpmsOff) {
+      return true;
+    }
+
+    const bool previous = m_dpmsOff;
+    m_dpmsOff = dpmsOff;
+    if (!applyConfiguredState()) {
+      m_dpmsOff = previous;
+      return false;
+    }
+
+    if (powered) {
+      m_gammaDirty = true;
+      markDirty(Dirty::LayerArrange | Dirty::Banner | Dirty::Backdrop);
+      if (m_server->sessionLocked()) {
+        m_server->updateLockBlank();
+      }
+      wlr_output_schedule_frame(m_output);
+    }
+    m_server->updateOutputManagerConfig();
+    return true;
   }
 
   void Output::applyCursorConfig() {
@@ -247,6 +518,10 @@ namespace umbriel {
   }
 
   Output::~Output() {
+    if (m_frameRetryTimer != nullptr) {
+      wl_event_source_remove(m_frameRetryTimer);
+      m_frameRetryTimer = nullptr;
+    }
     if (m_animationRenderLocked) {
       wlr_output_lock_attach_render(m_output, false);
       m_animationRenderLocked = false;
@@ -299,7 +574,7 @@ namespace umbriel {
       if (surface == nullptr || !surface->initialized) {
         continue;
       }
-      // Match sway: only exclusive_zone > 0 participates in the exclusive pass.
+      // Only exclusive_zone > 0 participates in the exclusive pass.
       if ((surface->current.exclusive_zone > 0) != exclusive) {
         continue;
       }
@@ -406,7 +681,11 @@ namespace umbriel {
     }
   }
 
-  void Output::onGammaChanged(wlr_gamma_control_v1* /*control*/) {
+  void Output::onGammaChanged(wlr_gamma_control_v1* control) {
+    if (hdrActive()) {
+      rejectGammaControl(control);
+      return;
+    }
     // DRM gamma LUT upload is expensive; apply once on change, not every frame.
     m_gammaDirty = true;
     wlr_output_schedule_frame(m_output);
@@ -428,6 +707,20 @@ namespace umbriel {
     Output* self;
     self = wl_container_of(listener, self, m_destroy);
     self->handleDestroy();
+  }
+
+  int Output::onFrameRetryTimer(void* data) {
+    auto* self = static_cast<Output*>(data);
+    if (outputFrameAllowed(self->m_server->stopping(), self->m_server->session())) {
+      wlr_output_schedule_frame(self->m_output);
+    }
+    return 0;
+  }
+
+  void Output::armFrameRetry() {
+    if (m_frameRetryTimer != nullptr && outputFrameAllowed(m_server->stopping(), m_server->session())) {
+      wl_event_source_timer_update(m_frameRetryTimer, kFrameRetryDelayMs);
+    }
   }
 
   void Output::applyMode(int width, int height) {
@@ -490,10 +783,14 @@ namespace umbriel {
   }
 
   void Output::handleFrame() {
-    // A failed DRM commit can immediately queue another frame after logind revokes device access.
-    // Stop before that retry loop can keep the final event-loop dispatch alive.
-    if (m_server->stopping()) {
+    // A failed DRM commit can immediately queue another frame after logind revokes device access. Stop before that
+    // retry loop can keep the final event-loop dispatch alive. A null session belongs to a nested or headless backend
+    // and remains renderable.
+    if (!outputFrameAllowed(m_server->stopping(), m_server->session())) {
       return;
+    }
+    if (m_frameRetryTimer != nullptr) {
+      wl_event_source_timer_update(m_frameRetryTimer, 0);
     }
 
     flushDirty();
@@ -506,6 +803,10 @@ namespace umbriel {
     const uint64_t nowMsec = static_cast<uint64_t>(now.tv_sec) * 1000 + static_cast<uint64_t>(now.tv_nsec) / 1'000'000;
     m_server->tickAnimations(nowMsec);
 
+    // Surface commits reset scene-buffer opacity to the protocol alpha. Repair
+    // pending rule opacity after every commit listener and before composition.
+    m_server->flushPendingViewOpacities();
+
     // A direct-scanned fullscreen client may stop submitting as soon as it loses focus. On VRR outputs that can leave
     // the first workspace-switch frame waiting on the old client, so the compositor never gets a vblank to advance the
     // slide. Keep animated outputs on the render path until their final composed frame has settled.
@@ -513,6 +814,14 @@ namespace umbriel {
     if (animationsActive != m_animationRenderLocked) {
       wlr_output_lock_attach_render(m_output, animationsActive);
       m_animationRenderLocked = animationsActive;
+    }
+
+    // wlroots only knows about descriptions owned by its color manager and resets
+    // compatibility-managed Wine buffers to SDR on every surface commit. Restore
+    // their descriptions at the render boundary so no frame can observe that
+    // transient default state.
+    if (WineColorManager* colorManager = m_server->wineColorManager()) {
+      colorManager->applySurfaceDescriptions();
     }
 
     if (m_output->width <= 0 || m_output->height <= 0) {
@@ -525,6 +834,7 @@ namespace umbriel {
     // video players) block on wl_surface.frame before submitting their next buffer. If we skip frame_done on the
     // "nothing to render" path, they never commit again -> damage stays clean -> wlr_scene_output_needs_frame returns
     // false forever -> compositor parks in epoll_wait. (Reproducible with any mailbox/FIFO Vulkan game.)
+    bool commitFailed = false;
     if (wlr_scene_output_needs_frame(m_sceneOutput) || m_gammaDirty) {
       m_inFrame = true;
 
@@ -532,12 +842,25 @@ namespace umbriel {
       wlr_output_state_init(&state);
 
       bool commitOk = false;
-      if (wlr_scene_output_build_state(m_sceneOutput, &state, nullptr)) {
+      int captureLocks = m_output->attach_render_locks - (m_animationRenderLocked ? 1 : 0);
+      if (wlr_export_dmabuf_manager_v1* manager = m_server->exportDmabufManager()) {
+        wlr_export_dmabuf_frame_v1* frame;
+        wl_list_for_each(frame, &manager->frames, link) {
+          if (frame->output == m_output) {
+            --captureLocks;
+          }
+        }
+      }
+      wlr_scene_output_state_options sceneOptions{};
+      sceneOptions.capture_sdr = hdrActive() && captureLocks > 0;
+      if (wlr_scene_output_build_state(m_sceneOutput, &state, &sceneOptions)) {
         // Hardware gamma only (DRM). Nested Wayland has no gamma LUT; leave that alone.
         // Apply only when dirty: uploading the LUT every frame stalls the compositor.
         bool gammaPending = false;
         if (m_gammaDirty) {
-          if (wlr_output_get_gamma_size(m_output) > 0) {
+          if (hdrActive()) {
+            rejectGammaControl(wlr_gamma_control_manager_v1_get_control(m_server->gammaManager(), m_output));
+          } else if (wlr_output_get_gamma_size(m_output) > 0) {
             wlr_gamma_control_v1* control =
                 wlr_gamma_control_manager_v1_get_control(m_server->gammaManager(), m_output);
             if (!wlr_gamma_control_v1_apply(control, &state)) {
@@ -561,11 +884,7 @@ namespace umbriel {
 
       wlr_output_state_finish(&state);
       m_inFrame = false;
-
-      if (!commitOk) {
-        // Retry on next vblank; scene may have changed or backend may have recovered.
-        wlr_output_schedule_frame(m_output);
-      }
+      commitFailed = !commitOk;
     }
 
     // A request_state that arrived mid-commit is applied now that we're out of it.
@@ -574,9 +893,26 @@ namespace umbriel {
       applyMode(m_deferredWidth, m_deferredHeight);
     }
 
-    // Keep this output ticking on the next vblank while it owns an animation.
-    if (animationsActive) {
+    if (commitFailed && m_output->idle_frame != nullptr) {
+      // Damage, animation, or deferred output work can schedule another idle frame while this frame callback is still
+      // running. Remove it before arming the timer, otherwise the idle dispatcher can still recurse without returning
+      // to signals.
+      wl_event_source_remove(m_output->idle_frame);
+      m_output->idle_frame = nullptr;
+    }
+
+    // A failed commit has no vblank to pace an immediate retry. Defer it so event-loop signal and session sources get
+    // dispatched first. This also replaces animation scheduling for the failed frame, otherwise the animation path
+    // would recreate the same immediate retry loop.
+    switch (outputFrameFollowup(m_server->stopping(), m_server->session(), commitFailed, animationsActive)) {
+    case OutputFrameFollowup::Schedule:
       wlr_output_schedule_frame(m_output);
+      break;
+    case OutputFrameFollowup::RetryDelayed:
+      armFrameRetry();
+      break;
+    case OutputFrameFollowup::None:
+      break;
     }
 
     // Unconditional: see comment above. Never gate this on commit success.
