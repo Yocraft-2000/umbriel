@@ -467,10 +467,6 @@ namespace umbriel {
       tiled = false;
     }
 
-    setActiveConstraint(nullptr);
-    if (view->maximizedToEdges()) {
-      view->setMaximizedToEdges(false);
-    }
     if (tiled) {
       Workspace* workspace = view->workspace();
       if (workspace == nullptr || workspace->group() == nullptr || workspace->group()->output() == nullptr) {
@@ -486,6 +482,10 @@ namespace umbriel {
         }
         refreshInteractiveCursor();
         return;
+      }
+      setActiveConstraint(nullptr);
+      if (view->maximizedToEdges()) {
+        view->setMaximizedToEdges(false);
       }
       const wlr_box usable = workspace->group()->output()->usableArea();
       std::unique_ptr<ResizeGrab> session = layout.beginResize(view, resolvedEdges, usable);
@@ -506,6 +506,14 @@ namespace umbriel {
       };
       updateInteractiveCursor(view);
       return;
+    }
+    if (edges == 0) {
+      refreshInteractiveCursor();
+      return;
+    }
+    setActiveConstraint(nullptr);
+    if (view->maximizedToEdges()) {
+      view->setMaximizedToEdges(false);
     }
 
     const wlr_box& geometry = view->toplevel()->base->geometry;
