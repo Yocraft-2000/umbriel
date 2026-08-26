@@ -612,7 +612,7 @@ namespace umbriel {
 
   void Server::hideInsertHint() {
     if (m_insertHint != nullptr) {
-      m_insertHint->hide();
+      m_insertHint->hideImmediate();
     }
   }
 
