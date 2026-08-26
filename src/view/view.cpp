@@ -1786,8 +1786,13 @@ namespace umbriel {
     cancelSizeAnimation();
 
     m_maximizedToEdges = maximized;
+    bool columnFullWidth = false;
+    if (!maximized && m_tiled && m_workspace != nullptr && !m_toplevel->scheduled.fullscreen) {
+      const int column = m_workspace->layout().columnOf(this);
+      columnFullWidth = column >= 0 && m_workspace->layout().isFullWidth(column);
+    }
     if (m_tiled) {
-      wlr_xdg_toplevel_set_maximized(m_toplevel, maximized);
+      wlr_xdg_toplevel_set_maximized(m_toplevel, maximized || columnFullWidth);
     } else {
       setMaximized(maximized);
     }
