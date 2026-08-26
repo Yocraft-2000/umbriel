@@ -47,6 +47,7 @@ namespace umbriel {
     struct Scrolling {
       std::optional<double> defaultWidthFraction;
       std::optional<bool> centerUnderfullStrip;
+      std::optional<ScrollingDirection> direction;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
 
@@ -62,14 +63,16 @@ namespace umbriel {
     bool operator==(const WorkspaceConfig&) const = default;
   };
 
-  // Fully resolved layout config: no optionals. Owned by each Workspace.
+  // Fully resolved layout config. Owned by each Workspace.
   struct ResolvedLayoutConfig {
     LayoutMode mode = LayoutMode::Scrolling;
     int gap = 8;
     std::vector<double> widthPresets{1.0 / 3, 0.5, 2.0 / 3};
     struct Scrolling {
-      double defaultWidthFraction = 0.5;
+      std::optional<double> defaultWidthFraction;
       bool centerUnderfullStrip = true;
+      // Axis-agnostic layout state is preserved when config reload changes direction.
+      ScrollingDirection direction = ScrollingDirection::Horizontal;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
     // Derived from gap + appearance border widths; set by resolve function.
@@ -94,8 +97,32 @@ namespace umbriel {
     Always,
     Fullscreen,
   };
+  enum class HdrMode {
+    Off,
+    On,
+    Auto,
+    Fullscreen,
+  };
+  [[nodiscard]] constexpr std::string_view hdrModeName(HdrMode mode) {
+    switch (mode) {
+    case HdrMode::Off:
+      return "off";
+    case HdrMode::On:
+      return "on";
+    case HdrMode::Auto:
+      return "auto";
+    case HdrMode::Fullscreen:
+      return "fullscreen";
+    }
+    return "off";
+  }
   [[nodiscard]] constexpr bool vrrEnabled(VrrMode mode, bool fullscreen) {
     return mode == VrrMode::Always || (mode == VrrMode::Fullscreen && fullscreen);
+  }
+  [[nodiscard]] constexpr bool hdrEnabled(HdrMode mode, bool fullscreen, bool autoEligible) {
+    return mode == HdrMode::On
+        || (mode == HdrMode::Auto && autoEligible)
+        || (mode == HdrMode::Fullscreen && fullscreen);
   }
   [[nodiscard]] constexpr bool effectiveVrrEnabled(
       VrrMode outputMode, bool outputFullscreen, std::optional<VrrMode> windowMode, bool windowFullscreen
@@ -112,6 +139,8 @@ namespace umbriel {
     std::optional<double> scale;
     std::optional<int> transform;
     VrrMode vrr = VrrMode::Disabled;
+    HdrMode hdr = HdrMode::Off;
+    float sdrWhite = 203.0F;
     // Explicit workspace inventory. Omitted means dynamic workspaces.
     std::optional<std::vector<std::string>> workspaces;
     bool operator==(const OutputRule&) const = default;
@@ -154,6 +183,7 @@ namespace umbriel {
     std::optional<bool> defaultPinned;
     std::optional<bool> focusOnActivate;
     std::optional<VrrMode> vrr;
+    std::optional<HdrMode> hdr;
     std::optional<double> opacity; // 0.0-1.0
     std::optional<bool> blur;
     std::optional<bool> blurPopups;
@@ -178,6 +208,7 @@ namespace umbriel {
           && defaultPinned == other.defaultPinned
           && focusOnActivate == other.focusOnActivate
           && vrr == other.vrr
+          && hdr == other.hdr
           && opacity == other.opacity
           && blur == other.blur
           && blurPopups == other.blurPopups
@@ -200,6 +231,7 @@ namespace umbriel {
     std::optional<bool> defaultPinned;
     std::optional<bool> focusOnActivate;
     std::optional<VrrMode> vrr;
+    std::optional<HdrMode> hdr;
     std::optional<double> opacity;
     std::optional<bool> blur;
     std::optional<bool> blurPopups;
@@ -258,6 +290,7 @@ namespace umbriel {
       std::array<float, 4> insertHintColor{0.50F, 0.78F, 1.0F, 0.50F};
       std::array<float, 4> backdropColor{0.0F, 0.0F, 0.0F, 1.0F};
       int animationMs = 200;
+      double dragOpacity = 0.75;
       struct Blur {
         bool enabled = true;
         bool optimized = true;
@@ -286,6 +319,9 @@ namespace umbriel {
     struct Overview {
       // Workspace scale when fully zoomed out.
       double zoom = 0.5;
+      // Blur the wallpaper behind the filmstrip while the overview is visible. Uses [appearance.blur] parameters;
+      // inert when appearance blur is disabled.
+      bool backgroundBlur = true;
       // Tint composited over the desktop background while overview is visible.
       std::array<float, 4> backgroundTint{0.0627451F, 0.0627451F, 0.0784314F, 0.1882353F};
       // Rounded background behind each workspace; alpha controls opacity.
@@ -311,8 +347,9 @@ namespace umbriel {
       int gap = 8;
       std::vector<double> widthPresets{1.0 / 3, 0.5, 2.0 / 3};
       struct Scrolling {
-        double defaultWidthFraction = 0.5;
+        std::optional<double> defaultWidthFraction;
         bool centerUnderfullStrip = true;
+        ScrollingDirection direction = ScrollingDirection::Horizontal;
         bool operator==(const Scrolling&) const = default;
       } scrolling;
       bool operator==(const Layout&) const = default;
@@ -340,6 +377,8 @@ namespace umbriel {
       bool showCheatsheet = true;
       // Honor activation requests by focusing and revealing the target window.
       bool focusOnActivate = false;
+      // Honor maximized state restored by a client while its window opens.
+      bool honorRestoredMaximize = false;
       bool operator==(const General&) const = default;
     } general;
 
@@ -363,6 +402,7 @@ namespace umbriel {
         std::string options;
         int repeatRate = 25;
         int repeatDelay = 600;
+        bool numlockToggle = false;
         bool operator==(const Keyboard&) const = default;
       } keyboard;
 
@@ -374,7 +414,7 @@ namespace umbriel {
 
       struct Mouse {
         std::optional<bool> naturalScroll;
-        AccelProfile accelProfile;
+        std::optional<AccelProfile> accelProfile;
         double sensitivity = 0.0;
         int scrollWheelStep = 60;
         bool operator==(const Mouse&) const = default;

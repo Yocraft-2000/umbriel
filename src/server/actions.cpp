@@ -79,11 +79,12 @@ namespace umbriel {
       Output* preferred = server.outputFromWlr(server.preferredOutput());
       WorkspaceGroup* preferredGroup = preferred != nullptr ? preferred->workspaceGroup() : nullptr;
 
-      // Dynamic numbered workspaces belong to their output. Resolve this first
-      // so an existing number elsewhere cannot steal a local request.
+      // Numeric selectors address positions on the focused output. Resolve
+      // them first so an existing numeric name elsewhere cannot steal a local
+      // request from a static group with custom workspace names.
       const bool numericSelector = !selector->name.empty()
           && std::ranges::all_of(selector->name, [](char value) { return value >= '0' && value <= '9'; });
-      if (preferredGroup != nullptr && preferredGroup->dynamic() && numericSelector) {
+      if (preferredGroup != nullptr && numericSelector) {
         if (Workspace* target = preferredGroup->workspaceForSelector(selector->name)) {
           return target;
         }
@@ -269,6 +270,37 @@ namespace umbriel {
       return true;
     }
 
+    template <bool Powered> bool actionDpms(Server& server, const Keybind& bind, std::string* error) {
+      const auto* arg = payloadIf<OutputArg>(bind);
+      const std::string requested = arg != nullptr ? arg->output : std::string{};
+      bool found = false;
+      bool changed = false;
+      for (const auto& output : server.outputs()) {
+        const char* name = output->wlr()->name;
+        if (!requested.empty() && (name == nullptr || requested != name)) {
+          continue;
+        }
+        found = true;
+        if (!output->configuredEnabled()) {
+          if (!requested.empty()) {
+            return reject(error, "output is disabled by config: " + requested);
+          }
+          continue;
+        }
+        if (!output->setPowered(Powered)) {
+          return reject(error, "failed to change output power: " + std::string(name != nullptr ? name : "unknown"));
+        }
+        changed = true;
+      }
+      if (!found) {
+        return reject(error, "unknown output: " + requested);
+      }
+      if (!changed) {
+        return reject(error, "no configured outputs");
+      }
+      return true;
+    }
+
     bool actionKeyboardLayoutNext(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       return server.cycleKeyboardLayout();
     }
@@ -345,9 +377,8 @@ namespace umbriel {
         return;
       }
       const auto step = static_cast<double>(config().input.mouse.scrollWheelStep * multiplier);
-      const int viewportWidth =
-          std::max(1, workspace->group()->output()->usableArea().width - 2 * workspace->layoutConfig().edgePad);
-      const auto maxScroll = static_cast<double>(scrolling->maxScroll(viewportWidth));
+      const int viewportPrimary = workspace->scrollViewportExtent();
+      const auto maxScroll = static_cast<double>(scrolling->maxScroll(viewportPrimary));
       scrolling->setScroll(std::clamp(scrolling->scroll() + Sign * step, 0.0, maxScroll));
       workspace->markArrange();
     }
@@ -406,9 +437,9 @@ namespace umbriel {
       return true;
     }
 
-    bool actionCycleWidth(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+    template <int Direction> bool actionCycleWidth(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       if (Workspace* workspace = activeWorkspace(server)) {
-        workspace->cycleFocusedWidth();
+        workspace->cycleFocusedWidth(Direction);
       }
       return true;
     }
@@ -619,6 +650,15 @@ namespace umbriel {
       // The layout behind an interactive tiled resize is being replaced; drop
       // the stale session, same as the config-reload layout swap.
       server.cursor()->cancelStaleTiledResize();
+      return true;
+    }
+
+    template <int Direction> bool actionWorkspaceMove(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+      Workspace* workspace = activeWorkspace(server);
+      if (workspace == nullptr || workspace->group() == nullptr) {
+        return true;
+      }
+      workspace->group()->moveActiveWorkspace(Direction);
       return true;
     }
 
@@ -871,7 +911,8 @@ namespace umbriel {
         &actionMoveVertical<1>,
         &actionConsumeLeft,
         &actionExpelRight,
-        &actionCycleWidth,
+        &actionCycleWidth<1>,
+        &actionCycleWidth<-1>,
         &actionSetWidth,
         &actionToggleMaximize,
         &actionToggleMaximizeToEdges,
@@ -885,6 +926,8 @@ namespace umbriel {
         &actionWindowMoveToWorkspaceAdjacent<-1>,
         &actionConfigReload,
         &actionKeyboardLayoutNext,
+        &actionLayoutScroll<-1>,
+        &actionLayoutScroll<1>,
         &actionLayoutScroll<-1>,
         &actionLayoutScroll<1>,
         &actionOverviewToggle,
@@ -920,6 +963,10 @@ namespace umbriel {
         &actionModifyWidth,
         &actionWindowCenter,
         &actionWorkspaceSetLayout,
+        &actionDpms<false>,
+        &actionDpms<true>,
+        &actionWorkspaceMove<1>,
+        &actionWorkspaceMove<-1>,
     };
 
     consteval bool everyActionHasHandler() {

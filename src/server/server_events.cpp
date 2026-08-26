@@ -164,55 +164,63 @@ namespace umbriel {
     }
 
     void applyMouseAcceleration(
-        libinput_device* libinputDevice, const wlr_input_device* device, const AccelProfile& configuredProfile,
-        double sensitivity
+        libinput_device* libinputDevice, const wlr_input_device* device,
+        const std::optional<AccelProfile>& configuredProfile, double sensitivity
     ) {
       if (libinput_device_config_accel_is_available(libinputDevice) == 0) {
         return;
       }
 
-      enum libinput_config_accel_profile profile = LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT;
-      const char* profileName = "flat";
-      switch (configuredProfile.kind) {
-      case AccelProfile::Kind::Flat:
-        break;
-      case AccelProfile::Kind::Adaptive:
-        profile = LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE;
-        profileName = "adaptive";
-        break;
-      case AccelProfile::Kind::Custom:
-        profile = LIBINPUT_CONFIG_ACCEL_PROFILE_CUSTOM;
-        profileName = "custom";
-        break;
-      }
-      if ((libinput_device_config_accel_get_profiles(libinputDevice) & profile) == 0) {
-        kLog.warn("input: '{}' does not support the {} acceleration profile", deviceName(device), profileName);
-        return;
-      }
-
-      if (configuredProfile.kind == AccelProfile::Kind::Custom) {
-        libinput_config_accel* acceleration = libinput_config_accel_create(profile);
-        if (acceleration == nullptr) {
-          kLog.warn("input: failed to create custom acceleration profile for '{}'", deviceName(device));
+      if (!configuredProfile) {
+        const auto profile = libinput_device_config_accel_get_default_profile(libinputDevice);
+        if (libinput_device_config_accel_set_profile(libinputDevice, profile) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+          kLog.warn("input: failed to restore the default acceleration profile for '{}'", deviceName(device));
           return;
         }
-        const auto pointsStatus = libinput_config_accel_set_points(
-            acceleration, LIBINPUT_ACCEL_TYPE_MOTION, configuredProfile.step, configuredProfile.points.size(),
-            configuredProfile.points.data()
-        );
-        const auto applyStatus = pointsStatus == LIBINPUT_CONFIG_STATUS_SUCCESS
-            ? libinput_device_config_accel_apply(libinputDevice, acceleration)
-            : pointsStatus;
-        libinput_config_accel_destroy(acceleration);
-        if (applyStatus != LIBINPUT_CONFIG_STATUS_SUCCESS) {
-          kLog.warn("input: failed to apply input.mouse.accel_profile to '{}'", deviceName(device));
+      } else {
+        enum libinput_config_accel_profile profile = LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT;
+        const char* profileName = "flat";
+        switch (configuredProfile->kind) {
+        case AccelProfile::Kind::Flat:
+          break;
+        case AccelProfile::Kind::Adaptive:
+          profile = LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE;
+          profileName = "adaptive";
+          break;
+        case AccelProfile::Kind::Custom:
+          profile = LIBINPUT_CONFIG_ACCEL_PROFILE_CUSTOM;
+          profileName = "custom";
+          break;
         }
-        return;
-      }
+        if ((libinput_device_config_accel_get_profiles(libinputDevice) & profile) == 0) {
+          kLog.warn("input: '{}' does not support the {} acceleration profile", deviceName(device), profileName);
+          return;
+        }
 
-      if (libinput_device_config_accel_set_profile(libinputDevice, profile) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
-        kLog.warn("input: failed to apply input.mouse.accel_profile to '{}'", deviceName(device));
-        return;
+        if (configuredProfile->kind == AccelProfile::Kind::Custom) {
+          libinput_config_accel* acceleration = libinput_config_accel_create(profile);
+          if (acceleration == nullptr) {
+            kLog.warn("input: failed to create custom acceleration profile for '{}'", deviceName(device));
+            return;
+          }
+          const auto pointsStatus = libinput_config_accel_set_points(
+              acceleration, LIBINPUT_ACCEL_TYPE_MOTION, configuredProfile->step, configuredProfile->points.size(),
+              configuredProfile->points.data()
+          );
+          const auto applyStatus = pointsStatus == LIBINPUT_CONFIG_STATUS_SUCCESS
+              ? libinput_device_config_accel_apply(libinputDevice, acceleration)
+              : pointsStatus;
+          libinput_config_accel_destroy(acceleration);
+          if (applyStatus != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+            kLog.warn("input: failed to apply input.mouse.accel_profile to '{}'", deviceName(device));
+          }
+          return;
+        }
+
+        if (libinput_device_config_accel_set_profile(libinputDevice, profile) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+          kLog.warn("input: failed to apply input.mouse.accel_profile to '{}'", deviceName(device));
+          return;
+        }
       }
 
       if (libinput_device_config_accel_set_speed(libinputDevice, sensitivity) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
@@ -261,8 +269,8 @@ namespace umbriel {
           libinputDevice, device, naturalScroll,
           override != nullptr && override->naturalScroll ? "input.device.natural_scroll" : "input.mouse.natural_scroll"
       );
-      const AccelProfile& accelProfile =
-          override != nullptr && override->accelProfile ? *override->accelProfile : input.mouse.accelProfile;
+      const std::optional<AccelProfile>& accelProfile =
+          override != nullptr && override->accelProfile ? override->accelProfile : input.mouse.accelProfile;
       const double sensitivity =
           override != nullptr && override->sensitivity ? *override->sensitivity : input.mouse.sensitivity;
       applyMouseAcceleration(libinputDevice, device, accelProfile, sensitivity);
@@ -817,11 +825,53 @@ namespace umbriel {
   }
 
   void Server::updateIdleInhibit() {
-    const bool inhibited = !wl_list_empty(&m_idleInhibitManager->inhibitors);
+    bool inhibited = false;
+    wlr_idle_inhibitor_v1* inhibitor;
+    wl_list_for_each(inhibitor, &m_idleInhibitManager->inhibitors, link) {
+      wlr_surface* root = wlr_surface_get_root_surface(inhibitor->surface);
+      if (root == nullptr) {
+        continue;
+      }
+
+      if (m_sessionLocked) {
+        wlr_session_lock_surface_v1* lockSurface = wlr_session_lock_surface_v1_try_from_wlr_surface(root);
+        inhibited =
+            lockSurface != nullptr && root->mapped && lockSurface->output != nullptr && lockSurface->output->enabled;
+      } else if (View* view = View::fromSurface(root)) {
+        int x = 0;
+        int y = 0;
+        inhibited = view->mapped() && wlr_scene_node_coords(&view->sceneTree()->node, &x, &y);
+      } else if (wlr_layer_surface_v1* wlrLayer = wlr_layer_surface_v1_try_from_wlr_surface(root)) {
+        auto* layer = static_cast<LayerSurface*>(wlrLayer->data);
+        Output* output = layer != nullptr ? layer->output() : nullptr;
+        int x = 0;
+        int y = 0;
+        inhibited = layer != nullptr
+            && layer->mapped()
+            && output != nullptr
+            && output->wlr()->enabled
+            && wlr_scene_node_coords(&layer->scene()->tree->node, &x, &y);
+      }
+
+      if (inhibited) {
+        break;
+      }
+    }
     wlr_idle_notifier_v1_set_inhibited(m_idleNotifier, inhibited);
   }
 
-  void Server::notifyIdleActivity() { wlr_idle_notifier_v1_notify_activity(m_idleNotifier, m_seat->wlr()); }
+  void Server::notifyIdleActivity() {
+    wakeDpmsOutputs();
+    wlr_idle_notifier_v1_notify_activity(m_idleNotifier, m_seat->wlr());
+  }
+
+  void Server::wakeDpmsOutputs() {
+    for (const auto& output : m_outputs) {
+      if (output->dpmsOff()) {
+        (void)output->setPowered(true);
+      }
+    }
+  }
 
   void Server::beginSessionLock(wlr_session_lock_v1* lock) {
     if (m_sessionLock != nullptr) {
@@ -842,6 +892,7 @@ namespace umbriel {
     m_cursor->resetMode();
     m_cursor->clearConstraint();
     clearNormalFocus();
+    updateIdleInhibit();
     updateLockBlank();
     setLockBlankEnabled(true);
     raiseLockTree();
@@ -850,6 +901,7 @@ namespace umbriel {
 
   void Server::unlockSession() {
     m_sessionLocked = false;
+    updateIdleInhibit();
     wlr_scene_node_set_enabled(&m_lockBlank->node, false);
     if (View* recent = m_registry.mostRecent()) {
       focusView(recent);
@@ -1337,8 +1389,10 @@ namespace umbriel {
     if (view == nullptr) {
       return;
     }
+    for (const auto& output : m_outputs) {
+      output->forgetHdrView(view);
+    }
     const bool hadKeyboardFocus = m_seat->wlr()->keyboard_state.focused_surface == view->toplevel()->base->surface;
-    bool restorePointerFocus = false;
     if (m_scratchpadManager != nullptr) {
       m_scratchpadManager->remove(view);
     }
@@ -1348,23 +1402,11 @@ namespace umbriel {
       if (workspace->group() != nullptr) {
         output = workspace->group()->output();
       }
-      std::optional<std::pair<double, double>> focusPoint;
-      if (workspace->focusedView() == view
-          && config().input.focus.followsMouse
-          && view->tiled()
-          && workspace->scrollingLayout() == nullptr
-          && workspace->active()
-          && m_cursor != nullptr
-          && output != nullptr
-          && wlr_output_layout_output_at(m_outputLayout, m_cursor->wlr()->x, m_cursor->wlr()->y) == output->wlr()) {
-        focusPoint = std::pair{m_cursor->wlr()->x, m_cursor->wlr()->y};
-        restorePointerFocus = true;
-      }
-      replacement = workspace->removeView(view, focusPoint);
+      replacement = workspace->removeView(view);
       view->detachWorkspace();
     }
     m_registry.remove(view);
-    if (hadKeyboardFocus || restorePointerFocus) {
+    if (hadKeyboardFocus) {
       wlr_seat_keyboard_notify_clear_focus(m_seat->wlr());
       if (replacement != nullptr) {
         focusView(replacement);

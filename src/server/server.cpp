@@ -21,6 +21,7 @@
 #include "scene/hint_rect.h"
 #include "scene/quit_confirm.h"
 #include "server/ipc.h"
+#include "server/wine_color_manager.h"
 #include "view/view.h"
 #include "wlr.h"
 #include "workspace/scratchpad.h"
@@ -42,11 +43,20 @@ namespace umbriel {
   namespace {
 
     constexpr Logger kLog("server");
+    constexpr size_t kWaylandClientBufferSize = 1024 * 1024;
 
-    bool filterGlobal(const wl_client*, const wl_global* global, void*) {
+    bool filterGlobal(const wl_client* client, const wl_global* global, void* data) {
+      auto* server = static_cast<Server*>(data);
       const wl_interface* interface = wl_global_get_interface(global);
       if (interface != nullptr && std::string_view(interface->name) == "zwp_primary_selection_device_manager_v1") {
         return config().input.middleClickPaste;
+      }
+      if (interface != nullptr && std::string_view(interface->name) == "wp_color_manager_v1") {
+        const bool wine = WineColorManager::clientNeedsCompatibility(client);
+        if (server->wineColorManager() != nullptr && global == server->wineColorManager()->global()) {
+          return wine;
+        }
+        return !wine;
       }
       return true;
     }
@@ -98,6 +108,7 @@ namespace umbriel {
     if (m_display == nullptr) {
       throw std::runtime_error("failed to create wl_display");
     }
+    wl_display_set_default_max_buffer_size(m_display, kWaylandClientBufferSize);
 
     m_backend = wlr_backend_autocreate(wl_display_get_event_loop(m_display), &m_session);
     if (m_backend == nullptr) {
@@ -145,7 +156,7 @@ namespace umbriel {
     if (wlr_primary_selection_v1_device_manager_create(m_display) == nullptr) {
       throw std::runtime_error("failed to create primary-selection manager");
     }
-    wl_display_set_global_filter(m_display, filterGlobal, nullptr);
+    wl_display_set_global_filter(m_display, filterGlobal, this);
     wlr_viewporter_create(m_display);
     wlr_fractional_scale_manager_v1_create(m_display, 1);
     wlr_presentation_create(m_display, m_backend, 2);
@@ -156,6 +167,47 @@ namespace umbriel {
     m_scene = wlr_scene_create();
     if (linuxDmabuf != nullptr) {
       wlr_scene_set_linux_dmabuf_v1(m_scene, linuxDmabuf);
+    }
+    if (m_renderer->features.input_color_transform) {
+      size_t transferFunctionsLen = 0;
+      wp_color_manager_v1_transfer_function* transferFunctions =
+          wlr_color_manager_v1_transfer_function_list_from_renderer(m_renderer, &transferFunctionsLen);
+      size_t primariesLen = 0;
+      wp_color_manager_v1_primaries* primaries =
+          wlr_color_manager_v1_primaries_list_from_renderer(m_renderer, &primariesLen);
+      constexpr wp_color_manager_v1_render_intent renderIntents[] = {
+          WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL,
+      };
+      const wlr_color_manager_v1_options options = {
+          .features =
+              {
+                  .icc_v2_v4 = false,
+                  .parametric = true,
+                  .set_primaries = false,
+                  .set_tf_power = false,
+                  .set_luminances = false,
+                  .set_mastering_display_primaries = true,
+                  .extended_target_volume = false,
+                  .windows_scrgb = false,
+              },
+          .render_intents = renderIntents,
+          .render_intents_len = std::size(renderIntents),
+          .transfer_functions = transferFunctions,
+          .transfer_functions_len = transferFunctionsLen,
+          .primaries = primaries,
+          .primaries_len = primariesLen,
+      };
+      m_colorManager = wlr_color_manager_v1_create(m_display, 2, &options);
+      std::free(transferFunctions);
+      std::free(primaries);
+      if (m_colorManager == nullptr) {
+        throw std::runtime_error("failed to create color-management manager");
+      }
+      wlr_scene_set_color_manager_v1(m_scene, m_colorManager);
+      m_wineColorManager = std::make_unique<WineColorManager>(*this);
+      if (!m_wineColorManager->valid()) {
+        throw std::runtime_error("failed to create Wine color-management manager");
+      }
     }
     const Config::Appearance::Blur& blur = config().appearance.blur;
     wlr_scene_set_blur_data(
@@ -169,6 +221,8 @@ namespace umbriel {
     m_backdrop = wlr_scene_rect_create(&m_scene->tree, 0, 0, config().appearance.backdropColor.data());
     wlr_scene_rect_set_corner_radius(m_backdrop, 0);
     m_shellLayerTrees[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = wlr_scene_tree_create(&m_scene->tree);
+    m_overviewBlurTree = wlr_scene_tree_create(&m_scene->tree);
+    wlr_scene_node_set_enabled(&m_overviewBlurTree->node, false);
     m_shellLayerTrees[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = wlr_scene_tree_create(&m_scene->tree);
     m_xdgTree = wlr_scene_tree_create(&m_scene->tree);
     m_scratchpadTree = wlr_scene_tree_create(&m_scene->tree);
@@ -254,7 +308,7 @@ namespace umbriel {
     wl_signal_add(&m_idleInhibitManager->events.new_inhibitor, &m_newIdleInhibitor);
 
     wlr_screencopy_manager_v1_create(m_display);
-    wlr_export_dmabuf_manager_v1_create(m_display);
+    m_exportDmabufManager = wlr_export_dmabuf_manager_v1_create(m_display);
     wlr_ext_output_image_capture_source_manager_v1_create(m_display, 1);
     wlr_ext_image_copy_capture_manager_v1_create(m_display, 1);
 
@@ -349,6 +403,7 @@ namespace umbriel {
       }
     }
     wl_display_destroy_clients(m_display);
+    m_wineColorManager.reset();
     // Chrome components destroy scene nodes in their destructors, so they must go before the scene tree does; otherwise
     // the destructor body frees the nodes and the member destructors touch already-freed memory.
     m_quitConfirm.reset();
@@ -359,6 +414,24 @@ namespace umbriel {
     wlr_renderer_destroy(m_renderer);
     wlr_backend_destroy(m_backend);
     wl_display_destroy(m_display);
+  }
+
+  const wlr_image_description_v1_data* Server::surfaceImageDescription(wlr_surface* surface) const {
+    if (const wlr_image_description_v1_data* description = wlr_surface_get_image_description_v1_data(surface)) {
+      return description;
+    }
+    if (m_wineColorManager != nullptr) {
+      if (const wlr_image_description_v1_data* description = m_wineColorManager->surfaceDescription(surface)) {
+        return description;
+      }
+    }
+    return nullptr;
+  }
+
+  void Server::updateColorPreferences() {
+    if (m_wineColorManager != nullptr) {
+      m_wineColorManager->updatePreferredDescriptions();
+    }
   }
 
   bool Server::start(const char* startupCmd) {
@@ -669,6 +742,12 @@ namespace umbriel {
       return true;
     });
     return active;
+  }
+
+  void Server::flushPendingViewOpacities() {
+    for (const auto& view : m_registry.all()) {
+      view->flushPendingEffectiveOpacity();
+    }
   }
 
   bool Server::animationsActive() const {

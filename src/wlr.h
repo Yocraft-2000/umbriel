@@ -11,7 +11,9 @@ extern "C" {
 #include <wlr/backend/wayland.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/drm_format_set.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>

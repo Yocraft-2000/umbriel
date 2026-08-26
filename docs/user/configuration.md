@@ -63,15 +63,17 @@ mod_key = "Super"
 xwayland = true
 show_cheatsheet = true
 focus_on_activate = false
+honor_restored_maximize = false
 ```
 
-| Key                 | Type         | Default                 | Description                                                                                                                                                                                                                             |
-| ------------------- | ------------ | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `autostart`         | string array | `[]`                    | Shell commands run once after startup. Never re-run on config reload.                                                                                                                                                                   |
-| `mod_key`           | string       | Super (Alt when nested) | Modifier represented by `Mod` in keybinds. Accepts `Super`, `Alt`, `Ctrl`, or `Shift`; aliases `Logo`, `Win`, and `Control` are also accepted. Applies on reload.                                                                       |
-| `xwayland`          | bool         | `true`                  | Spawn `xwayland-satellite` for X11 app support. The binary must be installed. Changing this requires a restart.                                                                                                                         |
-| `show_cheatsheet`   | bool         | `true`                  | Show the keybinds cheatsheet overlay on startup. If an included file is still missing, Umbriel waits for it to load before showing the overlay. Press any key or mouse button to dismiss, or toggle at runtime via `cheatsheet-toggle`. |
-| `focus_on_activate` | bool         | `false`                 | Focus and reveal windows that request activation. When false, activation marks the window and its workspace urgent without changing workspaces. Window rules can override this per application.                                         |
+| Key                         | Type         | Default                 | Description                                                                                                                                                                                                                             |
+| --------------------------- | ------------ | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `autostart`                 | string array | `[]`                    | Shell commands run once after startup. Never re-run on config reload.                                                                                                                                                                   |
+| `mod_key`                   | string       | Super (Alt when nested) | Modifier represented by `Mod` in keybinds. Accepts `Super`, `Alt`, `Ctrl`, or `Shift`; aliases `Logo`, `Win`, and `Control` are also accepted. Applies on reload.                                                                       |
+| `xwayland`                  | bool         | `true`                  | Spawn `xwayland-satellite` for X11 app support. The binary must be installed. Changing this requires a restart.                                                                                                                         |
+| `show_cheatsheet`           | bool         | `true`                  | Show the keybinds cheatsheet overlay on startup. If an included file is still missing, Umbriel waits for it to load before showing the overlay. Press any key or mouse button to dismiss, or toggle at runtime via `cheatsheet-toggle`. |
+| `focus_on_activate`         | bool         | `false`                 | Focus and reveal windows that request activation. When false, activation marks the window and its workspace urgent without changing workspaces. Window rules can override this per application.                                         |
+| `honor_restored_maximize`   | bool         | `false`                 | Honor maximized state restored by applications while their windows open. Later maximize requests are always honored. Applies to newly opened windows.                                                                                   |
 
 ## Environment
 
@@ -84,6 +86,16 @@ QT_QPA_PLATFORMTHEME = "qt5ct"
 Extra environment variables exported to Umbriel and all spawned commands.
 All values must be strings. Applied once at startup; changing this section
 requires a restart.
+
+## Idle inhibition
+
+Umbriel supports application idle inhibitors and idle notifications. An
+application inhibits screen blanking, locking, and other idle actions only
+while its associated surface is mapped and visible. Switching away from its
+workspace, hiding a scratchpad window, disabling its output, or locking the
+session stops honoring that inhibitor until the surface becomes visible
+again. A visible lock surface may provide its own inhibitor while the session
+is locked.
 
 ## Workspaces
 
@@ -138,7 +150,7 @@ remain opaque so text stays legible over translucent panels.
 prefer_no_csd = true
 border_width = 2               # 0-100
 outer_border_width = 0         # 0-100
-corner_radius = 10             # 0-500, 0 disables
+corner_radius = 10             # 0-100, 0 disables
 border_focused = "#7AA3FFFF"   # #RRGGBB or #RRGGBBAA
 border_unfocused = "#292933FF"
 scratchpad_border_focused = "#E5C07BFF"
@@ -147,6 +159,7 @@ outer_border_color = "#1A1A1FFF"
 insert_hint_color = "#7FC8FF80"
 backdrop_color = "#000000FF"
 animation_ms = 200             # 1-10000
+drag_opacity = 0.75
 ```
 
 | Key                           | Type  | Default     | Description                                                                                                                                       |
@@ -154,7 +167,7 @@ animation_ms = 200             # 1-10000
 | `prefer_no_csd`               | bool  | `true`      | Ask clients to omit client-side decorations (xdg-decoration). Clients that explicitly request CSD are still honored. Restart apps after changing. |
 | `border_width`                | int   | `2`         | Inner border width in logical pixels (0-100), including around rounded corners.                                                                   |
 | `outer_border_width`          | int   | `0`         | Ring outside the inner border in logical pixels (0-100).                                                                                          |
-| `corner_radius`               | int   | `10`        | Rounded corner radius (0-500). 0 disables.                                                                                                        |
+| `corner_radius`               | int   | `10`        | Rounded corner radius (0-100). 0 disables.                                                                                                        |
 | `border_focused`              | color | `#7AA3FFFF` | Border color for the focused window.                                                                                                              |
 | `border_unfocused`            | color | `#292933FF` | Border color for unfocused windows.                                                                                                               |
 | `scratchpad_border_focused`   | color | `#E5C07BFF` | Border color for the focused scratchpad window.                                                                                                   |
@@ -163,6 +176,7 @@ animation_ms = 200             # 1-10000
 | `insert_hint_color`           | color | `#7FC8FF80` | Drop-target preview during drag.                                                                                                                  |
 | `backdrop_color`              | color | `#000000FF` | Background for fullscreen gaps and lock screen.                                                                                                   |
 | `animation_ms`                | int   | `200`       | Animation duration in milliseconds (1-10000).                                                                                                     |
+| `drag_opacity`                | float | `0.75`      | Opacity of the window while dragging.                                                                                                             |
 
 Colors are `#RRGGBB` or `#RRGGBBAA`.
 
@@ -227,9 +241,14 @@ Drop shadow behind windows (tiled and floating). Hidden while fullscreen.
 ```toml
 [overview]
 zoom = 0.5                     # 0.1-0.75
+background_blur = true
 background_tint = "#10101430"
 workspace_background = "#00000044"
 ```
+
+The wallpaper is blurred while the overview is open using the `[appearance.blur]`
+parameters. Set `background_blur = false`, or disable appearance blur, to turn it
+off.
 
 ### Open and navigate
 
@@ -237,9 +256,11 @@ The overview shows every workspace on every output. Press `Mod+O` by default,
 or use one of the [overview actions](keybinds.md#overview-actions).
 
 Click a window to focus it, middle-click to close it, or drag it to another
-workspace. Use the wheel, arrow keys, or a 3-finger swipe to move through the
-workspace list. While the overview is open, each gesture moves one workspace
-at a time. A 4-finger swipe opens or closes the overview.
+workspace. When a click selects a window in another scrolling column, the
+column reveal runs together with the closing zoom. Use the wheel, arrow keys,
+or a 3-finger swipe to move through the workspace list. While the overview is
+open, each gesture moves one workspace at a time. A 4-finger swipe opens or
+closes the overview.
 
 An active client drag takes precedence. Umbriel ignores requests to open the
 overview until the pointer button that initiated the drag is released.
@@ -259,6 +280,7 @@ workspace. Its alpha can produce anything from a light tint to an opaque fill.
 | Key                    | Type  | Default     | Description                                                                                    |
 | ---------------------- | ----- | ----------- | ---------------------------------------------------------------------------------------------- |
 | `zoom`                 | float | `0.5`       | Workspace scale when fully zoomed out (0.1-0.75).                                              |
+| `background_blur`      | bool  | `true`      | Blur the wallpaper behind the filmstrip. Uses the `[appearance.blur]` parameters.             |
 | `background_tint`      | color | `#10101430` | Tint composited over the desktop background. Alpha `00` leaves it untouched; `FF` hides it.    |
 | `workspace_background` | color | `#00000044` | Rounded background behind each workspace. Alpha `00` makes it invisible; `FF` makes it opaque. |
 
@@ -299,7 +321,8 @@ gap = 8                             # 0-500
 width_presets = [0.333, 0.5, 0.667]
 
 [layout.scrolling]
-default_width_fraction = 0.5        # 0.1-1.0
+direction = "horizontal"             # "horizontal" or "vertical"
+default_width_fraction = 0.5         # remove to let clients choose, 0.1-1.0
 center_underfull_strip = true
 ```
 
@@ -313,10 +336,32 @@ Shared layout options:
 
 Scrolling layout options:
 
-| Key                      | Type  | Default | Description                                                                                                                       |
-| ------------------------ | ----- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `default_width_fraction` | float | `0.5`   | Initial width assigned to new scrolling columns (0.1-1.0).                                                                        |
-| `center_underfull_strip` | bool  | `true`  | Center the complete strip whenever it is narrower than the viewport. Set to `false` to align an underfull strip at the left edge. |
+| Key                      | Type   | Default        | Description                                                                                                                       |
+| ------------------------ | ------ | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `direction`              | string | `"horizontal"` | Scroll axis: `"horizontal"` stacks columns left to right; `"vertical"` stacks lanes top to bottom.                                |
+| `default_width_fraction` | float  | unset          | Initial scroll-axis extent assigned to new scrolling lanes (0.1-1.0). The packaged config sets `0.5`; when omitted, the client chooses its initial extent. |
+| `center_underfull_strip` | bool   | `true`         | Center the complete strip whenever it is shorter than the viewport. Disable to align it at the start edge.                        |
+
+On a vertical scrolling workspace, each column becomes a horizontal lane. Lanes
+stack from top to bottom, and windows within a lane sit side by side. Existing
+width vocabulary, including `default_width_fraction`, `width_presets`,
+`window-cycle-width`, `window-set-width`, `window-modify-width`, and
+`window-toggle-maximize`, controls the lane's extent along the scroll axis. In
+other words, it controls lane height on a vertical workspace.
+
+The packaged config sets `default_width_fraction = 0.5` so new scrolling lanes
+start at half the viewport. When the option is removed, Umbriel leaves the
+scroll-axis dimension unconstrained in the initial configure and retains the
+logical size chosen by the client. A numeric window-rule `default_width` still
+takes precedence for matching applications.
+
+Directional focus and movement follow the screen: left and right operate within
+a vertical lane, while up and down walk or reorder lanes along the strip.
+`window-consume-left` still merges into the previous lane, which is visually
+above, and `window-expel-right` creates the next lane, which is visually below.
+The three-finger vertical swipe continues to switch workspaces. The
+three-finger horizontal strip gesture is inert on vertical workspaces, so use
+keyboard or wheel bindings to scroll the strip.
 
 In the scrolling layout, Mod+Right-drag selects horizontal and vertical resize
 edges from the outer thirds of a window. Dragging from a corner region resizes
@@ -342,6 +387,12 @@ columns are off-screen.
 Dropping a window into empty space above or below a vertically resized stack
 consumes that space. Existing windows retain their pixel heights, and the
 dropped window fills the remainder apart from the configured inter-window gap.
+
+In the dwindle layout, a new window splits an existing one along that window's
+longer edge, so a landscape monitor starts side by side and a portrait monitor
+starts stacked. The direction is fixed when the split is created: resizing one
+boundary never reorients another split. Dropping a window on a specific edge
+picks that direction explicitly instead.
 
 Layout fields can be overridden per-workspace; see
 [Workspace Rules](outputs.md#workspace-rules).
@@ -374,6 +425,7 @@ variant = ""      # XKB variant
 options = ""      # XKB options, comma-separated
 repeat_rate = 25  # 0-1000 Hz, 0 disables
 repeat_delay = 600 # 0-10000 ms
+numlock_toggle = true # true enables NumLock when a keyboard connects; false leaves it off
 ```
 
 `layout` takes a comma-separated list to load several layouts at once
@@ -412,15 +464,16 @@ supported by the device.
 ```toml
 [input.mouse]
 natural_scroll = false
-accel_profile = "flat"  # "flat", "adaptive", or a custom curve
+# accel_profile = "flat"  # "flat", "adaptive", or a custom curve
 sensitivity = 0.0        # -1.0 to 1.0
 scroll_wheel_step = 60  # 1-1000, pixels per step for layout-scroll-left/right
 ```
 
-Mouse acceleration is disabled by default by selecting libinput's `flat`
-profile. Set `accel_profile = "adaptive"` to enable acceleration. `sensitivity`
-controls pointer speed independently of the selected profile. A custom curve can
-be supplied with this syntax:
+Omitting `accel_profile` preserves each device's libinput default, which is
+usually `adaptive` for a mouse. Set `accel_profile = "flat"` to disable
+speed-dependent acceleration, or set it to `adaptive` explicitly to override a
+different device default. `sensitivity` controls pointer speed independently of
+the selected profile. A custom curve can be supplied with this syntax:
 
 ```toml
 accel_profile = "custom 0.2 0.0 0.5 1.0 2.0"
@@ -428,9 +481,10 @@ accel_profile = "custom 0.2 0.0 0.5 1.0 2.0"
 
 The first number is the positive input-speed step, followed by at least two
 non-negative output-speed points. Libinput interpolates between them.
-`sensitivity` has no effect when a custom profile is selected.
-Omit `natural_scroll` to preserve each device's default. `layout-scroll-left`
-and `layout-scroll-right` clamp to the strip bounds, so the columns never park
+`sensitivity` has no effect when a custom profile is selected. Omit
+`natural_scroll` or `accel_profile` to preserve each device's corresponding
+libinput default. `layout-scroll-left` and `layout-scroll-right` clamp to the
+strip bounds, so the columns never park
 past either edge. Wheel-triggered scrolling uses twice `scroll_wheel_step`
 during an active tiled window drag.
 

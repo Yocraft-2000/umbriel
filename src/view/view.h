@@ -8,8 +8,10 @@
 
 #include <array>
 #include <cmath>
+#include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 #include <wayland-server-core.h>
 
 extern "C" {
@@ -22,12 +24,14 @@ struct wlr_output;
 struct wlr_scene;
 struct wlr_scene_tree;
 struct wlr_scene_rect;
+struct wlr_surface;
 struct wlr_xdg_popup;
 struct wlr_xdg_toplevel;
 
 namespace umbriel {
 
   class Server;
+  class WineColorManager;
   class Workspace;
   struct ResolvedWindowRule;
 
@@ -146,13 +150,19 @@ namespace umbriel {
 
   private:
     friend class Cursor;
+    friend class WineColorManager;
     friend class Output;
     friend class Server;
     friend class Popup;
     friend class Overview;
-    // Keep the insertion preview legible beneath the window during every
-    // compositor-owned relocate drag, including overview card drags.
-    static constexpr float kDragOpacity = 0.75F;
+
+    struct OpacitySurfaceWatch {
+      View* view = nullptr;
+      wlr_surface* surface = nullptr;
+      wl_listener commit{};
+      wl_listener newSubsurface{};
+      wl_listener destroy{};
+    };
 
     static void onMap(wl_listener* listener, void* data);
     static void onUnmap(wl_listener* listener, void* data);
@@ -161,6 +171,7 @@ namespace umbriel {
     static void onRequestMove(wl_listener* listener, void* data);
     static void onRequestResize(wl_listener* listener, void* data);
     static void onRequestMaximize(wl_listener* listener, void* data);
+    static void onAcceptClientMaximizeRequests(void* data);
     static void onRequestFullscreen(wl_listener* listener, void* data);
     static void onSetTitle(wl_listener* listener, void* data);
     static void onSetAppId(wl_listener* listener, void* data);
@@ -168,6 +179,9 @@ namespace umbriel {
     static void onForeignClose(wl_listener* listener, void* data);
     static void onForeignDestroy(wl_listener* listener, void* data);
     static void onExtForeignDestroy(wl_listener* listener, void* data);
+    static void onOpacitySurfaceCommit(wl_listener* listener, void* data);
+    static void onOpacitySurfaceNewSubsurface(wl_listener* listener, void* data);
+    static void onOpacitySurfaceDestroy(wl_listener* listener, void* data);
 
     static void onCaptureSourceDestroy(wl_listener* listener, void* data);
     void handleMap();
@@ -190,7 +204,6 @@ namespace umbriel {
     void updateBorderGeometry();
     void updateBorderGeometry(int contentWidth, int contentHeight);
     void applyCornerRadius();
-    void applyCornerRadii(fx_corner_radii corners);
     void reloadBackdropColor() { m_presentation.reloadBackdropColor(); }
     void refreshConfigChrome();
     void updateBlur();
@@ -209,6 +222,10 @@ namespace umbriel {
     // commit or clip change) resets buffer opacity, so this must run afterward while opacity is below 1.
     [[nodiscard]] float effectiveOpacity() const { return m_fadeAlpha * m_ruleOpacity * m_dragOpacity; }
     void applyEffectiveOpacity();
+    void flushPendingEffectiveOpacity();
+    void watchOpacitySurfaceTree(wlr_surface* root);
+    void watchOpacitySurface(wlr_surface* surface);
+    void clearOpacitySurfaceWatches();
     void beginCloseAnimation();
     void applyPresentedSize();
     // Scale-then-crop presentation of the primary buffer during a size
@@ -300,12 +317,17 @@ namespace umbriel {
     wlr_ext_image_capture_source_v1* m_captureSource = nullptr;
     Workspace* m_workspace = nullptr;
     bool m_mapped = false;
+    // Saved client state commonly requests maximization while the surface is
+    // opening. Layout policy owns that transition; later requests are valid.
+    bool m_acceptClientMaximizeRequests = false;
+    wl_event_source* m_acceptClientMaximizeIdle = nullptr;
     bool m_xwayland = false;
     // False until the first setPosition/animateTo places the node; the initial
     // placement snaps (avoids animating from the default (0,0) world origin).
     bool m_positioned = false;
     bool m_tiled = false;
     bool m_maximizedToEdges = false;
+    bool m_restoreMaximizedToEdges = false;
     wlr_box m_fullscreenRestoreBox{};
     bool m_hasFullscreenRestoreBox = false;
     bool m_pinned = false;
@@ -338,10 +360,10 @@ namespace umbriel {
     bool m_initialRulesSettled = false;
     float m_ruleOpacity = 1.0F;
     float m_dragOpacity = 1.0F;
-    // wlroots restores a committed scene buffer to the client-provided alpha.
-    // Restore any compositor-managed opacity on the frame after all commit
-    // listeners have run.
+    // wlroots restores a committed scene buffer to the client-provided alpha. Root and subsurface watches set this so
+    // compositor-managed opacity is restored on the frame after every scene helper commit listener has run.
     bool m_effectiveOpacityCommitPending = false;
+    std::vector<std::unique_ptr<OpacitySurfaceWatch>> m_opacitySurfaceWatches;
     bool m_hasMaximizeRestoreBox = false;
     wlr_box m_maximizeRestoreBox{};
     FloatingGeometry m_floating;

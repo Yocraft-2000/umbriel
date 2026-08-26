@@ -19,6 +19,11 @@ namespace umbriel {
     Dwindle,
   };
 
+  enum class ScrollingDirection {
+    Horizontal,
+    Vertical,
+  };
+
   // What a layout needs to know about a view in order to size it: the client's
   // size hints plus whether it is going fullscreen.
   struct LayoutConstraints {
@@ -51,6 +56,9 @@ namespace umbriel {
   // tests want.
   using LayoutConstraintsFn = LayoutConstraints (*)(const View*);
 
+  // Scrolling interprets widthFrac as the primary-axis extent fraction.
+  // heightWeights and edge gap weights divide the cross-axis extent.
+  // Dwindle continues to use the fields in its native horizontal/vertical sense.
   struct Column {
     std::vector<View*> views;
     std::vector<double> heightWeights;
@@ -112,9 +120,14 @@ namespace umbriel {
     [[nodiscard]] virtual InitialSize
     initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction) const = 0;
 
-    [[nodiscard]] virtual View* focusVerticalLeaf(const View* /*view*/, int /*direction*/) const { return nullptr; }
+    [[nodiscard]] virtual std::optional<View*> focusHorizontalLeaf(const View* /*view*/, int /*direction*/) const {
+      return std::nullopt;
+    }
+    [[nodiscard]] virtual std::optional<View*> focusVerticalLeaf(const View* /*view*/, int /*direction*/) const {
+      return std::nullopt;
+    }
 
-    virtual bool cycleWidth(int columnIndex) = 0;
+    virtual bool cycleWidth(int columnIndex, int direction) = 0;
     virtual bool toggleFullWidth(int columnIndex) = 0;
     virtual bool setWidthFraction(int columnIndex, double fraction) = 0;
     virtual void clearFullWidthState(int columnIndex) = 0;
@@ -153,7 +166,7 @@ namespace umbriel {
     [[nodiscard]] wlr_box contentArea(const wlr_box& usable) const;
     // Gap-aware width of a column occupying `fraction` of the viewport. Solving sum(w) + (N-1)g = V with w = p*(V+g) -
     // g makes N columns whose fractions sum to 1 tile the viewport exactly.
-    [[nodiscard]] int fractionalWidth(int viewportWidth, double fraction) const;
+    [[nodiscard]] int fractionalWidth(int viewportPrimary, double fraction) const;
 
     const ResolvedLayoutConfig* m_config = nullptr;
     LayoutConstraintsFn m_constraints = nullptr;

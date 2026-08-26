@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <wayland-server-core.h>
 
 struct wlr_gamma_control_v1;
@@ -20,7 +22,9 @@ extern "C" {
 
 namespace umbriel {
 
+  enum class HdrMode;
   class Server;
+  class View;
   class WorkspaceGroup;
 
   class Output {
@@ -49,7 +53,7 @@ namespace umbriel {
     // True from the moment a view starts entering fullscreen until its client
     // has committed the exit. Consumers such as hot corners must not act over
     // fullscreen content during either transition.
-    [[nodiscard]] bool hasFullscreenView() const;
+    [[nodiscard]] bool hasFullscreenView(const View* ignored = nullptr) const;
 
     void arrangeLayers();
     // Record that something on this output became stale; flushed at the top of the next frame. Schedules that frame, so
@@ -57,9 +61,23 @@ namespace umbriel {
     void markDirty(Dirty what);
     void onGammaChanged(wlr_gamma_control_v1* control);
     void applyOutputState();
+    // DPMS power is independent of configured enablement. A powered-off output
+    // stays in the logical layout with its workspace and windows intact.
+    [[nodiscard]] bool setPowered(bool powered);
+    [[nodiscard]] bool dpmsOff() const { return m_dpmsOff; }
+    [[nodiscard]] bool configuredEnabled() const;
+    [[nodiscard]] HdrMode hdrMode() const;
+    [[nodiscard]] bool hdrRequested() const;
+    [[nodiscard]] bool hdrActive() const;
+    [[nodiscard]] const std::string& hdrFallbackReason() const { return m_hdrFallbackReason; }
+    [[nodiscard]] float configuredSdrWhite() const;
     void applyCursorConfig();
     // Re-evaluate fullscreen-controlled VRR after a view or workspace changes.
     void updateVrr();
+    // Re-evaluate automatic HDR after surface color, fullscreen, visibility,
+    // or output membership changes.
+    void updateHdr();
+    void forgetHdrView(const View* view);
     void markBlurBackgroundDirty();
     void handleExternalConfigChange();
     // Tell one surface this output's scale (fractional + integer preferred buffer scale). Both wlroots calls dedup
@@ -82,10 +100,13 @@ namespace umbriel {
     void handleRequestState(void* data);
     void handleDestroy();
     void applyMode(int width, int height);
-    void applyConfiguredState();
-    // Whether the config wants this output on (absent rule = on).
-    [[nodiscard]] bool configuredEnabled() const;
+    [[nodiscard]] bool applyConfiguredState();
+    [[nodiscard]] bool autoHdrEligible(const View* view) const;
+    [[nodiscard]] View* findAutoHdrCandidate() const;
     [[nodiscard]] bool configuredVrrEnabled() const;
+    void setHdrFallbackReason(std::string_view reason);
+    void updateSceneSdrWhite();
+    void rejectGammaControl(wlr_gamma_control_v1* control);
     wlr_output_layout_output* addToLayout();
     void arrangeLayer(wlr_scene_tree* tree, const wlr_box* fullArea, wlr_box* usableArea, bool exclusive);
     void updateOptimizedBlur(const wlr_box& fullArea);
@@ -108,6 +129,12 @@ namespace umbriel {
     bool m_gammaDirty = false;
     bool m_softwareCursorLocked = false;
     bool m_animationRenderLocked = false;
+    bool m_dpmsOff = false;
+    bool m_hdrGammaWarningLogged = false;
+    bool m_fullscreenHdrRequested = false;
+    bool m_lastHdrRequested = false;
+    View* m_autoHdrOwner = nullptr;
+    std::string m_hdrFallbackReason;
     int m_deferredWidth = 0;
     int m_deferredHeight = 0;
 

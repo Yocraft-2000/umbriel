@@ -96,7 +96,7 @@ namespace umbriel {
     if (workspace != nullptr && (!view->pinned() || workspace->active())) {
       workspace->setFocusedView(view);
     }
-    m_server.refreshVrr();
+    m_server.refreshOutputPolicies();
     if (overviewActive) {
       m_server.overview()->onFocusChanged();
     }
@@ -213,8 +213,16 @@ namespace umbriel {
 
   void FocusManager::clearKeyboardFocus() {
     deactivateViews(nullptr);
-    wlr_seat_keyboard_notify_clear_focus(m_server.seat()->wlr());
-    m_server.refreshVrr();
+    wlr_seat* seat = m_server.seat()->wlr();
+    // Overview and other compositor-owned states must not leave an xdg popup
+    // grab intercepting both this clear and the later focus restoration. Keep
+    // an active data-device drag intact because its completion performs an
+    // explicit focus replay.
+    if (seat->drag == nullptr && wlr_seat_keyboard_has_grab(seat)) {
+      wlr_seat_keyboard_end_grab(seat);
+    }
+    wlr_seat_keyboard_notify_clear_focus(seat);
+    m_server.refreshOutputPolicies();
   }
 
   void FocusManager::clearNormalFocus() {

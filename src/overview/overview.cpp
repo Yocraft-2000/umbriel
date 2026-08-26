@@ -160,12 +160,26 @@ namespace umbriel {
       };
     }
     wlr_scene_node_set_position(&card.tree->node, card.box.x, card.box.y);
-    const float cardOpacity = &card == m_dragCard ? View::kDragOpacity : 1.0F;
+    const bool clipToRow = view->workspace() != nullptr && view->workspace()->scrollingVertical();
+    if (&card == m_dragCard || !clipToRow) {
+      wlr_scene_tree_set_clip(card.tree, nullptr);
+    } else {
+      // A vertical strip can extend into the next workspace row. Keep the row
+      // as a live viewport while focus and scroll actions move cards through it.
+      const wlr_box rowClip{
+          .x = metrics.rowX - card.box.x,
+          .y = rowTop(metrics, rowScroll, card.row) - card.box.y,
+          .width = metrics.rowW,
+          .height = metrics.rowH,
+      };
+      wlr_scene_tree_set_clip(card.tree, &rowClip);
+    }
+    const float cardOpacity = &card == m_dragCard ? config().appearance.dragOpacity : 1.0F;
     const float presentedOpacity = view->presentedOpacity() * cardOpacity;
 
     const auto& appearance = config().appearance;
     const int total = appearance.totalBorderWidth();
-    const bool decorated = total > 0 && !view->toplevel()->current.fullscreen;
+    const bool decorated = total > 0 && !view->toplevel()->current.fullscreen && !view->maximizedToEdges();
     // Scale the radius and each thickness once, then derive the rings from those scaled values. Rounding the outer
     // radius on its own drifts from the ring's own thickness at fractional zoom, so the curve stops matching the
     // stroke.
@@ -242,8 +256,11 @@ namespace umbriel {
       wlr_scene_buffer_set_dest_size(entry->buffer, contentW, contentH);
       wlr_scene_buffer_set_corner_radii(entry->buffer, corner_radii_all(radius));
       const wlr_box blurBox{0, 0, contentW, contentH};
-      card.blur.setAlpha(entry->buffer->opacity);
-      card.blur.update(card.tree, surface, blurBox, geometry, radius, nullptr, view->blurOptions(), entry->buffer);
+      card.blur.setAlpha(1.0F);
+      card.blur.update(
+          card.tree, surface, blurBox, geometry, radius, nullptr, view->blurOptions(), entry->buffer->opacity,
+          entry->buffer
+      );
       blurUpdated = true;
     }
     if (!blurUpdated) {
@@ -258,9 +275,24 @@ namespace umbriel {
     }
 
     // Rows overhang the output by design (adjacent workspaces peek in). One clip on this output's overview tree
-    // contains every card, ring, background and blur below it, so nothing here needs to trim its own geometry. The
-    // dragged card is reparented out to the unclipped overview root, which is what lets it span outputs.
+    // contains every card, ring, and workspace background, so none needs to trim its own geometry. The dragged card
+    // is reparented out to the unclipped overview root, which is what lets it span outputs.
     wlr_scene_tree_set_clip(state.tree, &metrics.outputBox);
+    if (state.backgroundBlur != nullptr) {
+      wlr_scene_blur* blur = state.backgroundBlur;
+      wlr_scene_node_set_enabled(&blur->node, m_progress > 0.001);
+      wlr_scene_node_set_position(&blur->node, metrics.outputBox.x, metrics.outputBox.y);
+      if (blur->width != metrics.outputBox.width || blur->height != metrics.outputBox.height) {
+        wlr_scene_blur_set_size(blur, metrics.outputBox.width, metrics.outputBox.height);
+      }
+      const auto level = static_cast<float>(m_progress);
+      if (blur->alpha != level) {
+        wlr_scene_blur_set_alpha(blur, level);
+      }
+      if (blur->strength != level) {
+        wlr_scene_blur_set_strength(blur, level);
+      }
+    }
 
     wlr_scene_node_set_position(&state.backgroundTint->node, metrics.outputBox.x, metrics.outputBox.y);
     wlr_scene_rect_set_size(state.backgroundTint, metrics.outputBox.width, metrics.outputBox.height);
@@ -337,6 +369,7 @@ namespace umbriel {
       wlr_scene_buffer_set_opacity(entry.buffer, source->opacity);
       wlr_scene_buffer_set_transfer_function(entry.buffer, source->transfer_function);
       wlr_scene_buffer_set_primaries(entry.buffer, source->primaries);
+      wlr_scene_buffer_set_luminance_multiplier(entry.buffer, source->luminance_multiplier);
       wlr_scene_buffer_set_color_encoding(entry.buffer, source->color_encoding);
       wlr_scene_buffer_set_color_range(entry.buffer, source->color_range);
     }
@@ -518,6 +551,11 @@ namespace umbriel {
       wlr_scene_buffer_set_transform(copy, source->transform);
       wlr_scene_buffer_set_corner_radii(copy, source->corners);
       wlr_scene_buffer_set_opacity(copy, source->opacity);
+      wlr_scene_buffer_set_transfer_function(copy, source->transfer_function);
+      wlr_scene_buffer_set_primaries(copy, source->primaries);
+      wlr_scene_buffer_set_luminance_multiplier(copy, source->luminance_multiplier);
+      wlr_scene_buffer_set_color_encoding(copy, source->color_encoding);
+      wlr_scene_buffer_set_color_range(copy, source->color_range);
       wlr_scene_buffer_set_filter_mode(copy, WLR_SCALE_FILTER_BILINEAR);
       ++buffersCopied;
     }
@@ -660,6 +698,12 @@ namespace umbriel {
       if (state->tree == nullptr) {
         continue;
       }
+      if (config().overview.backgroundBlur && config().appearance.blur.enabled) {
+        state->backgroundBlur = wlr_scene_blur_create(m_server->overviewBlurTree(), 1, 1);
+        if (state->backgroundBlur != nullptr) {
+          wlr_scene_blur_set_should_only_blur_bottom_layer(state->backgroundBlur, config().appearance.blur.optimized);
+        }
+      }
       const std::array<float, 4> backgroundTint = tint(config().overview.backgroundTint, 0.0);
       state->backgroundTint = wlr_scene_rect_create(state->tree, 1, 1, backgroundTint.data());
       wlr_scene_rect_set_corner_radius(state->backgroundTint, 0);
@@ -740,6 +784,7 @@ namespace umbriel {
     m_server->cursor()->clearConstraint();
 
     applyProgress();
+    wlr_scene_node_set_enabled(&m_server->overviewBlurTree()->node, true);
     for (const auto& state : m_outputs) {
       state->output->markBlurBackgroundDirty();
     }
@@ -779,6 +824,12 @@ namespace umbriel {
     if (workspace != nullptr && workspace->group() != nullptr && workspace->group()->active() != workspace) {
       // No slide: the real trees are hidden, the filmstrip is the transition.
       workspace->group()->activate(workspace, false);
+    }
+    if (focus != nullptr && focus->mapped()) {
+      // Overview focus keeps keyboard input withheld, but it updates the workspace and starts any scrolling-column
+      // reveal. Begin it before the closing zoom so both animations receive their first tick together. finishAnimation
+      // repeats the focus after teardown to deliver keyboard focus once the real trees own input again.
+      m_server->focusView(focus, FocusReason::PointerPress);
     }
     beginClose(focus);
   }
@@ -885,6 +936,10 @@ namespace umbriel {
         destroyCard(card.get());
       }
       state->cards.clear();
+      if (state->backgroundBlur != nullptr) {
+        wlr_scene_node_destroy(&state->backgroundBlur->node);
+        state->backgroundBlur = nullptr;
+      }
       if (state->tree != nullptr) {
         wlr_scene_node_destroy(&state->tree->node);
         state->tree = nullptr;
@@ -893,6 +948,7 @@ namespace umbriel {
       wlr_output_schedule_frame(state->output->wlr());
     }
     m_outputs.clear();
+    wlr_scene_node_set_enabled(&m_server->overviewBlurTree()->node, false);
 
     if (m_tree != nullptr) {
       wlr_scene_node_set_enabled(&m_tree->node, false);
@@ -1120,19 +1176,38 @@ namespace umbriel {
   // -: hit testing
 
   Overview::Card* Overview::cardAt(double lx, double ly) {
-    // Topmost first: later outputs and later cards paint over earlier ones. The part of a card that the output clip
-    // scissors away is not on screen, so it must not be clickable either; the dragged card is unclipped and hits
-    // everywhere.
+    // Topmost first: later outputs and later cards paint over earlier ones.
+    // Hit testing uses the same output and workspace-row clips as rendering.
+    // The dragged card is reparented to the unclipped root and hits everywhere.
     for (const auto& state : std::views::reverse(m_outputs)) {
-      wlr_box outputBox{};
-      wlr_output_layout_get_box(m_server->outputLayout(), state->output->wlr(), &outputBox);
+      RowMetrics metrics{};
+      if (!rowMetrics(*state, *m_server, zoom(), metrics)) {
+        continue;
+      }
       for (const auto& card : std::views::reverse(state->cards)) {
         if (card->tree == nullptr || !card->tree->node.enabled) {
           continue;
         }
         wlr_box hit = card->box;
-        if (card.get() != m_dragCard && !wlr_box_intersection(&hit, &card->box, &outputBox)) {
-          continue;
+        if (card.get() != m_dragCard) {
+          const bool clipToRow = card->view != nullptr
+              && card->view->workspace() != nullptr
+              && card->view->workspace()->scrollingVertical();
+          if (clipToRow) {
+            const wlr_box rowBox{
+                .x = metrics.rowX,
+                .y = rowTop(metrics, state->rowScroll, card->row),
+                .width = metrics.rowW,
+                .height = metrics.rowH,
+            };
+            wlr_box rowHit{};
+            if (!wlr_box_intersection(&rowHit, &card->box, &rowBox)
+                || !wlr_box_intersection(&hit, &rowHit, &metrics.outputBox)) {
+              continue;
+            }
+          } else if (!wlr_box_intersection(&hit, &card->box, &metrics.outputBox)) {
+            continue;
+          }
         }
         if (boxContains(hit, lx, ly)) {
           return card.get();

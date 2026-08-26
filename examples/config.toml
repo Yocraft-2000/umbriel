@@ -17,6 +17,7 @@ autostart = []
 xwayland = true                # requires restart to change
 show_cheatsheet = true         # show keybinds overlay on startup
 focus_on_activate = false      # activation requests mark urgent without stealing focus
+honor_restored_maximize = false # let apps restore their saved maximized state
 
 # [environment]
 # GTK_THEME = "Adwaita:dark"
@@ -42,8 +43,9 @@ back_and_forth = false
 prefer_no_csd = true
 border_width = 2               # 0-100
 outer_border_width = 0         # 0-100
-corner_radius = 10             # 0-500
+corner_radius = 10             # 0-100
 animation_ms = 250             # 1-10000
+drag_opacity = 0.75
 # border_focused = "#7AA3FFFF"
 # border_unfocused = "#292933FF"
 # scratchpad_border_focused = "#E5C07BFF"
@@ -73,6 +75,7 @@ color = "#0000007F"
 
 [overview]
 zoom = 0.5                     # 0.1-0.75
+# background_blur = true        # blur the wallpaper while the overview is open
 # background_tint = "#10101430"
 # workspace_background = "#00000044" # set alpha to FF for an opaque background
 
@@ -106,7 +109,9 @@ gap = 8                        # 0-500
 width_presets = [0.333, 0.5, 0.667] # shared by scrolling and dwindle
 
 [layout.scrolling]
-default_width_fraction = 0.5   # 0.1-1.0
+# Vertical workspaces stack horizontal lanes from top to bottom.
+# direction = "horizontal"
+default_width_fraction = 0.5  # remove to let clients choose their initial width
 center_underfull_strip = true  # center the strip whenever it is narrower than the viewport
 
 # Workspace layout overrides (see docs/user/outputs.md#workspace-rules)
@@ -123,6 +128,8 @@ center_underfull_strip = true  # center the strip whenever it is narrower than t
 # position = [0, 0]
 # scale = 1.25
 # vrr = "fullscreen"            # "disabled" (default), "always", or "fullscreen"
+# hdr = "auto"                  # "off", "on", metadata-aware "auto", or any fullscreen surface with "fullscreen"
+# sdr_white = 203                # SDR reference white in cd/m2 while HDR is active
 # enabled = true                # false powers the monitor off and removes it from the desktop
 # Dynamic workspaces are the default; use a count or name list for static workspaces.
 # workspaces = 5
@@ -138,6 +145,7 @@ variant = ""
 options = ""                   # XKB options, e.g. "grp:alt_shift_toggle"
 repeat_rate = 25               # 0-1000 Hz
 repeat_delay = 600             # 0-10000 ms
+numlock_toggle = true # true enables NumLock when a keyboard connects; false leaves it off
 
 [input.touchpad]
 tap = true                      # enabled by default; false disables tap-to-click
@@ -145,7 +153,7 @@ tap = true                      # enabled by default; false disables tap-to-clic
 
 [input.mouse]
 # natural_scroll = false
-accel_profile = "flat"         # "flat", "adaptive", or "custom <step> <points...>"
+# accel_profile = "flat"       # omitted preserves the device's libinput default
 sensitivity = 0.0              # pointer speed, -1.0 to 1.0
 scroll_wheel_step = 60         # 1-1000
 # Override only the listed settings for an exact, case-sensitive device name.
@@ -210,26 +218,29 @@ follows_mouse = false
 # "Mod+Period" = "workspace-next"
 # "Mod+Shift+Comma" = "window-move-to-workspace-previous"
 # "Mod+Shift+Period" = "window-move-to-workspace-next"
+# "Mod+Ctrl+Comma" = "workspace-move-up"
+# "Mod+Ctrl+Period" = "workspace-move-down"
 # "Mod+Ctrl+H" = "output-focus-left"
+# "Mod+Shift+O" = "dpms-off"        # input activity powers displays back on
+# "Mod+Ctrl+O" = "dpms-off:DP-1"   # target one connector
 # "Mod+Minus" = "window-modify-width:-0.1"
 # "Mod+C" = "window-center"
 # "Mod+Shift+T" = "workspace-set-layout:toggle"
 
+# Media and volume (see docs/user/keybinds.md#example-media-and-brightness-keys)
+# "XF86AudioRaiseVolume" = "spawn:wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"
+# "XF86AudioLowerVolume" = "spawn:wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+# "Mod+XF86AudioMute"   = "spawn:wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+# "XF86AudioPlay"       = "spawn:playerctl play-pause"
+# "XF86AudioNext"       = "spawn:playerctl next"
+# "XF86AudioPrev"       = "spawn:playerctl prev"
+
 # Window and layer rules (see docs/user/rules.md) ---------------------------
 
-# [[window_rule]]
-# match.app_id = "firefox"
-# match.title = "^Library$"
-# default_floating = true
-# default_focused = false
-# focus_on_activate = true
-# vrr = "always"                # override the output VRR policy while focused
-
-# [[window_rule]]
-# match.title = "^notificationtoasts_.+_desktop"
-# default_position = { x = 0, y = 0, anchor = "bottom_right" }
-# default_focused = false
-# default_pinned = true
+# Blur all windows
+[[window_rule]]
+blur = true
+blur_optimized = true
 
 [[window_rule]]
 match.app_id = "^dev.noctalia.Noctalia$"
@@ -240,6 +251,21 @@ default_size = [1020, 900]
 match.app_id = "^dev.noctalia.UmbrielSharePicker$"
 default_floating = true
 default_size = [800, 600]
+
+# [[window_rule]]
+# match.app_id = "firefox"
+# match.title = "^Library$"
+# default_floating = true
+# default_focused = false
+# focus_on_activate = true
+# vrr = "always"                # override the output VRR policy while focused
+# hdr = "fullscreen"            # override the output HDR policy while focused
+
+# [[window_rule]]
+# match.title = "^notificationtoasts_.+_desktop"
+# default_position = { x = 0, y = 0, anchor = "bottom_right" }
+# default_focused = false
+# default_pinned = true
 
 # Layer rules (see docs/user/rules.md#layer-rules) ---------------------------
 

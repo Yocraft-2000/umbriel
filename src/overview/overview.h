@@ -16,6 +16,7 @@ extern "C" {
 }
 
 struct wlr_scene_buffer;
+struct wlr_scene_blur;
 struct wlr_scene_rect;
 struct wlr_scene_tree;
 struct wlr_surface;
@@ -49,8 +50,9 @@ namespace umbriel {
     void open();
     // Zoom back into each output's active workspace, restoring normal focus.
     void close();
-    // Activate `workspace` (no slide, the real trees are hidden), zoom into it,
-    // and focus `focus` (null = whatever refocus picks) once the zoom lands.
+    // Activate `workspace` (no slide, the real trees are hidden), focus `focus`
+    // so its column reveal shares the closing zoom, then restore keyboard focus
+    // once the zoom lands. Null lets normal refocus choose the target.
     void closeToWorkspace(Workspace* workspace, View* focus);
     // Instant teardown with no animation (session lock, config reload, output loss).
     void forceClose();
@@ -128,6 +130,7 @@ namespace umbriel {
     struct OutputState {
       Output* output = nullptr;
       wlr_scene_tree* tree = nullptr;
+      wlr_scene_blur* backgroundBlur = nullptr;
       wlr_scene_rect* backgroundTint = nullptr;
       std::vector<wlr_scene_rect*> workspaceBackgrounds;
       std::vector<std::unique_ptr<Card>> cards;
