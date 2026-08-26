@@ -837,12 +837,12 @@ namespace umbriel {
     scrolling->ensureVisible(scrolling->columnOf(m_focusedView), scrollViewportExtent());
   }
 
-  void Workspace::snapFocusedVisible() {
+  void Workspace::snapVisible(const View* view) {
     ScrollingLayout* scrolling = scrollingLayout();
     if (scrolling == nullptr || m_group == nullptr || m_group->output() == nullptr) {
       return;
     }
-    scrolling->snapVisible(scrolling->columnOf(m_focusedView), scrollViewportExtent());
+    scrolling->snapVisible(scrolling->columnOf(view), scrollViewportExtent());
   }
 
   double Workspace::scrollFractionToReveal(const View* view) const {

@@ -415,7 +415,7 @@ UMBRIEL_TEST(preservedFullWidthSurvivesEdgeMaximizeToggle) {
   fixture.layout.setConstraints([](const View* view) {
     return LayoutConstraints{.maximizedToEdges = view == stub(0)};
   });
-  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport + 2 * fixture.config.edgePad);
 
   fixture.layout.setConstraints([](const View*) { return LayoutConstraints{}; });
   CHECK(fixture.layout.isFullWidth(0));
@@ -617,6 +617,30 @@ UMBRIEL_TEST(ensureVisibleReachesBothEnds) {
 
   fixture.layout.ensureVisible(0, kViewport);
   CHECK_EQ(fixture.layout.scroll(), 0.0);
+}
+
+UMBRIEL_TEST(snapVisibleTargetsRequestedColumn) {
+  Fixture fixture;
+  fixture.addColumns(6);
+  constexpr int column = 3;
+
+  fixture.layout.setScroll(0);
+  fixture.layout.snapVisible(column, kViewport);
+
+  CHECK_EQ(fixture.layout.scroll(), static_cast<double>(fixture.layout.columnX(column, kViewport)));
+}
+
+UMBRIEL_TEST(snapVisibleCentersFullWidthColumn) {
+  Fixture fixture;
+  fixture.addColumns(3);
+  fixture.layout.setConstraints([](const View* view) { return LayoutConstraints{.fullscreen = view == stub(1)}; });
+  constexpr int column = 1;
+  const double expected = static_cast<double>(fixture.layout.columnX(column, kViewport) + fixture.config.edgePad);
+
+  fixture.layout.setScroll(0);
+  fixture.layout.snapVisible(column, kViewport);
+
+  CHECK_EQ(fixture.layout.scroll(), expected);
 }
 
 UMBRIEL_TEST(ensureVisibleIsANoOpForAnAlreadyVisibleColumn) {
