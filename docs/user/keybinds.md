@@ -249,6 +249,8 @@ Binds repeat while held, using `input.keyboard.repeat_rate` and
 Scratchpad visibility and cycling actions never repeat, even if their binding
 does not set `repeat = false`.
 
+Binds with `allow_when_locked = true` continue repeating while the session is locked.
+
 ## Allow when locked
 
 Binds are blocked by default when the session is locked. Opt in per bind
