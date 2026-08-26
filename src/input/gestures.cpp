@@ -31,7 +31,7 @@ namespace umbriel {
     // kCommitProgress of a full slide, so that same travel is what the hand already reads as "one workspace"; there is
     // no slide to be a fraction of in here, so it becomes the step itself.
     constexpr double kOverviewStepPx = kSwitchDistancePx * kCommitProgress;
-    // Finger travel that scrolls the strip by one viewport width (niri's VIEW_GESTURE_WORKING_AREA_MOVEMENT).
+    // Finger travel that scrolls the strip by one viewport width.
     constexpr double kViewGestureMovementPx = 1200.0;
   } // namespace
 
@@ -268,6 +268,7 @@ namespace umbriel {
         m_viewportPrimary = ws->scrollViewportExtent();
         m_scrollStart = scrolling->scroll();
         m_scrollTracker.reset();
+        m_scrollStartCentered = scrolling->centeredRest();
         ws->markArrange(false);
         m_state = State::Scroll;
       } else {
@@ -459,7 +460,7 @@ namespace umbriel {
       return;
     }
     if (cancelled) {
-      scrolling->setScroll(m_scrollStart);
+      scrolling->setScroll(m_scrollStart, m_scrollStartCentered);
       m_scrollWorkspace->markArrange(true);
       m_scrollWorkspace = nullptr;
       return;

@@ -49,7 +49,7 @@ namespace umbriel {
     void finishOverview(bool cancelled);
     void silentCancel();
 
-    // Finger travel that moves the strip by one viewport width, matching niri.
+    // Finger travel that moves the strip by one viewport width.
     [[nodiscard]] double scrollNormFactor() const;
 
     Server* m_server = nullptr;
@@ -61,6 +61,7 @@ namespace umbriel {
     // Scroll state (horizontal 3-finger).
     Workspace* m_scrollWorkspace = nullptr;
     double m_scrollStart = 0;
+    bool m_scrollStartCentered = false;
     int m_viewportPrimary = 0;
     SwipeTracker m_scrollTracker;
 

@@ -79,11 +79,12 @@ set.
 A second `session-quit` while the confirmation is open also quits. While the
 session is locked, `session-quit` quits without the dialog.
 
-Workspace selectors use exact names, including numeric names such as `1`.
-Unique names resolve globally; duplicate names resolve on the preferred output.
-Add `/output` to target another output explicitly. On a dynamic output, a
-numeric target first uses the preferred output. If the number is beyond the
-current workspace list, Umbriel uses the last workspace.
+Workspace selectors use exact names. Numeric selectors prefer the focused
+output: an exact numeric name wins, otherwise the number selects that 1-based
+position in a static custom-named workspace list. On a dynamic output, a number
+beyond the current workspace list selects the last workspace. Unique names
+resolve globally; duplicate names resolve on the preferred output. Add
+`/output` to target another output explicitly.
 
 When `workspace-switch` targets a workspace on another monitor, the cursor warps
 to the center of that monitor, so focus follows the switch.
@@ -95,14 +96,22 @@ These take no argument.
 | Action | What it does |
 |--------|--------------|
 | `window-focus-left` / `window-focus-right` | Move focus to the adjacent window along the row. |
+| `window-focus-or-output-left` / `window-focus-or-output-right` | Move focus to the adjacent window along the row; if already at the edge, focus the output in that direction instead. |
 | `window-focus-up` / `window-focus-down` | Move focus to the adjacent window along the column. |
+| `window-focus-or-workspace-up` / `window-focus-or-workspace-down` | Move focus up or down within the column; at the boundary, switch to the adjacent workspace and restore its focus. |
+| `window-focus-or-output-up` / `window-focus-or-output-down` | Move focus to the adjacent window along the column; if already at the edge, focus the output in that direction instead. |
 | `window-focus-next` | Cycle focus to the next mapped window on the active workspace. |
 | `window-move-to-workspace-next` / `window-move-to-workspace-previous` | Move the focused window to the adjacent workspace and follow it. These actions do not wrap around. |
 | `column-move-left` / `column-move-right` | Move the focused window's column left or right. |
+| `window-move-or-output-left` / `window-move-or-output-right` | Move the focused window's column left or right; if already at the edge, move the column to the output in that direction instead. |
+| `column-center` | Center the focused column in the scrolling viewport; a no-op on a dwindle workspace. |
 | `window-move-up` / `window-move-down` | Move the focused window up or down within its column. |
+| `window-move-or-workspace-up` / `window-move-or-workspace-down` | Move the focused window up or down within its column; at the boundary, move it to the adjacent workspace. |
+| `window-move-or-output-up` / `window-move-or-output-down` | Move the focused window up or down within its column; if already at the edge, move the column to the output in that direction instead. |
 | `window-consume-left` | Pull the focused window into the column to its left. |
 | `window-expel-right` | Pop the focused window out of its column into a new column to the right. |
 | `window-cycle-width` | Cycle the focused column through its preset widths. |
+| `window-cycle-width-back` | Cycle the focused column through its preset widths in reverse. |
 | `window-toggle-fullscreen` | Toggle fullscreen for the focused window. |
 | `window-toggle-maximize` | Toggle the focused column's full-width state. |
 | `window-toggle-maximize-to-edges` | Toggle maximization of the focused window to the usable area's edges, without gaps or borders. Layer-shell exclusive zones remain visible. |
@@ -130,6 +139,9 @@ Vertical-heavy configurations should bind wheel chords to
 The first time a window floats, Umbriel places it slightly below and to the
 right of its tiled position while keeping it on-screen.
 
+`window-focus-switch-floating` switches focus to the most recently focused
+window with the opposite floating state.
+
 `window-toggle-pinned` makes the focused window float and keeps it above
 fullscreen windows on its output. Pinned windows remain visible when you
 switch workspaces. You cannot pin a fullscreen window, and making a pinned
@@ -141,6 +153,9 @@ window fullscreen removes its pinned state.
 focused output, by index. They do not wrap around: `workspace-previous` on the
 first workspace is a silent no-op. On a dynamic output, `workspace-next` reaches
 the trailing empty workspace, which becomes active as usual.
+
+`workspace-move-down` and `workspace-move-up` move the focused workspace up or down
+on the focused output. They do not wrap around either.
 
 The matching window actions can be bound independently:
 
@@ -220,6 +235,7 @@ remaining on a workspace.
 | `window-move-to-scratchpad` | Move the focused window from its workspace into the scratchpad. |
 | `scratchpad-toggle` | Show or hide the output's scratchpad windows. |
 | `window-restore-from-scratchpad` | Return the focused scratchpad window to its saved workspace. |
+| `window-toggle-scratchpad` | Move the focused window into the scratchpad, or restore it if it's already the scratchpad's focused window. |
 | `scratchpad-focus-next` | Focus the next visible scratchpad window. |
 
 Add `:<output>` to any action to target a specific output, for example
@@ -313,9 +329,9 @@ and widgets via `noctalia msg`. Typical bindings:
 ## Example: media and brightness keys
 
 ```toml
-# Volume (via Noctalia OSD)
-"XF86AudioRaiseVolume" = "spawn:noctalia msg volume-up 2%"
-"XF86AudioLowerVolume" = "spawn:noctalia msg volume-down 2%"
+# Volume
+"XF86AudioRaiseVolume" = "spawn:wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"
+"XF86AudioLowerVolume" = "spawn:wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
 "Mod+XF86AudioMute" = "spawn:wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
 
 # Media playback (playerctl)
@@ -331,3 +347,5 @@ and widgets via `noctalia msg`. Typical bindings:
 XF86 keys accept the same `Mod`, `Ctrl`, `Alt`, `Shift`, and `Super`
 combinations as other keys. Modifier chords also work when the XF86 key is
 reported by a separate laptop hotkey device.
+
+Volume control requires `wpctl` (from WirePlumber/PipeWire) while media playback requires `playerctl`.

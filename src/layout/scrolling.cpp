@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ranges>
 
 // wlr_box and WLR_EDGE_* only. Layout geometry must not pull src/wlr.h, which
 // drags SceneFX and the renderer into a translation unit that does arithmetic.
@@ -122,6 +123,18 @@ namespace umbriel {
     return std::clamp(width, 1, std::max(1, viewportPrimary));
   }
 
+  bool ScrollingLayout::setWidthFromPixels(int columnIndex, int viewportPrimary, int width) {
+    if (columnIndex < 0 || columnIndex >= static_cast<int>(m_columns.size())) {
+      return false;
+    }
+    const int gap = m_config->totalGap;
+    Column& column = m_columns[static_cast<size_t>(columnIndex)];
+    column.widthFrac =
+        static_cast<double>(std::max(1, width) + gap) / static_cast<double>(std::max(1, viewportPrimary) + gap);
+    column.savedWidthFrac = 0.0;
+    return true;
+  }
+
   int ScrollingLayout::centeringOffset(int viewportPrimary) const {
     if (!m_config->scrolling.centerUnderfullStrip) {
       return 0;
@@ -173,7 +186,7 @@ namespace umbriel {
     }
     const int index = std::clamp(columnIndex, 0, static_cast<int>(m_columns.size()));
     Column column;
-    column.widthFrac = m_config->scrolling.defaultWidthFraction;
+    column.widthFrac = m_config->scrolling.defaultWidthFraction.value_or(0.5);
     column.views.push_back(view);
     column.heightWeights.push_back(1.0);
     m_columns.insert(m_columns.begin() + index, std::move(column));
@@ -267,7 +280,7 @@ namespace umbriel {
       source.heightWeights.erase(source.heightWeights.begin() + row);
     }
     Column column;
-    column.widthFrac = m_config->scrolling.defaultWidthFraction;
+    column.widthFrac = m_config->scrolling.defaultWidthFraction.value_or(0.5);
     column.views.push_back(view);
     column.heightWeights.push_back(weight);
     m_columns.insert(m_columns.begin() + sourceColumn + 1, std::move(column));
@@ -322,7 +335,20 @@ namespace umbriel {
     m_columns.insert(m_columns.begin() + destination, std::move(column));
   }
 
-  void ScrollingLayout::setScroll(double scroll) { m_scroll = scroll; }
+  void ScrollingLayout::setScroll(double scroll, bool centeredRest) {
+    m_scroll = scroll;
+    m_centeredRest = centeredRest;
+  }
+
+  bool ScrollingLayout::centerColumn(int columnIndex, int viewportPrimary) {
+    if (columnIndex < 0 || columnIndex >= static_cast<int>(m_columns.size()) || viewportPrimary <= 0) {
+      return false;
+    }
+    const double target = static_cast<double>(columnX(columnIndex, viewportPrimary))
+        - (viewportPrimary - columnWidth(columnIndex, viewportPrimary)) / 2.0;
+    setScroll(target, true);
+    return true;
+  }
 
   double ScrollingLayout::targetScrollForEnsureVisible(int columnIndex, int viewportPrimary) const {
     if (columnIndex < 0 || columnIndex >= static_cast<int>(m_columns.size()) || viewportPrimary <= 0) {
@@ -331,12 +357,11 @@ namespace umbriel {
     const int x = columnX(columnIndex, viewportPrimary);
     const int width = columnWidth(columnIndex, viewportPrimary);
     const double max = static_cast<double>(std::max(0, totalWidth(viewportPrimary) - viewportPrimary));
-    // Already fully on screen: never move the strip. In particular, a column flush against an edge must not jump when
-    // it receives focus. Still bounded: a touchpad swipe parks the strip past an edge on purpose, and the edge column
-    // stays fully visible while it does, so returning that overscroll verbatim would make every reveal a no-op and
-    // leave the strip resting outside its own range.
+    // Already fully on screen: never move the strip, including one parked past an edge on purpose (column-center
+    // overshoots the range so edge columns can sit in the middle). A touchpad swipe that left the strip outside its
+    // range springs back where the gesture ends, in Gestures::finishScroll.
     if (m_scroll <= static_cast<double>(x) && m_scroll >= static_cast<double>(x + width - viewportPrimary)) {
-      return std::clamp(m_scroll, 0.0, max);
+      return m_centeredRest ? m_scroll : std::clamp(m_scroll, 0.0, max);
     }
 
     // Move by the shortest distance that reveals the whole column. A column entering from the right lands flush against
@@ -370,7 +395,9 @@ namespace umbriel {
   }
 
   void ScrollingLayout::ensureVisible(int columnIndex, int viewportPrimary) {
-    m_scroll = targetScrollForEnsureVisible(columnIndex, viewportPrimary);
+    const double target = targetScrollForEnsureVisible(columnIndex, viewportPrimary);
+    m_centeredRest = m_centeredRest && target == m_scroll;
+    m_scroll = target;
   }
 
   void ScrollingLayout::arrange(const wlr_box& usable) {
@@ -439,11 +466,16 @@ namespace umbriel {
   Layout::InitialSize
   ScrollingLayout::initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction) const {
     const wlr_box content = contentArea(usable);
-    const double fraction = ruleWidthFraction.value_or(m_config->scrolling.defaultWidthFraction);
-    if (vertical()) {
-      return {.width = content.width, .height = fractionalWidth(content.height, fraction)};
+    const std::optional<double> fraction =
+        ruleWidthFraction ? ruleWidthFraction : m_config->scrolling.defaultWidthFraction;
+    if (!fraction) {
+      return vertical() ? InitialSize{.width = content.width, .height = 0}
+                        : InitialSize{.width = 0, .height = content.height};
     }
-    return {.width = fractionalWidth(content.width, fraction), .height = content.height};
+    if (vertical()) {
+      return {.width = content.width, .height = fractionalWidth(content.height, *fraction)};
+    }
+    return {.width = fractionalWidth(content.width, *fraction), .height = content.height};
   }
 
   wlr_box ScrollingLayout::targetBox(const View* view) const {
@@ -454,16 +486,22 @@ namespace umbriel {
     return {.x = it->x, .y = it->y, .width = it->width, .height = it->height};
   }
 
-  bool ScrollingLayout::cycleWidth(int columnIndex) {
+  bool ScrollingLayout::cycleWidth(int columnIndex, int direction) {
     if (columnIndex < 0 || columnIndex >= static_cast<int>(m_columns.size())) {
       return false;
     }
     Column& column = m_columns[static_cast<size_t>(columnIndex)];
     const auto& presets = m_config->widthPresets;
-    const auto it = std::ranges::find_if(presets, [current = column.widthFrac](double preset) {
-      return preset > current + 0.0001;
-    });
-    column.widthFrac = it == presets.end() ? presets[0] : *it;
+    const double current = column.widthFrac;
+    if (direction < 0) {
+      const auto it = std::ranges::find_if(presets | std::views::reverse, [current](double preset) {
+        return preset < current - 0.0001;
+      });
+      column.widthFrac = it == presets.rend() ? presets.back() : *it;
+    } else {
+      const auto it = std::ranges::find_if(presets, [current](double preset) { return preset > current + 0.0001; });
+      column.widthFrac = it == presets.end() ? presets[0] : *it;
+    }
     column.savedWidthFrac = 0.0;
     return true;
   }
@@ -502,7 +540,7 @@ namespace umbriel {
 
   double ScrollingLayout::widthFraction(int columnIndex) const {
     if (columnIndex < 0 || columnIndex >= static_cast<int>(m_columns.size())) {
-      return m_config->scrolling.defaultWidthFraction;
+      return m_config->scrolling.defaultWidthFraction.value_or(0.5);
     }
     return m_columns[static_cast<size_t>(columnIndex)].widthFrac;
   }
@@ -827,20 +865,7 @@ namespace umbriel {
     if (box.width <= 0 || box.height <= 0) {
       return WLR_EDGE_RIGHT;
     }
-    const double px = cx - box.x;
-    const double py = cy - box.y;
-    uint32_t edges = 0;
-    if (px < box.width / 3.0) {
-      edges |= WLR_EDGE_LEFT;
-    } else if (px > 2.0 * box.width / 3.0) {
-      edges |= WLR_EDGE_RIGHT;
-    }
-    if (py < box.height / 3.0) {
-      edges |= WLR_EDGE_TOP;
-    } else if (py > 2.0 * box.height / 3.0) {
-      edges |= WLR_EDGE_BOTTOM;
-    }
-    return sanitizeResizeEdges(view, edges);
+    return sanitizeResizeEdges(view, resizeEdgesForPoint(box, cx, cy));
   }
 
   uint32_t ScrollingLayout::sanitizeResizeEdges(const View* view, uint32_t edges) const {

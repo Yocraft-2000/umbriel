@@ -159,6 +159,7 @@ outer_border_color = "#1A1A1FFF"
 insert_hint_color = "#7FC8FF80"
 backdrop_color = "#000000FF"
 animation_ms = 200             # 1-10000
+drag_opacity = 0.75
 ```
 
 | Key                           | Type  | Default     | Description                                                                                                                                       |
@@ -175,6 +176,7 @@ animation_ms = 200             # 1-10000
 | `insert_hint_color`           | color | `#7FC8FF80` | Drop-target preview during drag.                                                                                                                  |
 | `backdrop_color`              | color | `#000000FF` | Background for fullscreen gaps and lock screen.                                                                                                   |
 | `animation_ms`                | int   | `200`       | Animation duration in milliseconds (1-10000).                                                                                                     |
+| `drag_opacity`                | float | `0.75`      | Opacity of the window while dragging.                                                                                                             |
 
 Colors are `#RRGGBB` or `#RRGGBBAA`.
 
@@ -239,9 +241,14 @@ Drop shadow behind windows (tiled and floating). Hidden while fullscreen.
 ```toml
 [overview]
 zoom = 0.5                     # 0.1-0.75
+background_blur = true
 background_tint = "#10101430"
 workspace_background = "#00000044"
 ```
+
+The wallpaper is blurred while the overview is open using the `[appearance.blur]`
+parameters. Set `background_blur = false`, or disable appearance blur, to turn it
+off.
 
 ### Open and navigate
 
@@ -273,6 +280,7 @@ workspace. Its alpha can produce anything from a light tint to an opaque fill.
 | Key                    | Type  | Default     | Description                                                                                    |
 | ---------------------- | ----- | ----------- | ---------------------------------------------------------------------------------------------- |
 | `zoom`                 | float | `0.5`       | Workspace scale when fully zoomed out (0.1-0.75).                                              |
+| `background_blur`      | bool  | `true`      | Blur the wallpaper behind the filmstrip. Uses the `[appearance.blur]` parameters.             |
 | `background_tint`      | color | `#10101430` | Tint composited over the desktop background. Alpha `00` leaves it untouched; `FF` hides it.    |
 | `workspace_background` | color | `#00000044` | Rounded background behind each workspace. Alpha `00` makes it invisible; `FF` makes it opaque. |
 
@@ -314,7 +322,7 @@ width_presets = [0.333, 0.5, 0.667]
 
 [layout.scrolling]
 direction = "horizontal"             # "horizontal" or "vertical"
-default_width_fraction = 0.5        # 0.1-1.0
+default_width_fraction = 0.5         # remove to let clients choose, 0.1-1.0
 center_underfull_strip = true
 ```
 
@@ -331,7 +339,7 @@ Scrolling layout options:
 | Key                      | Type   | Default        | Description                                                                                                                       |
 | ------------------------ | ------ | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `direction`              | string | `"horizontal"` | Scroll axis: `"horizontal"` stacks columns left to right; `"vertical"` stacks lanes top to bottom.                                |
-| `default_width_fraction` | float  | `0.5`          | Initial scroll-axis extent assigned to new scrolling lanes (0.1-1.0).                                                             |
+| `default_width_fraction` | float  | unset          | Initial scroll-axis extent assigned to new scrolling lanes (0.1-1.0). The packaged config sets `0.5`; when omitted, the client chooses its initial extent. |
 | `center_underfull_strip` | bool   | `true`         | Center the complete strip whenever it is shorter than the viewport. Disable to align it at the start edge.                        |
 
 On a vertical scrolling workspace, each column becomes a horizontal lane. Lanes
@@ -341,6 +349,12 @@ width vocabulary, including `default_width_fraction`, `width_presets`,
 `window-toggle-maximize`, controls the lane's extent along the scroll axis. In
 other words, it controls lane height on a vertical workspace.
 
+The packaged config sets `default_width_fraction = 0.5` so new scrolling lanes
+start at half the viewport. When the option is removed, Umbriel leaves the
+scroll-axis dimension unconstrained in the initial configure and retains the
+logical size chosen by the client. A numeric window-rule `default_width` still
+takes precedence for matching applications.
+
 Directional focus and movement follow the screen: left and right operate within
 a vertical lane, while up and down walk or reorder lanes along the strip.
 `window-consume-left` still merges into the previous lane, which is visually
@@ -348,12 +362,16 @@ above, and `window-expel-right` creates the next lane, which is visually below.
 The three-finger vertical swipe continues to switch workspaces. The
 three-finger horizontal strip gesture is inert on vertical workspaces, so use
 keyboard or wheel bindings to scroll the strip.
+On a horizontal scrolling workspace, a three-finger horizontal swipe moves the
+strip and uses release velocity when settling a column against a viewport edge.
 
-In the scrolling layout, Mod+Right-drag selects horizontal and vertical resize
-edges from the outer thirds of a window. Dragging from a corner region resizes
-both axes. Mod+Right-click in the center region starts no resize and instead
-scrolls the focused window into view. When a tiled resize ends, the focused
-scrolling column animates back into view.
+Mod+Right-drag selects horizontal and vertical resize edges from the outer
+thirds of both tiled and floating windows. Dragging from a corner region resizes
+both axes. Mod+Right-click in the center region starts no resize and preserves
+the window's maximize state. For tiled windows, a center click also scrolls the
+focused window into view. When a tiled resize ends, the focused scrolling column
+animates back into view. In the dwindle layout, only edges backed by an internal
+split propose a resize, so screen-facing edges propose nothing.
 
 When focus moves to a partially or fully hidden column, Umbriel scrolls by the
 shortest distance needed to reveal it completely. A column entering from the
@@ -411,6 +429,7 @@ variant = ""      # XKB variant
 options = ""      # XKB options, comma-separated
 repeat_rate = 25  # 0-1000 Hz, 0 disables
 repeat_delay = 600 # 0-10000 ms
+numlock_toggle = true # true enables NumLock when a keyboard connects; false leaves it off
 ```
 
 `layout` takes a comma-separated list to load several layouts at once
@@ -437,6 +456,8 @@ log and the whole keyboard block falls back to the system default.
 [input.touchpad]
 tap = true
 natural_scroll = true
+# accel_profile = "adaptive"  # "flat", "adaptive", or a custom curve
+# sensitivity = 0.5           # -1.0 to 1.0
 ```
 
 Tap-to-click is enabled by default. Set `tap = false` to disable it globally,
@@ -444,20 +465,27 @@ or use a per-device override below. `natural_scroll` remains unset by default,
 which preserves each device's libinput setting. Options are applied only when
 supported by the device.
 
+`accel_profile` and `sensitivity` work like their `[input.mouse]` counterparts,
+including custom curves. Both remain unset by default, which uses each
+touchpad's libinput default profile and speed. Removing either setting on reload
+restores the corresponding default. `sensitivity` alone adjusts pointer speed
+under the device's default profile.
+
 ### Mouse
 
 ```toml
 [input.mouse]
 natural_scroll = false
-accel_profile = "flat"  # "flat", "adaptive", or a custom curve
+# accel_profile = "flat"  # "flat", "adaptive", or a custom curve
 sensitivity = 0.0        # -1.0 to 1.0
 scroll_wheel_step = 60  # 1-1000, pixels per step for layout-scroll-left/right
 ```
 
-Mouse acceleration is disabled by default by selecting libinput's `flat`
-profile. Set `accel_profile = "adaptive"` to enable acceleration. `sensitivity`
-controls pointer speed independently of the selected profile. A custom curve can
-be supplied with this syntax:
+Omitting `accel_profile` preserves each device's libinput default, which is
+usually `adaptive` for a mouse. Set `accel_profile = "flat"` to disable
+speed-dependent acceleration, or set it to `adaptive` explicitly to override a
+different device default. `sensitivity` controls pointer speed independently of
+the selected profile. A custom curve can be supplied with this syntax:
 
 ```toml
 accel_profile = "custom 0.2 0.0 0.5 1.0 2.0"
@@ -465,9 +493,10 @@ accel_profile = "custom 0.2 0.0 0.5 1.0 2.0"
 
 The first number is the positive input-speed step, followed by at least two
 non-negative output-speed points. Libinput interpolates between them.
-`sensitivity` has no effect when a custom profile is selected.
-Omit `natural_scroll` to preserve each device's default. `layout-scroll-left`
-and `layout-scroll-right` clamp to the strip bounds, so the columns never park
+`sensitivity` has no effect when a custom profile is selected. Omit
+`natural_scroll` or `accel_profile` to preserve each device's corresponding
+libinput default. `layout-scroll-left` and `layout-scroll-right` clamp to the
+strip bounds, so the columns never park
 past either edge. Wheel-triggered scrolling uses twice `scroll_wheel_step`
 during an active tiled window drag.
 
@@ -489,6 +518,8 @@ repeat_delay = 250
 name = "Acme Precision Touchpad"
 tap = true
 natural_scroll = false
+accel_profile = "flat"
+sensitivity = 0.0
 
 [[input.device]]
 name = "Acme Gaming Mouse"
@@ -499,8 +530,9 @@ sensitivity = 0.0
 Each rule inherits the matching class settings and overrides only the keys it
 contains. `layout`, `variant`, `options`, `repeat_rate`, and `repeat_delay`
 apply to keyboards. `tap` applies to touchpads. `natural_scroll` applies to
-touchpads and mice. `accel_profile` and `sensitivity` apply to mice.
-Unsupported libinput settings are reported in the log.
+touchpads and mice. `accel_profile` and `sensitivity` apply to mice and
+touchpads; for a touchpad the rule overrides `[input.touchpad]` rather than
+`[input.mouse]`. Unsupported libinput settings are reported in the log.
 
 Rules match every attached device with the exact name. Device overrides also
 apply when a device is connected after startup and when the configuration is
@@ -560,8 +592,10 @@ Set `hardware_cursor = false` to composite the cursor in the output render pass.
 This can work around cursor flicker or disappearance caused by hardware cursor
 planes. Cursor settings apply on config reload. Output scale changes also reload
 the cursor image at the matching scale without requiring a restart.
-Set `hide_when_typing = true` to hide the cursor immediately after a
-non-modifier key press. Modifier-only presses leave it visible.
+Set `hide_when_typing = true` to hide the cursor after a non-modifier key
+press. Modifier-only presses leave it visible. Typing while a pointer button is
+held also leaves it visible so active clicks, drags, and game actions are not
+interrupted.
 Set `hide_timeout_ms` to a value from `1` to `3600000` to hide the cursor after
 that many milliseconds without pointer activity. Motion, clicks, scrolling,
 and tablet input reveal the cursor and restart the timeout. The two hiding

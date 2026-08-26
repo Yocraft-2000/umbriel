@@ -46,9 +46,14 @@ opening settings do not overwrite user changes made in the meantime.
 | `default_width` | float | Scrolling only. Lane scroll-axis extent fraction (0.1-1.0), which is height on a vertical workspace. Gap-aware: fractions that sum to 1 tile exactly. Overrides `layout.scrolling.default_width_fraction`. Dragging the lane within or between scrolling workspaces retains its current fraction. Ignored in dwindle. |
 | `default_workspace` | int | Place on workspace N from 1 to 64. On dynamic outputs, values beyond the current count clamp to the last workspace. |
 | `default_fullscreen` | bool | Open in fullscreen. |
+| `default_maximize_to_edges` | bool | Explicitly open maximized to edges, expanding the window to the usable area's edges without gaps or borders. Layer-shell exclusive zones stay visible. Takes precedence over `default_maximize`; when combined with `default_fullscreen` the window opens fullscreen and returns to maximized to edges once fullscreen is cleared. |
 | `default_maximize` | bool | Explicitly open maximized. Umbriel ignores maximized state restored by a client while it opens unless `general.honor_restored_maximize` is enabled, but always honors later client requests. Tiled windows expand their column to full width without changing the layout; floating windows fill the usable area. |
 | `default_focused` | bool | Take focus when opening, switching to the window's workspace when needed. Defaults to `true`; set to `false` to preserve the existing focus and workspace. |
 | `default_pinned` | bool | Open pinned above regular windows and keep the window visible across workspace changes. Pinning makes a tiled window floating. |
+
+If neither `default_width` nor a matching
+`layout.scrolling.default_width_fraction` is set, a scrolling window chooses
+its initial logical extent.
 
 Without `default_output`, a numbered workspace owned by exactly one fixed output
 inventory also selects that output. For example, if only `DP-1` has a fourth
@@ -91,7 +96,7 @@ offset would otherwise place it completely off-screen.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `opacity` | float | Surface opacity (0.0-1.0). |
+| `opacity` | float | Surface opacity (0.0-1.0). With blur enabled, the translucent surface reveals a full-strength blurred backdrop, matching equivalent alpha supplied by the client. |
 | `blur` | bool | Enable/disable blur for this window. |
 | `blur_popups` | bool | Enable/disable blur for its XDG popups. |
 | `blur_ignore_alpha` | float | Skip blur where surface alpha is below this threshold (0.0-1.0). Applies to the window and its popups. |
@@ -106,6 +111,7 @@ offset would otherwise place it completely off-screen.
 # Enable blur for every window
 [[window_rule]]
 blur = true
+blur_optimized = true
 
 # Narrow columns for terminals and file managers
 [[window_rule]]

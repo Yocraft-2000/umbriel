@@ -5,9 +5,10 @@ connector names such as `DP-1` or `HDMI-A-1`. Nested outputs use `WL-1`;
 headless outputs use `HEADLESS-1`.
 
 When an output is disconnected or disabled through configuration, Umbriel moves
-its windows to the active workspace on another enabled output. Scratchpad
-windows move with that output assignment. If no enabled output remains, windows
-stay without a workspace until one becomes available.
+its windows to the active workspace on another enabled output, and moves them
+back to the workspace they came from when it returns. Scratchpad windows move
+with that output assignment and return with it too. If no enabled output
+remains, windows stay without a workspace until one becomes available.
 
 Run `umbriel outputs` inside a session to list connector names and modes.
 
@@ -240,6 +241,10 @@ number beyond the current count, Umbriel uses the last workspace.
 Set `workspaces` to a number or an ordered list of names. Umbriel creates
 exactly those workspaces and keeps them when they are empty.
 
+Numeric workspace actions select positions on the focused output, so
+`workspace-switch:2` selects the second entry even when that workspace has a
+custom name.
+
 ```toml
 [output.DP-1]
 workspaces = 5
@@ -289,7 +294,7 @@ and numbered positions as those workspaces are created or removed.
 | `layout.mode` | string | `"scrolling"` or `"dwindle"`. |
 | `layout.gap` | int | Gap in pixels (0-500). |
 | `layout.width_presets` | float array | Widths used by the width-cycle action in both layouts. |
-| `layout.scrolling.default_width_fraction` | float | Initial scrolling column width (0.1-1.0). |
+| `layout.scrolling.default_width_fraction` | float | Optional initial scrolling lane extent (0.1-1.0). When omitted globally and for the workspace, the client chooses its initial logical extent. |
 | `layout.scrolling.center_underfull_strip` | bool | Center the complete strip whenever it is narrower than the viewport. Disable to left-align underfull strips. |
 | `layout.scrolling.direction` | string | `"horizontal"` or `"vertical"` scroll axis. |
 

@@ -3,6 +3,7 @@
 #include "core/animation.h"
 #include "scene/node.h"
 #include "view/decoration.h"
+#include "view/deferred_unfullscreen.h"
 #include "view/floating.h"
 #include "view/presentation.h"
 
@@ -90,7 +91,19 @@ namespace umbriel {
     // activation chrome the focus manager drives from outside.
     void setBorderFocused(bool focused);
     void setWorkspace(Workspace* workspace, bool attachToLayout = true);
+    // A move the user asked for: the view belongs where it lands, and any displaced home is dropped.
+    void moveToWorkspace(Workspace* workspace, bool attachToLayout = true);
     void detachWorkspace();
+
+    // The output and workspace the view sat on when its output went away; restoreDisplacedViews puts it back there.
+    struct DisplacedHome {
+      std::string outputName;
+      std::string workspaceName;
+    };
+    [[nodiscard]] const std::optional<DisplacedHome>& displacedHome() const { return m_displacedHome; }
+    void markDisplaced(DisplacedHome home) { m_displacedHome = std::move(home); }
+    void clearDisplaced() { m_displacedHome.reset(); }
+
     void setOnActiveWorkspace(bool active);
     void setScratchpadBorder(bool scratchpad);
     void animateTo(int x, int y);
@@ -129,6 +142,7 @@ namespace umbriel {
     void applyFullscreenLayout(bool animate = false);
     // Compositor-driven fullscreen toggle (keybind); client requests use handleRequestFullscreen.
     void toggleFullscreen();
+    void applyDeferredUnfullscreen();
     void setMaximizedToEdges(bool maximized);
     void toggleMaximizedToEdges();
     // Detach from the scrolling layout (float) or re-insert as a tiled column.
@@ -155,9 +169,6 @@ namespace umbriel {
     friend class Server;
     friend class Popup;
     friend class Overview;
-    // Keep the insertion preview legible beneath the window during every
-    // compositor-owned relocate drag, including overview card drags.
-    static constexpr float kDragOpacity = 0.75F;
 
     struct OpacitySurfaceWatch {
       View* view = nullptr;
@@ -225,6 +236,7 @@ namespace umbriel {
     // commit or clip change) resets buffer opacity, so this must run afterward while opacity is below 1.
     [[nodiscard]] float effectiveOpacity() const { return m_fadeAlpha * m_ruleOpacity * m_dragOpacity; }
     void applyEffectiveOpacity();
+    void flushPendingEffectiveOpacity();
     void watchOpacitySurfaceTree(wlr_surface* root);
     void watchOpacitySurface(wlr_surface* surface);
     void clearOpacitySurfaceWatches();
@@ -318,6 +330,7 @@ namespace umbriel {
     wlr_output* m_foreignOutput = nullptr;
     wlr_ext_image_capture_source_v1* m_captureSource = nullptr;
     Workspace* m_workspace = nullptr;
+    std::optional<DisplacedHome> m_displacedHome;
     bool m_mapped = false;
     // Saved client state commonly requests maximization while the surface is
     // opening. Layout policy owns that transition; later requests are valid.
@@ -345,6 +358,9 @@ namespace umbriel {
     // 0 until the first frame tick after arming; the grace deadline counts
     // from there so a stalled frame clock cannot expire it instantly.
     uint64_t m_unfullscreenGraceStartMsec = 0;
+    // Inactive client unfullscreen requests wait briefly for xdg or foreign activation. Any later client request or
+    // compositor-driven fullscreen change clears the parked request.
+    DeferredUnfullscreen m_deferredUnfullscreen;
     // Geometry at unfullscreen time; a commit with a different geometry means
     // the client accepted windowed mode and the grace can end early.
     wlr_box m_unfullscreenGeometry{};

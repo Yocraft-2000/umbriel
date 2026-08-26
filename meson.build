@@ -34,7 +34,7 @@ add_project_arguments(
 
 wayland_server_dep = dependency('wayland-server', version: '>=1.23')
 wayland_client_dep = dependency('wayland-client')
-wayland_protocols_dep = dependency('wayland-protocols', version: '>=1.32')
+wayland_protocols_dep = dependency('wayland-protocols', version: '>=1.47')
 wlroots_dep = dependency('wlroots-0.20')
 # Prefer an installed SceneFX only when it provides Umbriel's patched API.
 # Otherwise, build the patched git submodule.
@@ -82,6 +82,10 @@ if pkgconfig.found()
       'scenefx/types/wlr_scene.h',
       'wlr_scene_output_set_sdr_white_level',
       args: scenefx_cflags,
+    ) and cpp.has_header_symbol(
+      'scenefx/types/wlr_scene.h',
+      'wlr_scene_buffer_set_luminance_multiplier',
+      args: scenefx_cflags,
     ) and cpp.has_member(
       'struct wlr_scene_output_state_options',
       'capture_sdr',
@@ -103,6 +107,7 @@ else
     not scenefx_header_source.contains('wlr_scene_blur_set_ignore_alpha')
     or not scenefx_header_source.contains('wlr_scene_tree_set_clip')
     or not scenefx_header_source.contains('wlr_scene_output_set_sdr_white_level')
+    or not scenefx_header_source.contains('wlr_scene_buffer_set_luminance_multiplier')
     or not scenefx_header_source.contains('capture_sdr')
   )
     error('SceneFX submodule must provide Umbriel patched APIs')
@@ -420,16 +425,20 @@ unit_tests = [
   ['scene-node', ['tests/unit/scene_node.cpp'], []],
   ['scene-clip', ['tests/unit/scene_clip.cpp'], [wayland_server_dep]],
   ['presentation', ['tests/unit/presentation.cpp'], [umbriel_core_dep]],
+  ['window-opacity-blur', ['tests/unit/window_opacity_blur.cpp'], [umbriel_core_dep]],
   ['value-parse', ['tests/unit/value_parse.cpp'], []],
   ['keybind-parse', ['tests/unit/keybind_parse.cpp'], []],
   ['modifier-tap', ['tests/unit/modifier_tap.cpp'], []],
   ['output-direction', ['tests/unit/output_direction.cpp'], []],
+  ['output-frame-schedule', ['tests/unit/output_frame_schedule.cpp'], []],
+  ['hdr-format', ['tests/unit/hdr_format.cpp'], []],
   ['scrolling-layout', ['tests/unit/scrolling_layout.cpp'], []],
   ['dwindle-layout', ['tests/unit/dwindle_layout.cpp'], []],
   ['cheatsheet-rows', ['tests/unit/cheatsheet_rows.cpp'], []],
   ['border-ring', ['tests/unit/border_ring.cpp'], []],
   ['floating', ['tests/unit/floating.cpp'], []],
   ['maximize', ['tests/unit/maximize.cpp'], []],
+  ['deferred-unfullscreen', ['tests/unit/deferred_unfullscreen.cpp'], []],
   ['config-section', ['tests/unit/config_section.cpp'], []],
   ['config-change', ['tests/unit/config_change.cpp'], []],
   ['config-load', ['tests/unit/config_load.cpp'], [umbriel_core_dep]],

@@ -5,7 +5,7 @@
 
 namespace umbriel {
 
-  // Sliding-window swipe tracker, ported from niri. Accumulates deltas since the gesture start,
+  // Sliding-window swipe tracker. Accumulates deltas since the gesture start,
   // estimates velocity over recent history only, and projects where the movement would coast to a
   // stop under touchpad-style exponential deceleration.
   class SwipeTracker {

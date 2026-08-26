@@ -4,6 +4,8 @@
 #include "core/log.h"
 #include "input/seat.h"
 #include "layer/layer_surface.h"
+#include "output/frame_schedule.h"
+#include "output/hdr_format.h"
 #include "scene/node.h"
 #include "server/server.h"
 #include "server/wine_color_manager.h"
@@ -21,6 +23,7 @@ namespace umbriel {
 
   namespace {
     constexpr Logger kLog("output");
+    constexpr int kFrameRetryDelayMs = 16;
 
     const OutputRule* findRule(const char* name) {
       for (const OutputRule& rule : config().outputs) {
@@ -44,6 +47,9 @@ namespace umbriel {
 
     m_destroy.notify = onDestroy;
     wl_signal_add(&m_output->events.destroy, &m_destroy);
+
+    m_frameRetryTimer =
+        wl_event_loop_add_timer(wl_display_get_event_loop(m_server->display()), onFrameRetryTimer, this);
 
     applyCursorConfig();
     (void)applyConfiguredState();
@@ -137,7 +143,8 @@ namespace umbriel {
     m_lastHdrRequested = hdrRequested;
     bool hdrAttempted = false;
 
-    bool enableVrr = false;
+    bool vrrRequested = false;
+    bool vrrStaged = false;
     if (enabled) {
       if (rule != nullptr && rule->mode) {
         if (wlr_output_is_wl(m_output)) {
@@ -182,10 +189,11 @@ namespace umbriel {
       if (rule != nullptr && rule->transform) {
         wlr_output_state_set_transform(&state, static_cast<wl_output_transform>(*rule->transform));
       }
-      enableVrr = configuredVrrEnabled();
+      vrrRequested = configuredVrrEnabled();
       if (m_output->adaptive_sync_supported) {
-        wlr_output_state_set_adaptive_sync_enabled(&state, enableVrr);
-      } else if (enableVrr) {
+        wlr_output_state_set_adaptive_sync_enabled(&state, vrrRequested);
+        vrrStaged = vrrRequested;
+      } else if (vrrRequested) {
         kLog.warn("output '{}': VRR requested but adaptive sync is not supported", m_output->name);
       }
 
@@ -206,10 +214,42 @@ namespace umbriel {
               .max_cll = 0,
               .max_fall = 0,
           };
-          wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB2101010);
-          hdrAttempted = wlr_output_state_set_image_description(&state, &description);
-          if (!hdrAttempted) {
+          if (!wlr_output_state_set_image_description(&state, &description)) {
             hdrFallback = "failed to stage HDR image description";
+          } else {
+            const wlr_drm_format_set* primaryFormats =
+                wlr_output_get_primary_formats(m_output, m_server->allocator()->buffer_caps);
+            const auto selectFormat = [&]() {
+              return selectHdrRenderFormat(m_output->render_format, [&](uint32_t format) {
+                if (primaryFormats != nullptr && wlr_drm_format_set_get(primaryFormats, format) == nullptr) {
+                  return false;
+                }
+                wlr_output_state_set_render_format(&state, format);
+                return wlr_output_test_state(m_output, &state);
+              });
+            };
+
+            std::optional<uint32_t> renderFormat = selectFormat();
+            if (!renderFormat && vrrStaged) {
+              wlr_output_state_set_adaptive_sync_enabled(&state, false);
+              vrrStaged = false;
+              renderFormat = selectFormat();
+              if (renderFormat) {
+                kLog.warn("output '{}': HDR is incompatible with VRR, keeping VRR disabled", m_output->name);
+              } else {
+                wlr_output_state_set_adaptive_sync_enabled(&state, vrrRequested);
+                vrrStaged = vrrRequested;
+              }
+            }
+            if (renderFormat) {
+              hdrAttempted = true;
+              kLog.info(
+                  "output '{}': selected HDR render format {}", m_output->name,
+                  *renderFormat == DRM_FORMAT_XRGB2101010 ? "XR30" : "XB30"
+              );
+            } else {
+              hdrFallback = "backend rejected all 10-bit HDR render formats";
+            }
           }
         }
       }
@@ -223,17 +263,27 @@ namespace umbriel {
       wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
     }
 
-    bool committed = wlr_output_commit_state(m_output, &state);
-    if (!committed && enableVrr && m_output->adaptive_sync_supported) {
-      kLog.warn("output '{}': failed to enable VRR, retrying with VRR disabled", m_output->name);
-      wlr_output_state_set_adaptive_sync_enabled(&state, false);
-      committed = wlr_output_commit_state(m_output, &state);
-    }
+    const auto commitConfiguredState = [&]() {
+      bool success = wlr_output_commit_state(m_output, &state);
+      if (!success && vrrStaged) {
+        kLog.warn("output '{}': configured state commit failed, retrying with VRR disabled", m_output->name);
+        wlr_output_state_set_adaptive_sync_enabled(&state, false);
+        vrrStaged = false;
+        success = wlr_output_commit_state(m_output, &state);
+      }
+      return success;
+    };
+
+    bool committed = commitConfiguredState();
     if (!committed && hdrAttempted) {
       setHdrFallbackReason("HDR commit rejected by backend");
       wlr_output_state_set_image_description(&state, nullptr);
       wlr_output_state_set_render_format(&state, DRM_FORMAT_XRGB8888);
-      committed = wlr_output_commit_state(m_output, &state);
+      if (m_output->adaptive_sync_supported) {
+        wlr_output_state_set_adaptive_sync_enabled(&state, vrrRequested);
+        vrrStaged = vrrRequested;
+      }
+      committed = commitConfiguredState();
     }
     wlr_output_state_finish(&state);
     if (!committed) {
@@ -468,6 +518,10 @@ namespace umbriel {
   }
 
   Output::~Output() {
+    if (m_frameRetryTimer != nullptr) {
+      wl_event_source_remove(m_frameRetryTimer);
+      m_frameRetryTimer = nullptr;
+    }
     if (m_animationRenderLocked) {
       wlr_output_lock_attach_render(m_output, false);
       m_animationRenderLocked = false;
@@ -520,7 +574,7 @@ namespace umbriel {
       if (surface == nullptr || !surface->initialized) {
         continue;
       }
-      // Match sway: only exclusive_zone > 0 participates in the exclusive pass.
+      // Only exclusive_zone > 0 participates in the exclusive pass.
       if ((surface->current.exclusive_zone > 0) != exclusive) {
         continue;
       }
@@ -655,6 +709,20 @@ namespace umbriel {
     self->handleDestroy();
   }
 
+  int Output::onFrameRetryTimer(void* data) {
+    auto* self = static_cast<Output*>(data);
+    if (outputFrameAllowed(self->m_server->stopping(), self->m_server->session())) {
+      wlr_output_schedule_frame(self->m_output);
+    }
+    return 0;
+  }
+
+  void Output::armFrameRetry() {
+    if (m_frameRetryTimer != nullptr && outputFrameAllowed(m_server->stopping(), m_server->session())) {
+      wl_event_source_timer_update(m_frameRetryTimer, kFrameRetryDelayMs);
+    }
+  }
+
   void Output::applyMode(int width, int height) {
     if (width <= 0 || height <= 0) {
       return;
@@ -715,10 +783,14 @@ namespace umbriel {
   }
 
   void Output::handleFrame() {
-    // A failed DRM commit can immediately queue another frame after logind revokes device access.
-    // Stop before that retry loop can keep the final event-loop dispatch alive.
-    if (m_server->stopping()) {
+    // A failed DRM commit can immediately queue another frame after logind revokes device access. Stop before that
+    // retry loop can keep the final event-loop dispatch alive. A null session belongs to a nested or headless backend
+    // and remains renderable.
+    if (!outputFrameAllowed(m_server->stopping(), m_server->session())) {
       return;
+    }
+    if (m_frameRetryTimer != nullptr) {
+      wl_event_source_timer_update(m_frameRetryTimer, 0);
     }
 
     flushDirty();
@@ -730,6 +802,10 @@ namespace umbriel {
     clock_gettime(CLOCK_MONOTONIC, &now);
     const uint64_t nowMsec = static_cast<uint64_t>(now.tv_sec) * 1000 + static_cast<uint64_t>(now.tv_nsec) / 1'000'000;
     m_server->tickAnimations(nowMsec);
+
+    // Surface commits reset scene-buffer opacity to the protocol alpha. Repair
+    // pending rule opacity after every commit listener and before composition.
+    m_server->flushPendingViewOpacities();
 
     // A direct-scanned fullscreen client may stop submitting as soon as it loses focus. On VRR outputs that can leave
     // the first workspace-switch frame waiting on the old client, so the compositor never gets a vblank to advance the
@@ -758,6 +834,7 @@ namespace umbriel {
     // video players) block on wl_surface.frame before submitting their next buffer. If we skip frame_done on the
     // "nothing to render" path, they never commit again -> damage stays clean -> wlr_scene_output_needs_frame returns
     // false forever -> compositor parks in epoll_wait. (Reproducible with any mailbox/FIFO Vulkan game.)
+    bool commitFailed = false;
     if (wlr_scene_output_needs_frame(m_sceneOutput) || m_gammaDirty) {
       m_inFrame = true;
 
@@ -807,11 +884,7 @@ namespace umbriel {
 
       wlr_output_state_finish(&state);
       m_inFrame = false;
-
-      if (!commitOk) {
-        // Retry on next vblank; scene may have changed or backend may have recovered.
-        wlr_output_schedule_frame(m_output);
-      }
+      commitFailed = !commitOk;
     }
 
     // A request_state that arrived mid-commit is applied now that we're out of it.
@@ -820,9 +893,26 @@ namespace umbriel {
       applyMode(m_deferredWidth, m_deferredHeight);
     }
 
-    // Keep this output ticking on the next vblank while it owns an animation.
-    if (animationsActive) {
+    if (commitFailed && m_output->idle_frame != nullptr) {
+      // Damage, animation, or deferred output work can schedule another idle frame while this frame callback is still
+      // running. Remove it before arming the timer, otherwise the idle dispatcher can still recurse without returning
+      // to signals.
+      wl_event_source_remove(m_output->idle_frame);
+      m_output->idle_frame = nullptr;
+    }
+
+    // A failed commit has no vblank to pace an immediate retry. Defer it so event-loop signal and session sources get
+    // dispatched first. This also replaces animation scheduling for the failed frame, otherwise the animation path
+    // would recreate the same immediate retry loop.
+    switch (outputFrameFollowup(m_server->stopping(), m_server->session(), commitFailed, animationsActive)) {
+    case OutputFrameFollowup::Schedule:
       wlr_output_schedule_frame(m_output);
+      break;
+    case OutputFrameFollowup::RetryDelayed:
+      armFrameRetry();
+      break;
+    case OutputFrameFollowup::None:
+      break;
     }
 
     // Unconditional: see comment above. Never gate this on commit success.

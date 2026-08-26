@@ -59,10 +59,23 @@ UMBRIEL_TEST(eachSectionIsReportedOnItsOwn) {
   }
   {
     Config after;
-    after.input.mouse.accelProfile.kind = AccelProfile::Kind::Adaptive;
+    after.input.mouse.accelProfile = AccelProfile{};
     const ConfigChange change = ConfigChange::between(before, after);
     CHECK(change.input);
     CHECK(!change.appearance);
+  }
+  {
+    Config after;
+    after.input.touchpad.accelProfile.emplace();
+    after.input.touchpad.accelProfile->kind = AccelProfile::Kind::Flat;
+    const ConfigChange change = ConfigChange::between(before, after);
+    CHECK(change.input);
+    CHECK(ConfigEffects::between(before, after).input);
+  }
+  {
+    Config after;
+    after.input.touchpad.sensitivity = 0.5;
+    CHECK(ConfigChange::between(before, after).input);
   }
   {
     Config after;
@@ -115,7 +128,7 @@ UMBRIEL_TEST(nestedAppearanceChangesAreCaught) {
   CHECK(ConfigChange::between(before, shadowed).appearance);
 
   Config scrolled;
-  scrolled.layout.scrolling.defaultWidthFraction += 0.1;
+  scrolled.layout.scrolling.defaultWidthFraction = 0.6;
   CHECK(ConfigChange::between(before, scrolled).layout);
 
   Config focused;

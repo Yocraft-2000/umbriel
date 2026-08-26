@@ -63,13 +63,13 @@ namespace umbriel {
     bool operator==(const WorkspaceConfig&) const = default;
   };
 
-  // Fully resolved layout config: no optionals. Owned by each Workspace.
+  // Fully resolved layout config. Owned by each Workspace.
   struct ResolvedLayoutConfig {
     LayoutMode mode = LayoutMode::Scrolling;
     int gap = 8;
     std::vector<double> widthPresets{1.0 / 3, 0.5, 2.0 / 3};
     struct Scrolling {
-      double defaultWidthFraction = 0.5;
+      std::optional<double> defaultWidthFraction;
       bool centerUnderfullStrip = true;
       // Axis-agnostic layout state is preserved when config reload changes direction.
       ScrollingDirection direction = ScrollingDirection::Horizontal;
@@ -178,6 +178,7 @@ namespace umbriel {
     std::optional<double> defaultWidth;  // column width fraction override
     std::optional<int> defaultWorkspace; // 1-64
     std::optional<bool> defaultFullscreen;
+    std::optional<bool> defaultMaximizeToEdges;
     std::optional<bool> defaultMaximize;
     std::optional<bool> defaultFocused;
     std::optional<bool> defaultPinned;
@@ -203,6 +204,7 @@ namespace umbriel {
           && defaultWidth == other.defaultWidth
           && defaultWorkspace == other.defaultWorkspace
           && defaultFullscreen == other.defaultFullscreen
+          && defaultMaximizeToEdges == other.defaultMaximizeToEdges
           && defaultMaximize == other.defaultMaximize
           && defaultFocused == other.defaultFocused
           && defaultPinned == other.defaultPinned
@@ -226,6 +228,7 @@ namespace umbriel {
     std::optional<double> defaultWidth;
     std::optional<int> defaultWorkspace;
     std::optional<bool> defaultFullscreen;
+    std::optional<bool> defaultMaximizeToEdges;
     std::optional<bool> defaultMaximize;
     std::optional<bool> defaultFocused;
     std::optional<bool> defaultPinned;
@@ -290,6 +293,7 @@ namespace umbriel {
       std::array<float, 4> insertHintColor{0.50F, 0.78F, 1.0F, 0.50F};
       std::array<float, 4> backdropColor{0.0F, 0.0F, 0.0F, 1.0F};
       int animationMs = 200;
+      double dragOpacity = 0.75;
       struct Blur {
         bool enabled = true;
         bool optimized = true;
@@ -318,6 +322,9 @@ namespace umbriel {
     struct Overview {
       // Workspace scale when fully zoomed out.
       double zoom = 0.5;
+      // Blur the wallpaper behind the filmstrip while the overview is visible. Uses [appearance.blur] parameters;
+      // inert when appearance blur is disabled.
+      bool backgroundBlur = true;
       // Tint composited over the desktop background while overview is visible.
       std::array<float, 4> backgroundTint{0.0627451F, 0.0627451F, 0.0784314F, 0.1882353F};
       // Rounded background behind each workspace; alpha controls opacity.
@@ -343,7 +350,7 @@ namespace umbriel {
       int gap = 8;
       std::vector<double> widthPresets{1.0 / 3, 0.5, 2.0 / 3};
       struct Scrolling {
-        double defaultWidthFraction = 0.5;
+        std::optional<double> defaultWidthFraction;
         bool centerUnderfullStrip = true;
         ScrollingDirection direction = ScrollingDirection::Horizontal;
         bool operator==(const Scrolling&) const = default;
@@ -398,18 +405,21 @@ namespace umbriel {
         std::string options;
         int repeatRate = 25;
         int repeatDelay = 600;
+        bool numlockToggle = false;
         bool operator==(const Keyboard&) const = default;
       } keyboard;
 
       struct Touchpad {
         std::optional<bool> tap = true;
         std::optional<bool> naturalScroll;
+        std::optional<AccelProfile> accelProfile;
+        std::optional<double> sensitivity;
         bool operator==(const Touchpad&) const = default;
       } touchpad;
 
       struct Mouse {
         std::optional<bool> naturalScroll;
-        AccelProfile accelProfile;
+        std::optional<AccelProfile> accelProfile;
         double sensitivity = 0.0;
         int scrollWheelStep = 60;
         bool operator==(const Mouse&) const = default;
