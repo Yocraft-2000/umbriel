@@ -114,7 +114,8 @@ These take no argument.
 The first time a window floats, Umbriel places it slightly below and to the
 right of its tiled position while keeping it on-screen.
 
-`window-focus-toggle-floating-tiling` switches focus between floating and tiling windows.
+`window-focus-switch-floating` switches focus to the most recently focused
+window with the opposite floating state.
 
 `window-toggle-pinned` makes the focused window float and keeps it above
 fullscreen windows on its output. Pinned windows remain visible when you

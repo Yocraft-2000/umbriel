@@ -508,7 +508,7 @@ namespace umbriel {
       return true;
     }
 
-    bool actionFocusFloatingOrTiling(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+    bool actionFocusSwitchFloating(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       Workspace* workspace = activeWorkspace(server);
       if (workspace == nullptr) {
         return true;
@@ -864,7 +864,7 @@ namespace umbriel {
         &actionFocusAdjacent<1>,
         &actionFocusVertical<-1>,
         &actionFocusVertical<1>,
-        &actionFocusFloatingOrTiling,
+        &actionFocusSwitchFloating,
         &actionMoveColumn<-1>,
         &actionMoveColumn<1>,
         &actionMoveVertical<-1>,

@@ -31,7 +31,7 @@ namespace umbriel {
     WindowFocusRight,
     WindowFocusUp,
     WindowFocusDown,
-    WindowFocusFloatingOrTiling,
+    WindowFocusSwitchFloating,
     ColumnMoveLeft,
     ColumnMoveRight,
     WindowMoveUp,
