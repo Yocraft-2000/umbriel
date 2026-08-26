@@ -1030,6 +1030,16 @@ namespace umbriel {
     return result;
   }
 
+  Workspace* WorkspaceGroup::prependDynamicWorkspace() {
+    const std::string name = "1";
+    const char* outputName = m_output->wlr()->name != nullptr ? m_output->wlr()->name : "output";
+    ResolvedLayoutConfig layout = resolveWorkspaceLayout(config(), outputName, name, 0);
+    auto workspace = createConfiguredWorkspace({name, std::move(layout)}, 0);
+    Workspace* result = workspace.get();
+    m_workspaces.insert(m_workspaces.begin(), std::move(workspace));
+    return result;
+  }
+
   void WorkspaceGroup::refreshDynamicWorkspaceMetadata() {
     const char* outputName = m_output->wlr()->name != nullptr ? m_output->wlr()->name : "output";
     for (size_t index = 0; index < m_workspaces.size(); ++index) {
@@ -1080,11 +1090,18 @@ namespace umbriel {
     if (target < 0 || target >= static_cast<std::ptrdiff_t>(m_workspaces.size())) {
       return false;
     }
-    if (m_dynamic && direction > 0) {
-      const bool targetIsTrailingEmpty = static_cast<size_t>(target) == m_workspaces.size() - 1
-          && !m_workspaces[static_cast<size_t>(target)]->hasViews();
-      if (targetIsTrailingEmpty) {
-        return false;
+    if (m_dynamic) {
+      if (direction > 0) {
+        const bool targetIsTrailingEmpty = static_cast<size_t>(target) == m_workspaces.size() - 1
+            && !m_workspaces[static_cast<size_t>(target)]->hasViews();
+        if (targetIsTrailingEmpty) {
+          return false;
+        }
+      } else if (config().workspaces.emptyAbove) {
+        const bool targetIsLeadingEmpty = target == 0 && !m_workspaces[0]->hasViews();
+        if (targetIsLeadingEmpty) {
+          return false;
+        }
       }
     }
     slideFinish();
@@ -1093,6 +1110,9 @@ namespace umbriel {
       refreshDynamicWorkspaceMetadata();
       if (m_workspaces.back()->hasViews()) {
         appendDynamicWorkspace();
+      }
+      if (config().workspaces.emptyAbove && m_workspaces.front()->hasViews()) {
+        prependDynamicWorkspace();
       }
     } else {
       for (const size_t slot : {index, static_cast<size_t>(target)}) {
@@ -1115,7 +1135,7 @@ namespace umbriel {
     if (m_dynamic) {
       auto old = std::move(m_workspaces);
       m_workspaces.clear();
-      m_workspaces.reserve(old.size() + 1);
+      m_workspaces.reserve(old.size() + 2);
       for (auto& workspace : old) {
         if (workspace != nullptr && (workspace->hasViews() || workspace.get() == m_active)) {
           m_workspaces.push_back(std::move(workspace));
@@ -1127,6 +1147,9 @@ namespace umbriel {
 
       if (m_workspaces.empty() || m_workspaces.back()->hasViews()) {
         appendDynamicWorkspace();
+      }
+      if (config().workspaces.emptyAbove && m_workspaces.front()->hasViews()) {
+        prependDynamicWorkspace();
       }
       for (size_t index = 0; index < m_workspaces.size(); ++index) {
         m_workspaces[index]->rename(std::to_string(index + 1), index);
@@ -1235,21 +1258,35 @@ namespace umbriel {
     // Dynamic groups keep exactly one empty workspace. Prefer an empty active workspace so closing its last window does
     // not destroy the workspace the user is currently viewing; otherwise retain the last existing empty one to avoid
     // replacing its protocol identity on every reconciliation.
-    Workspace* emptyKeeper = m_active != nullptr && !m_active->hasViews() ? m_active : nullptr;
-    if (emptyKeeper == nullptr && !m_workspaces.empty() && !m_workspaces.back()->hasViews()) {
-      emptyKeeper = m_workspaces.back().get();
+    Workspace* backKeeper = m_active != nullptr && !m_active->hasViews() ? m_active : nullptr;
+    if (backKeeper == nullptr && !m_workspaces.empty() && !m_workspaces.back()->hasViews()) {
+      backKeeper = m_workspaces.back().get();
     }
+
+    // workspaces.emptyAbove asks for the same guarantee at the front. Unlike the back keeper this is purely
+    // positional: whatever already sits at index 0 keeps its identity if it is empty. A workspace that already serves
+    // as the back keeper (the group has collapsed to a single empty workspace) already satisfies both roles and does
+    // not need a second one.
+    const bool emptyAbove = config().workspaces.emptyAbove;
+    Workspace* frontKeeper = nullptr;
+    if (emptyAbove && !m_workspaces.empty() && !m_workspaces.front()->hasViews()) {
+      frontKeeper = m_workspaces.front().get();
+    }
+
     for (size_t index = m_workspaces.size(); index-- > 0;) {
       Workspace* workspace = m_workspaces[index].get();
-      if (!workspace->hasViews() && workspace != emptyKeeper) {
+      if (!workspace->hasViews() && workspace != backKeeper && workspace != frontKeeper) {
         if (m_previous == workspace) {
           m_previous = nullptr;
         }
         m_workspaces.erase(m_workspaces.begin() + static_cast<std::ptrdiff_t>(index));
       }
     }
-    if (emptyKeeper == nullptr) {
+    if (backKeeper == nullptr) {
       appendDynamicWorkspace();
+    }
+    if (emptyAbove && m_workspaces.front()->hasViews()) {
+      prependDynamicWorkspace();
     }
 
     refreshDynamicWorkspaceMetadata();
