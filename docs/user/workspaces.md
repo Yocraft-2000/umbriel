@@ -8,6 +8,7 @@ rules.
 ```toml
 [workspaces]
 back_and_forth = true
+empty_above = false
 ```
 
 | Key              | Type | Default | Description                                                                                     |
