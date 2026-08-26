@@ -13,6 +13,7 @@ back_and_forth = true
 | Key              | Type | Default | Description                                                                                     |
 | ---------------- | ---- | ------- | ----------------------------------------------------------------------------------------------- |
 | `back_and_forth` | bool | `false` | Re-selecting the active workspace jumps back to the previously active workspace on that output. |
+| `empty_above` | bool | `false` | Add an empty workspace at the start, in addition to the workspace at the end. |
 
 Output workspaces are dynamic by default. The workspace models and rules are
 documented below.
