@@ -49,6 +49,10 @@ namespace umbriel {
     // this one can answer.
     [[nodiscard]] ScrollingLayout* scrollingLayout();
     [[nodiscard]] const ScrollingLayout* scrollingLayout() const;
+    [[nodiscard]] bool scrollingVertical() const;
+    // Primary extent the strip scrolls within, less edge padding on both sides.
+    // At least 1, so callers can divide by it.
+    [[nodiscard]] int scrollViewportExtent() const;
     [[nodiscard]] DwindleLayout* dwindleLayout();
     [[nodiscard]] const ResolvedLayoutConfig& layoutConfig() const { return m_layoutConfig; }
     [[nodiscard]] LayoutMode layoutMode() const { return m_layoutMode; }
@@ -71,8 +75,7 @@ namespace umbriel {
     void syncFloatingStack(View* view);
     void restackFloatingViews();
     void addView(View* view, bool attachToLayout = true);
-    View*
-    removeView(View* view, std::optional<std::pair<double, double>> focusPoint = std::nullopt, bool reconcile = true);
+    View* removeView(View* view, bool reconcile = true);
     void layoutAttach(View* view, std::optional<double> initialWidth = std::nullopt);
     void layoutDetach(View* view, bool animate = false);
     void arrange(bool animate = true);
@@ -92,8 +95,9 @@ namespace umbriel {
     bool consumeFocusedLeft();
     bool expelFocusedRight();
     bool moveFocusedVertical(int direction);
-    bool cycleFocusedWidth();
+    bool cycleFocusedWidth(int direction);
     bool setFocusedWidth(double fraction);
+    bool centerFocusedColumn();
     // Incremental width change: apply `delta` to the focused column's current
     // width fraction, clamped to [0.1, 1.0].
     bool modifyFocusedWidth(double delta);
@@ -120,11 +124,11 @@ namespace umbriel {
     // Pull the scroll offset back into [0, maxScroll]. Only for removals: a
     // touchpad swipe overscrolls on purpose.
     void clampScrollToRange();
-    // Width the strip scrolls within: the usable area less the edge padding on
-    // both sides. At least 1, so callers can divide by it.
-    [[nodiscard]] int viewportWidth() const;
-    // Take `view` out of the layout, holding the columns that stay on screen still. Both removal paths come through
-    // here: closing a window reaches layoutDetach, moving one to another workspace reaches removeView.
+    [[nodiscard]] View* focusAlongStrip(int direction) const;
+    [[nodiscard]] View* focusWithinLane(int direction) const;
+    bool moveLaneAlongStrip(int direction);
+    bool moveWithinLane(int direction);
+    // Take `view` out of the layout while holding visible lanes still.
     void detachFromLayout(View* view);
     WorkspaceGroup* m_group = nullptr;
     wlr_ext_workspace_handle_v1* m_handle = nullptr;
@@ -179,6 +183,7 @@ namespace umbriel {
     // Insert an empty numbered workspace into a dynamic group and renumber the following workspaces. Static configured
     // groups cannot be extended this way and return null.
     Workspace* insertDynamicWorkspace(size_t index);
+    bool moveActiveWorkspace(int direction);
     void reconcileInventory();
     void refreshLayouts();
     void reconcileDynamic();

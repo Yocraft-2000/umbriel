@@ -60,8 +60,8 @@ A fake-fullscreen game (borderless window at output size) that receives a
 compositor-imposed windowed size, then returns to fullscreen, keeps a stale
 mouse mapping: X geometry, stacking, focus, and event delivery all recover,
 but hover and clicks die outside the transient size. This is upstream
-Wine/satellite behavior, reproduced identically under niri; the boundary of
-the dead zone always equals whatever transient size the compositor sent.
+Wine/satellite behavior, reproduced outside Umbriel; the boundary of the dead
+zone always equals whatever transient size the compositor sent.
 
 Umbriel therefore guarantees that compositor-driven fullscreen round trips
 never emit a size change:
@@ -87,8 +87,7 @@ never emit a size change:
      tiles immediately;
    - the grace expires untouched: the client ignored the state change, and
      fullscreen is re-asserted rather than forcing a resize that would kill
-     its input. This mirrors the observed niri behavior where such games
-     effectively cannot be unfullscreened.
+     its input. Such games effectively cannot be unfullscreened.
    Client-initiated unfullscreen requests skip the grace (the client wants
    windowed mode), and Wayland-native views keep immediate column sizing:
    they survive resizes, and many keep their size on 0x0, which would
@@ -101,16 +100,15 @@ behavior, not something the compositor can mask.
 ## Verifying changes here
 
 The clip primitive itself is covered by
-[`tests/scene_clip.cpp`](../../tests/scene_clip.cpp): two headless outputs, a
+[`tests/unit/scene_clip.cpp`](../../tests/unit/scene_clip.cpp): two headless outputs, a
 buffer straddling the shared edge, and assertions on the enter/leave stream,
 the primary output and hit testing as the clip is set, nested, and cleared.
 
 Compositor-level containment is covered by
-[`tests/harness/two-output-containment.sh`](../../tests/harness/two-output-containment.sh),
-which boots its own two-output headless instance (`verify.sh` boots one
-output) and compares real framebuffers while a strip overflows the shared
-edge. Run it as `bash tests/harness/two-output-containment.sh
-./build-debug/umbriel`.
+[`tests/harness/checks/650_two_output_containment.sh`](../../tests/harness/checks/650_two_output_containment.sh),
+which declares `# harness: outputs=2` so the harness boots it a two-output
+instance, and compares real framebuffers while a strip overflows the shared
+edge. Run it as `just check 650`.
 
 The rest cannot be automated here. The headless harness cannot exercise
 satellite or multi-output X coordinate spaces, so changes to these paths need

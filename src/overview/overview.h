@@ -16,6 +16,7 @@ extern "C" {
 }
 
 struct wlr_scene_buffer;
+struct wlr_scene_blur;
 struct wlr_scene_rect;
 struct wlr_scene_tree;
 struct wlr_surface;
@@ -69,6 +70,7 @@ namespace umbriel {
 
     void onViewMapped(View* view);
     void onViewUnmapped(View* view);
+    void onViewWorkspaceChanged(View* view);
     void onWorkspaceActivated(WorkspaceGroup* group);
     void onWorkspaceArranged(Workspace* workspace);
     void onWorkspaceInventoryChanged(WorkspaceGroup* group);
@@ -129,6 +131,7 @@ namespace umbriel {
     struct OutputState {
       Output* output = nullptr;
       wlr_scene_tree* tree = nullptr;
+      wlr_scene_blur* backgroundBlur = nullptr;
       wlr_scene_rect* backgroundTint = nullptr;
       std::vector<wlr_scene_rect*> workspaceBackgrounds;
       std::vector<std::unique_ptr<Card>> cards;
@@ -183,7 +186,7 @@ namespace umbriel {
     void scheduleFrames() const;
 
     [[nodiscard]] Card* cardAt(double lx, double ly);
-    [[nodiscard]] Workspace* rowAt(double lx, double ly, OutputState** outState, size_t* outRow);
+    [[nodiscard]] Workspace* rowAt(double lx, double ly, OutputState** outState, size_t* outRow, bool extendHorizontal);
     [[nodiscard]] WorkspaceGroup*
     workspaceGapAt(double lx, double ly, OutputState** outState, size_t* outIndex, wlr_box* outHintBox);
     [[nodiscard]] Workspace* preferredWorkspace() const;

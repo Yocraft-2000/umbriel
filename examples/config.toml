@@ -45,6 +45,7 @@ border_width = 2               # 0-100
 outer_border_width = 0         # 0-100
 corner_radius = 10             # 0-100
 animation_ms = 250             # 1-10000
+drag_opacity = 0.75
 # border_focused = "#7AA3FFFF"
 # border_unfocused = "#292933FF"
 # scratchpad_border_focused = "#E5C07BFF"
@@ -74,6 +75,7 @@ color = "#0000007F"
 
 [overview]
 zoom = 0.5                     # 0.1-0.75
+# background_blur = true        # blur the wallpaper while the overview is open
 # background_tint = "#10101430"
 # workspace_background = "#00000044" # set alpha to FF for an opaque background
 
@@ -107,7 +109,9 @@ gap = 8                        # 0-500
 width_presets = [0.333, 0.5, 0.667] # shared by scrolling and dwindle
 
 [layout.scrolling]
-default_width_fraction = 0.5   # 0.1-1.0
+# Vertical workspaces stack horizontal lanes from top to bottom.
+# direction = "horizontal"
+default_width_fraction = 0.5  # remove to let clients choose their initial width
 center_underfull_strip = true  # center the strip whenever it is narrower than the viewport
 
 # Workspace layout overrides (see docs/user/outputs.md#workspace-rules)
@@ -124,7 +128,7 @@ center_underfull_strip = true  # center the strip whenever it is narrower than t
 # position = [0, 0]
 # scale = 1.25
 # vrr = "fullscreen"            # "disabled" (default), "always", or "fullscreen"
-# hdr = "auto"                  # "off", "on", metadata-aware "auto", or any fullscreen surface with "fullscreen"
+# hdr = "auto"                  # "off", "on", metadata-driven "auto", or any-app "fullscreen"
 # sdr_white = 203                # SDR reference white in cd/m2 while HDR is active
 # enabled = true                # false powers the monitor off and removes it from the desktop
 # Dynamic workspaces are the default; use a count or name list for static workspaces.
@@ -141,24 +145,30 @@ variant = ""
 options = ""                   # XKB options, e.g. "grp:alt_shift_toggle"
 repeat_rate = 25               # 0-1000 Hz
 repeat_delay = 600             # 0-10000 ms
+numlock_toggle = true # true enables NumLock when a keyboard connects; false leaves it off
 
 [input.touchpad]
 tap = true                      # enabled by default; false disables tap-to-click
 # natural_scroll = true
+# accel_profile = "adaptive"    # "flat", "adaptive", or "custom <step> <points...>"
+# sensitivity = 0.5             # pointer speed, -1.0 to 1.0
 
 [input.mouse]
 # natural_scroll = false
-accel_profile = "flat"         # "flat", "adaptive", or "custom <step> <points...>"
+# accel_profile = "flat"       # omitted preserves the device's libinput default
 sensitivity = 0.0              # pointer speed, -1.0 to 1.0
 scroll_wheel_step = 60         # 1-1000
 # Override only the listed settings for an exact, case-sensitive device name.
 # Applies per device kind: layout, variant, options, repeat_rate, and
-# repeat_delay to keyboards; tap to touchpads; natural_scroll to touchpads
-# and mice; acceleration settings to mice. Find names with `libinput list-devices`.
+# repeat_delay to keyboards; tap to touchpads; natural_scroll, accel_profile,
+# and sensitivity to touchpads and mice. Find names with
+# `libinput list-devices`.
 # [[input.device]]
 # name = "Acme Precision Touchpad"
 # tap = true
 # natural_scroll = false
+# accel_profile = "flat"
+# sensitivity = 0.0
 # [[input.device]]
 # name = "Gaming Mouse"
 # accel_profile = "flat"
@@ -176,7 +186,7 @@ enabled = true                 # false disables the tablet and its pads
 theme = ""
 size = 24                      # 1-512
 hardware_cursor = true         # false forces software cursor composition
-hide_when_typing = false       # hide after a non-modifier key press
+hide_when_typing = false       # hide after typing unless a pointer button is held
 hide_timeout_ms = 0            # 0-3600000, 0 disables hiding
 
 [input.focus]
@@ -190,6 +200,7 @@ follows_mouse = false
 [keybinds]
 "Mod+Return" = "spawn:kitty"
 "Mod+T" = "window-toggle-floating"
+"Mod+Shift+T" = "window-focus-switch-floating"
 "Mod+P" = "window-toggle-pinned"
 "Mod+M" = "window-toggle-maximize-to-edges"
 "Mod+Shift+Q" = "window-close"
@@ -212,14 +223,45 @@ follows_mouse = false
 # "Mod+Period" = "workspace-next"
 # "Mod+Shift+Comma" = "window-move-to-workspace-previous"
 # "Mod+Shift+Period" = "window-move-to-workspace-next"
+# "Mod+Ctrl+Comma" = "workspace-move-up"
+# "Mod+Ctrl+Period" = "workspace-move-down"
 # "Mod+Ctrl+H" = "output-focus-left"
 # "Mod+Shift+O" = "dpms-off"        # input activity powers displays back on
 # "Mod+Ctrl+O" = "dpms-off:DP-1"   # target one connector
 # "Mod+Minus" = "window-modify-width:-0.1"
-# "Mod+C" = "window-center"
+# "Mod+C" = "column-center"
+# "Mod+Shift+C" = "window-center"
 # "Mod+Shift+T" = "workspace-set-layout:toggle"
 
+# Media and volume (see docs/user/keybinds.md#example-media-and-brightness-keys)
+# "XF86AudioRaiseVolume" = "spawn:wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"
+# "XF86AudioLowerVolume" = "spawn:wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+# "Mod+XF86AudioMute"   = "spawn:wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+# "XF86AudioPlay"       = "spawn:playerctl play-pause"
+# "XF86AudioNext"       = "spawn:playerctl next"
+# "XF86AudioPrev"       = "spawn:playerctl prev"
+
 # Window and layer rules (see docs/user/rules.md) ---------------------------
+
+# Blur all windows
+[[window_rule]]
+blur = true
+blur_optimized = true
+
+# Open a specific app maximized to the usable-area edges (no gaps or borders)
+# [[window_rule]]
+# match.app_id = "^discord$"
+# default_maximize_to_edges = true
+
+[[window_rule]]
+match.app_id = "^dev.noctalia.Noctalia$"
+default_floating = true
+default_size = [1020, 900]
+
+[[window_rule]]
+match.app_id = "^dev.noctalia.UmbrielSharePicker$"
+default_floating = true
+default_size = [800, 600]
 
 # [[window_rule]]
 # match.app_id = "firefox"
@@ -235,16 +277,6 @@ follows_mouse = false
 # default_position = { x = 0, y = 0, anchor = "bottom_right" }
 # default_focused = false
 # default_pinned = true
-
-[[window_rule]]
-match.app_id = "^dev.noctalia.Noctalia$"
-default_floating = true
-default_size = [1020, 900]
-
-[[window_rule]]
-match.app_id = "^dev.noctalia.UmbrielSharePicker$"
-default_floating = true
-default_size = [800, 600]
 
 # Layer rules (see docs/user/rules.md#layer-rules) ---------------------------
 

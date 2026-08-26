@@ -132,6 +132,7 @@ namespace umbriel {
 
     m_commit.notify = onCommit;
     wl_signal_add(&m_toplevel->base->surface->events.commit, &m_commit);
+    watchOpacitySurfaceTree(m_toplevel->base->surface);
     m_destroy.notify = onDestroy;
     wl_signal_add(&m_toplevel->events.destroy, &m_destroy);
 
@@ -183,6 +184,7 @@ namespace umbriel {
       m_acceptClientMaximizeIdle = nullptr;
     }
     m_server->unregisterAnimatable(this);
+    clearOpacitySurfaceWatches();
     setWorkspace(nullptr);
     if (m_map.link.next != nullptr) {
       wl_list_remove(&m_map.link);
@@ -218,6 +220,11 @@ namespace umbriel {
 
   wlr_scene_tree* View::captureTree() const { return m_captureScene != nullptr ? &m_captureScene->tree : nullptr; }
 
+  void View::moveToWorkspace(Workspace* workspace, bool attachToLayout) {
+    m_displacedHome.reset();
+    setWorkspace(workspace, attachToLayout);
+  }
+
   void View::setWorkspace(Workspace* workspace, bool attachToLayout) {
     if (workspace != nullptr
         && m_server->scratchpadManager() != nullptr
@@ -235,17 +242,31 @@ namespace umbriel {
       m_workspace = nullptr;
       // Keep an empty destination alive until this view has been attached.
       // addView() reconciles the group after the transfer is complete.
-      previous->removeView(this, std::nullopt, !sameGroup);
+      previous->removeView(this, !sameGroup);
     }
     m_workspace = workspace;
     if (m_workspace != nullptr) {
       m_workspace->addView(this, attachToLayout);
     } else {
+      // A pinned view normally hangs below output-owned clipping roots. Park both of its scene branches on the
+      // server-owned pinned roots before the last output is destroyed, then addView() can rehome them when an output
+      // returns. Leaving either branch under the dying output frees nodes that the live View still owns.
+      if (m_pinned) {
+        wlr_scene_node_reparent(&m_sceneTree->node, m_server->pinnedTree());
+        reparentShadow(m_server->pinnedShadowTree());
+      }
       setOnActiveWorkspace(true);
     }
     notifyOutputScale();
-    if (m_mapped && m_onActiveWorkspace) {
-      enterForeignOutput();
+    if (m_mapped) {
+      if (m_workspace != nullptr && m_onActiveWorkspace) {
+        enterForeignOutput();
+      } else if (m_workspace == nullptr) {
+        // An unassigned view has no output to advertise. In particular, the preferred output may be the one currently
+        // being destroyed, and foreign-toplevel output membership installs a bind listener that must be gone before
+        // wlr_output_finish completes.
+        leaveForeignOutput();
+      }
     }
     if (m_mapped) {
       m_server->scheduleIpcWindowsEvent();
@@ -258,6 +279,9 @@ namespace umbriel {
         output->updateVrr();
         output->updateHdr();
       }
+    }
+    if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
+      overview->onViewWorkspaceChanged(this);
     }
   }
 
@@ -343,11 +367,29 @@ namespace umbriel {
     setBorderFocused(true);
     setForeignActivated(true);
 
-    if (!withKeyboard || seat->keyboard_state.focused_surface == surface) {
+    if (!withKeyboard) {
       return;
+    }
+
+    // Re-focusing the popup's owning toplevel must preserve its active XDG
+    // keyboard grab. Ending that grab tells wlroots to dismiss the popup.
+    if (seat->keyboard_state.focused_surface == surface) {
+      return;
+    }
+
+    // A popup can still own wlroots' keyboard grab when its dismissing click
+    // reaches another view. Let that click transfer the seat immediately
+    // instead of losing the enter to a popup that is about to disappear. A
+    // data-device drag is different: it deliberately owns the grab until the
+    // initiating button is released, and FocusManager replays the selected
+    // view when that happens.
+    if (seat->drag == nullptr && wlr_seat_keyboard_has_grab(seat)) {
+      wlr_seat_keyboard_end_grab(seat);
     }
     if (wlr_keyboard* keyboard = wlr_seat_get_keyboard(seat)) {
       wlr_seat_keyboard_notify_enter(seat, surface, keyboard->keycodes, keyboard->num_keycodes, &keyboard->modifiers);
+    } else {
+      wlr_seat_keyboard_notify_enter(seat, surface, nullptr, 0, nullptr);
     }
   }
 
@@ -375,7 +417,7 @@ namespace umbriel {
         &effective
     );
     setBorderFocused(m_borderFocusedState);
-    m_decoration.setAlpha(effective);
+    m_decoration.setAlpha(effective, m_fadeAlpha);
   }
 
   void View::applyEffectiveOpacity() {
@@ -393,6 +435,54 @@ namespace umbriel {
         },
         &effective
     );
+  }
+
+  void View::flushPendingEffectiveOpacity() {
+    if (!m_effectiveOpacityCommitPending) {
+      return;
+    }
+    applyEffectiveOpacity();
+    m_effectiveOpacityCommitPending = false;
+  }
+
+  void View::watchOpacitySurfaceTree(wlr_surface* root) {
+    if (root == nullptr) {
+      return;
+    }
+    wlr_surface_for_each_surface(
+        root,
+        [](wlr_surface* surface, int /*sx*/, int /*sy*/, void* data) {
+          static_cast<View*>(data)->watchOpacitySurface(surface);
+        },
+        this
+    );
+  }
+
+  void View::watchOpacitySurface(wlr_surface* surface) {
+    if (surface == nullptr || std::ranges::any_of(m_opacitySurfaceWatches, [surface](const auto& watch) {
+          return watch->surface == surface;
+        })) {
+      return;
+    }
+    auto watch = std::make_unique<OpacitySurfaceWatch>();
+    watch->view = this;
+    watch->surface = surface;
+    watch->commit.notify = onOpacitySurfaceCommit;
+    wl_signal_add(&surface->events.commit, &watch->commit);
+    watch->newSubsurface.notify = onOpacitySurfaceNewSubsurface;
+    wl_signal_add(&surface->events.new_subsurface, &watch->newSubsurface);
+    watch->destroy.notify = onOpacitySurfaceDestroy;
+    wl_signal_add(&surface->events.destroy, &watch->destroy);
+    m_opacitySurfaceWatches.push_back(std::move(watch));
+  }
+
+  void View::clearOpacitySurfaceWatches() {
+    for (const auto& watch : m_opacitySurfaceWatches) {
+      wl_list_remove(&watch->commit.link);
+      wl_list_remove(&watch->newSubsurface.link);
+      wl_list_remove(&watch->destroy.link);
+    }
+    m_opacitySurfaceWatches.clear();
   }
 
   void View::cancelFadeAnimation() {
@@ -495,9 +585,13 @@ namespace umbriel {
 
   void View::enterDragPresentation() {
     cancelPositionAnimation();
-    m_dragOpacity = kDragOpacity;
+    m_dragOpacity = config().appearance.dragOpacity;
     setFadeAlpha(m_fadeAlpha);
     m_effectiveOpacityCommitPending = false;
+    if (m_pinned) {
+      wlr_scene_node_place_above(&m_server->dragShadowTree()->node, &m_server->pinnedTree()->node);
+      wlr_scene_node_place_above(&m_server->dragTree()->node, &m_server->dragShadowTree()->node);
+    }
     wlr_scene_node_reparent(&m_sceneTree->node, m_server->dragTree());
     reparentShadow(m_server->dragShadowTree());
     setNodeEnabled(true);
@@ -509,6 +603,8 @@ namespace umbriel {
     m_dragOpacity = 1.0F;
     m_effectiveOpacityCommitPending = false;
     setFadeAlpha(m_fadeAlpha);
+    wlr_scene_node_place_below(&m_server->dragTree()->node, &m_server->dragIconTree()->node);
+    wlr_scene_node_place_below(&m_server->dragShadowTree()->node, &m_server->dragTree()->node);
     if (ScratchpadManager* scratchpad = m_server->scratchpadManager();
         scratchpad != nullptr && scratchpad->contains(this)) {
       scratchpad->restorePresentation(this);
@@ -668,12 +764,6 @@ namespace umbriel {
         active = true;
       }
     }
-    // The scene helper may process a surface commit after View::handleCommit.
-    // Reapply on the ensuing frame, after every commit listener has run.
-    if (m_effectiveOpacityCommitPending) {
-      applyEffectiveOpacity();
-      m_effectiveOpacityCommitPending = false;
-    }
     return active;
   }
 
@@ -705,6 +795,32 @@ namespace umbriel {
   void View::onCommit(wl_listener* listener, void* /*data*/) {
     View* self = wl_container_of(listener, self, m_commit);
     self->handleCommit();
+  }
+
+  void View::onOpacitySurfaceCommit(wl_listener* listener, void* /*data*/) {
+    OpacitySurfaceWatch* watch;
+    watch = wl_container_of(listener, watch, commit);
+    if (watch->view->effectiveOpacity() < 1.0F) {
+      watch->view->m_effectiveOpacityCommitPending = true;
+      watch->view->scheduleFrame();
+    }
+  }
+
+  void View::onOpacitySurfaceNewSubsurface(wl_listener* listener, void* data) {
+    OpacitySurfaceWatch* watch;
+    watch = wl_container_of(listener, watch, newSubsurface);
+    auto* subsurface = static_cast<wlr_subsurface*>(data);
+    watch->view->watchOpacitySurfaceTree(subsurface->surface);
+  }
+
+  void View::onOpacitySurfaceDestroy(wl_listener* listener, void* /*data*/) {
+    OpacitySurfaceWatch* watch;
+    watch = wl_container_of(listener, watch, destroy);
+    View* view = watch->view;
+    wl_list_remove(&watch->commit.link);
+    wl_list_remove(&watch->newSubsurface.link);
+    wl_list_remove(&watch->destroy.link);
+    std::erase_if(view->m_opacitySurfaceWatches, [watch](const auto& candidate) { return candidate.get() == watch; });
   }
 
   void View::onDestroy(wl_listener* listener, void* /*data*/) {
@@ -904,8 +1020,8 @@ namespace umbriel {
     // Apps that draw through subsurfaces (Firefox renders all of its chrome and web content into one desynchronized
     // MozContainer subsurface) leave their content square unless those buffers round too. Every buffer under the
     // toplevel's surface tree is visited: the main surface rounds unconditionally (its quad is the content box in every
-    // clipped and animated state), a subsurface rounds only the corners where its quad — already cropped to the content
-    // box by setSurfaceTreeClip — actually reaches a content-box corner, so an interior subsurface (embedded video)
+    // clipped and animated state), a subsurface rounds only the corners where its quad, already cropped to the content
+    // box by setSurfaceTreeClip, actually reaches a content-box corner, so an interior subsurface (embedded video)
     // stays square. Popups are excluded: their surface is its own root.
     const int radius = surfaceRadius();
     // A tiled view's committed geometry lags the layout, so the presented size is the box the corners must match; a
@@ -972,7 +1088,7 @@ namespace umbriel {
     const wlr_box nodeBox{0, 0, contentWidth, contentHeight};
     m_decoration.updateBlur(
         m_sceneTree, m_toplevel->base->surface, nodeBox, m_toplevel->base->geometry, surfaceRadius(), nullptr,
-        effectiveOpacity()
+        effectiveOpacity(), m_fadeAlpha
     );
   }
 
@@ -1082,6 +1198,7 @@ namespace umbriel {
           wlr_scene_buffer_set_opacity(copy, src->opacity);
           wlr_scene_buffer_set_transfer_function(copy, src->transfer_function);
           wlr_scene_buffer_set_primaries(copy, src->primaries);
+          wlr_scene_buffer_set_luminance_multiplier(copy, src->luminance_multiplier);
           wlr_scene_buffer_set_color_encoding(copy, src->color_encoding);
           wlr_scene_buffer_set_color_range(copy, src->color_range);
           ++c->buffersCopied;
@@ -1391,7 +1508,7 @@ namespace umbriel {
     // with the real title, even if the client mapped with a placeholder.
     m_initialRulesSettled = !anyWindowRuleHasTitlePattern(config());
 
-    showDecorations(!m_toplevel->current.fullscreen);
+    showDecorations(!m_toplevel->scheduled.fullscreen);
 
     if (m_workspace != nullptr) {
       m_workspace->layoutAttach(this, rule.defaultWidth);
@@ -1448,6 +1565,12 @@ namespace umbriel {
       setMaximized(true);
     }
 
+    // After default_maximize so maximize-to-edges wins the column, but before
+    // fullscreen: setFullscreen leaves and restores the maximize-to-edges state.
+    if (rule.defaultMaximizeToEdges && *rule.defaultMaximizeToEdges) {
+      setMaximizedToEdges(true);
+    }
+
     // Fullscreen after workspace + focus so the view lands in the right place.
     if (rule.defaultFullscreen && *rule.defaultFullscreen) {
       setFullscreen(true);
@@ -1480,6 +1603,20 @@ namespace umbriel {
     }
     if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
       overview->onViewUnmapped(this);
+    }
+    // Choose the layout neighbor while this view still belongs to the layout. Waiting for destroy loses that position,
+    // and focus-follows-mouse used to replace it with whichever survivor happened to sit under the stationary pointer.
+    if (m_workspace != nullptr && m_workspace->focusedView() == this) {
+      View* replacement = m_workspace->focusReplacementForRemoval(this);
+      if (replacement != nullptr) {
+        if (m_workspace->active() && !m_server->sessionLocked()) {
+          m_server->focusView(replacement, FocusReason::Directional);
+        } else {
+          m_workspace->setFocusedView(replacement);
+        }
+      } else {
+        m_workspace->setFocusedView(nullptr);
+      }
     }
     beginCloseAnimation();
     cancelFadeAnimation();
@@ -1534,25 +1671,43 @@ namespace umbriel {
       const ResolvedWindowRule rule = resolvedRules();
       const bool wantTiled = rule.defaultFloating ? !*rule.defaultFloating : looksTiled(m_toplevel);
 
-      if (wantTiled) {
-        wlr_xdg_toplevel_set_tiled(m_toplevel, WLR_EDGE_TOP | WLR_EDGE_RIGHT | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT);
-        const wlr_box usable = m_server->usableAreaAt(m_server->cursor()->wlr()->x, m_server->cursor()->wlr()->y);
+      // Resolve the workspace this view will attach to, so the output and layout that will actually arrange it are the
+      // ones that size the first configure.
+      Workspace* target = m_workspace;
+      Output* preferred = m_server->outputFromWlr(m_server->preferredOutput());
+      WorkspaceGroup* targetGroup = target != nullptr
+          ? target->group()
+          : windowRuleWorkspaceGroup(*m_server, rule, preferred != nullptr ? preferred->workspaceGroup() : nullptr);
+      if (target == nullptr) {
+        target = windowRuleWorkspace(targetGroup, rule);
+      }
+      Output* targetOutput = targetGroup != nullptr ? targetGroup->output() : preferred;
 
-        // Resolve the workspace this view will attach to, so the layout that
-        // will actually arrange it is the one that sizes the first configure.
-        Workspace* target = m_workspace;
-        if (target == nullptr) {
-          if (Output* out = m_server->outputFromWlr(m_server->preferredOutput())) {
-            if (WorkspaceGroup* group = out->workspaceGroup()) {
-              target = group->active();
-              if (rule.defaultWorkspace) {
-                if (Workspace* ruleTarget =
-                        group->workspaceAtClamped(static_cast<size_t>(*rule.defaultWorkspace - 1))) {
-                  target = ruleTarget;
-                }
-              }
-            }
-          }
+      wlr_xdg_toplevel_set_tiled(
+          m_toplevel, wantTiled ? WLR_EDGE_TOP | WLR_EDGE_RIGHT | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT : 0
+      );
+
+      if (m_toplevel->requested.fullscreen) {
+        // xwayland-satellite can request fullscreen while creating the xdg role, before the initial surface commit.
+        // The request event is too early to configure, but wlroots preserves it in requested state for us to honor now.
+        wlr_xdg_toplevel_set_fullscreen(m_toplevel, true);
+        wlr_box fullArea{};
+        wlr_output* initialOutput = targetOutput != nullptr ? targetOutput->wlr() : m_server->preferredOutput();
+        if (initialOutput != nullptr) {
+          wlr_output_layout_get_box(m_server->outputLayout(), initialOutput, &fullArea);
+        }
+        if (fullArea.width > 0 && fullArea.height > 0) {
+          wlr_xdg_toplevel_set_size(m_toplevel, fullArea.width, fullArea.height);
+        }
+      } else if (wantTiled) {
+        wlr_box usable = targetOutput != nullptr
+            ? targetOutput->usableArea()
+            : m_server->usableAreaAt(m_server->cursor()->wlr()->x, m_server->cursor()->wlr()->y);
+        if (targetOutput != nullptr && (usable.width <= 0 || usable.height <= 0)) {
+          wlr_output_layout_get_box(m_server->outputLayout(), targetOutput->wlr(), &usable);
+        }
+        if (usable.width <= 0 || usable.height <= 0) {
+          usable = m_server->usableAreaAt(m_server->cursor()->wlr()->x, m_server->cursor()->wlr()->y);
         }
 
         // No workspace yet (no output, or none active): fall back to a throwaway layout built from the global config,
@@ -1570,7 +1725,6 @@ namespace umbriel {
         const int width = rule.defaultSize ? (*rule.defaultSize)[0] : initial.width;
         wlr_xdg_toplevel_set_size(m_toplevel, width, initial.height);
       } else {
-        wlr_xdg_toplevel_set_tiled(m_toplevel, 0);
         const XdgSizeHints hints = xdgSizeHints(m_toplevel);
         if (rule.defaultSize) {
           requestFloatingSize(
@@ -1643,12 +1797,6 @@ namespace umbriel {
       updateBlur();
       updateShadow();
     }
-    // A client commit resets scene-buffer opacity. The scene helper performs
-    // that reset after this listener, so restore every compositor-managed
-    // opacity on the following frame once all commit listeners have run.
-    if (effectiveOpacity() < 1.0F) {
-      m_effectiveOpacityCommitPending = true;
-    }
     updateForeignState();
     if (Output* output = currentOutput()) {
       output->updateHdr();
@@ -1676,6 +1824,8 @@ namespace umbriel {
       m_captureSourceDestroy.link.next = nullptr;
       m_captureSource = nullptr;
     }
+
+    clearOpacitySurfaceWatches();
 
     wl_list_remove(&m_map.link);
     wl_list_remove(&m_unmap.link);
@@ -1818,20 +1968,23 @@ namespace umbriel {
     );
 
     const bool requested = m_toplevel->requested.fullscreen;
+    const FullscreenRequestDisposition disposition = m_deferredUnfullscreen.observeClientRequest(
+        requested, m_toplevel->scheduled.activated, m_toplevel->scheduled.fullscreen
+    );
 
-    // Redundant request (wine spams set_fullscreen while already fullscreen): ack with a configure, but skip the
-    // reparent/scroll-snap/arrange churn that a full setFullscreen() would run: that churn is visible flicker.
-    if (requested == m_toplevel->scheduled.fullscreen) {
+    if (disposition == FullscreenRequestDisposition::Acknowledge) {
+      // Wine spams set_fullscreen while already fullscreen. Acknowledge without the visible reparent, scroll snap, and
+      // arrange churn that a full setFullscreen() would run. Observing this newer request also clears any parked
+      // unfullscreen, so activation cannot apply stale client intent.
       wlr_xdg_surface_schedule_configure(m_toplevel->base);
       return;
     }
 
-    // Wine unfullscreens games when they lose focus (minimize-on-focus-loss). Honoring that rips the game out of the
-    // fullscreen strip the moment the user scrolls away. Deny unfullscreen from deactivated windows; the scheduled
-    // configure re-asserts the fullscreen state (spec-compliant).
-    if (!requested && !m_toplevel->scheduled.activated) {
+    if (disposition == FullscreenRequestDisposition::Park) {
+      // Wine games commonly unfullscreen when they lose focus. Park that request briefly instead of ripping the game
+      // out of the fullscreen strip; xdg or foreign activation consumes it, while expiry preserves fullscreen.
       kLog.debug(
-          "request_fullscreen denied for deactivated '{}'", m_toplevel->app_id != nullptr ? m_toplevel->app_id : "?"
+          "request_fullscreen parked for deactivated '{}'", m_toplevel->app_id != nullptr ? m_toplevel->app_id : "?"
       );
       wlr_xdg_surface_schedule_configure(m_toplevel->base);
       return;
@@ -1857,6 +2010,19 @@ namespace umbriel {
     setFullscreen(!m_toplevel->scheduled.fullscreen);
   }
 
+  void View::applyDeferredUnfullscreen() {
+    if (!m_deferredUnfullscreen.takeOnActivation() || !m_toplevel->base->initialized) {
+      return;
+    }
+    if (m_toplevel->scheduled.fullscreen || m_toplevel->current.fullscreen) {
+      kLog.debug(
+          "deferred unfullscreen applied on activation for '{}'",
+          m_toplevel->app_id != nullptr ? m_toplevel->app_id : "?"
+      );
+      setFullscreen(false);
+    }
+  }
+
   void View::toggleFloating() { setFloating(m_tiled); }
 
   void View::restorePinnedSceneParent() {
@@ -1864,14 +2030,11 @@ namespace umbriel {
       return;
     }
     Output* output = currentOutput();
-    if (output == nullptr) {
-      return;
-    }
     // Ordering stays on the server-level trees; only the content hangs under the output's clipped roots.
     wlr_scene_node_place_above(&m_server->pinnedShadowTree()->node, &m_server->fullscreenTree()->node);
     wlr_scene_node_place_above(&m_server->pinnedTree()->node, &m_server->pinnedShadowTree()->node);
-    wlr_scene_node_reparent(&m_sceneTree->node, output->pinnedRoot());
-    reparentShadow(output->pinnedShadowRoot());
+    wlr_scene_node_reparent(&m_sceneTree->node, output != nullptr ? output->pinnedRoot() : m_server->pinnedTree());
+    reparentShadow(output != nullptr ? output->pinnedShadowRoot() : m_server->pinnedShadowTree());
     setNodeEnabled(true);
     raiseToTop();
   }
@@ -2098,6 +2261,7 @@ namespace umbriel {
   }
 
   void View::setFullscreen(bool fullscreen) {
+    m_deferredUnfullscreen.clear();
     kLog.debug(
         "set_fullscreen '{}' [{}] -> {} (tiled={}, ws_active={})",
         m_toplevel->app_id != nullptr ? m_toplevel->app_id : "?", static_cast<const void*>(this), fullscreen, m_tiled,
@@ -2260,6 +2424,12 @@ namespace umbriel {
         && *rule.defaultFullscreen
         && !m_toplevel->scheduled.fullscreen) {
       setFullscreen(true);
+    }
+
+    if (changedInitialRule(rule.defaultMaximizeToEdges, initiallyApplied.defaultMaximizeToEdges)
+        && *rule.defaultMaximizeToEdges
+        && !m_maximizedToEdges) {
+      setMaximizedToEdges(true);
     }
 
     if (changedInitialRule(rule.defaultMaximize, initiallyApplied.defaultMaximize)

@@ -174,6 +174,27 @@ namespace umbriel {
       return std::nullopt;
     }
 
+    std::optional<ScrollingDirection> readScrollingDirection(Section& section, std::string_view context) {
+      const toml::node* node = section.take("direction");
+      if (node == nullptr) {
+        return std::nullopt;
+      }
+      const auto* value = node->as_string();
+      if (value == nullptr) {
+        warnAt(node->source(), R"({}.direction must be a string ("horizontal" or "vertical"))", context);
+        return std::nullopt;
+      }
+      const std::string_view direction = value->get();
+      if (direction == "horizontal") {
+        return ScrollingDirection::Horizontal;
+      }
+      if (direction == "vertical") {
+        return ScrollingDirection::Vertical;
+      }
+      warnAt(node->source(), R"(unknown {}.direction "{}" (expected "horizontal" or "vertical"))", context, direction);
+      return std::nullopt;
+    }
+
     std::vector<std::string_view> splitWhitespace(std::string_view text) {
       std::vector<std::string_view> tokens;
       size_t offset = 0;
@@ -315,6 +336,9 @@ namespace umbriel {
               overrides.widthPresets = std::move(*presets);
             }
             s.sub("scrolling", [&](Section& sc) {
+              if (const auto direction = readScrollingDirection(sc, layoutContext + ".scrolling")) {
+                overrides.scrolling.direction = direction;
+              }
               sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
                   .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip);
             });
@@ -480,6 +504,7 @@ namespace umbriel {
             .color("insert_hint_color", a.insertHintColor)
             .color("backdrop_color", a.backdropColor)
             .integer("animation_ms", 1, 10000, a.animationMs)
+            .real("drag_opacity", 0.0, 1.0, a.dragOpacity)
             .boolean("prefer_no_csd", a.preferNoCsd);
         s.sub("blur", [&](Section& blur) {
           blur.boolean("enabled", a.blur.enabled)
@@ -504,6 +529,7 @@ namespace umbriel {
     void readOverview(Section& root, Config& loaded) {
       root.sub("overview", [&](Section& s) {
         s.real("zoom", 0.1, 0.75, loaded.overview.zoom)
+            .boolean("background_blur", loaded.overview.backgroundBlur)
             .color("background_tint", loaded.overview.backgroundTint)
             .color("workspace_background", loaded.overview.workspaceBackground);
       });
@@ -549,6 +575,9 @@ namespace umbriel {
           loaded.layout.widthPresets = std::move(*presets);
         }
         s.sub("scrolling", [&](Section& sc) {
+          if (const auto direction = readScrollingDirection(sc, "layout.scrolling")) {
+            loaded.layout.scrolling.direction = *direction;
+          }
           sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
               .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip);
         });
@@ -725,7 +754,8 @@ namespace umbriel {
               .text("variant", in.keyboard.variant)
               .text("options", in.keyboard.options)
               .integer("repeat_rate", 0, 1000, in.keyboard.repeatRate)
-              .integer("repeat_delay", 0, 10000, in.keyboard.repeatDelay);
+              .integer("repeat_delay", 0, 10000, in.keyboard.repeatDelay)
+              .boolean("numlock_toggle", in.keyboard.numlockToggle);
         });
         if (const toml::node* keyboardNode = s.node("keyboard");
             keyboardNode != nullptr && !validateKeyboardInput(in.keyboard, keyboardNode->source(), "input.keyboard")) {
@@ -734,7 +764,10 @@ namespace umbriel {
           in.keyboard.options.clear();
         }
         s.sub("touchpad", [&](Section& t) {
-          t.boolean("tap", in.touchpad.tap).boolean("natural_scroll", in.touchpad.naturalScroll);
+          t.boolean("tap", in.touchpad.tap)
+              .boolean("natural_scroll", in.touchpad.naturalScroll)
+              .real("sensitivity", -1.0, 1.0, in.touchpad.sensitivity);
+          in.touchpad.accelProfile = readAccelProfile(t, "accel_profile", "input.touchpad");
         });
         s.sub("mouse", [&](Section& m) {
           m.boolean("natural_scroll", in.mouse.naturalScroll)
@@ -1069,6 +1102,7 @@ namespace umbriel {
 
         keys.boolean("default_floating", rule.defaultFloating)
             .boolean("default_fullscreen", rule.defaultFullscreen)
+            .boolean("default_maximize_to_edges", rule.defaultMaximizeToEdges)
             .boolean("default_maximize", rule.defaultMaximize)
             .boolean("default_focused", rule.defaultFocused)
             .boolean("default_pinned", rule.defaultPinned)

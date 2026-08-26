@@ -26,6 +26,7 @@ struct wlr_image_description_v1_data;
 struct wlr_ext_foreign_toplevel_handle_v1;
 struct wlr_ext_foreign_toplevel_list_v1;
 struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1;
+struct wlr_export_dmabuf_manager_v1;
 struct wlr_foreign_toplevel_manager_v1;
 struct wlr_idle_inhibit_manager_v1;
 struct wlr_idle_notifier_v1;
@@ -125,13 +126,18 @@ namespace umbriel {
     [[nodiscard]] wlr_allocator* allocator() const { return m_allocator; }
     [[nodiscard]] wlr_scene* scene() const { return m_scene; }
     [[nodiscard]] wlr_color_manager_v1* colorManager() const { return m_colorManager; }
+    [[nodiscard]] wlr_export_dmabuf_manager_v1* exportDmabufManager() const { return m_exportDmabufManager; }
     [[nodiscard]] WineColorManager* wineColorManager() const { return m_wineColorManager.get(); }
     [[nodiscard]] const wlr_image_description_v1_data* surfaceImageDescription(wlr_surface* surface) const;
+    [[nodiscard]] const wlr_image_description_v1_data* surfaceTreeHdrDescription(wlr_surface* surface) const;
     void updateColorPreferences();
     [[nodiscard]] wlr_scene_tree* xdgTree() const { return m_xdgTree; }
     [[nodiscard]] wlr_scene_tree* scratchpadTree() const { return m_scratchpadTree; }
     [[nodiscard]] wlr_scene_tree* scratchpadShadowTree() const { return m_scratchpadShadowTree; }
     [[nodiscard]] ScratchpadManager* scratchpadManager() const { return m_scratchpadManager.get(); }
+    // Between layer-shell background and bottom: overview wallpaper blur renders
+    // before bottom-layer widgets so they remain sharp.
+    [[nodiscard]] wlr_scene_tree* overviewBlurTree() const { return m_overviewBlurTree; }
     // Between windows and the drag/insert-hint tree: overview cards render here
     // while the real window trees are disabled.
     [[nodiscard]] wlr_scene_tree* overviewTree() const { return m_overviewTree; }
@@ -158,6 +164,7 @@ namespace umbriel {
     // Central animation tick: advances every registered owner once per msec and
     // reports whether anything is still animating.
     bool tickAnimations(uint64_t nowMsec);
+    void flushPendingViewOpacities();
     [[nodiscard]] bool animationsActive() const;
     [[nodiscard]] bool animationsActiveFor(const Output* output) const;
     // Owners register themselves for the frame tick. The registry is kept in phase order, so the three traversals above
@@ -279,8 +286,14 @@ namespace umbriel {
     // The tablet-v2 handle for a wlroots tablet, or nullptr when unknown.
     [[nodiscard]] wlr_tablet_v2_tablet* tabletV2FromWlr(const wlr_tablet* tablet) const;
 
+    // Create and destroy headless outputs at runtime, which is how a test drives a monitor being unplugged and coming
+    // back. Returns the new output's name, or an empty string with `error` set.
+    std::string createHeadlessOutput(const std::string& name, std::string* error);
+    bool destroyOutput(const std::string& name, std::string* error);
+
     void removeOutput(Output* output);
     void reassignOutputViews(Output* source, Output* destination);
+    void scheduleDisplacedViewRestore();
     void removeKeyboard(Keyboard* keyboard);
     void removeView(View* view);
     void removeLayerSurface(LayerSurface* layerSurface, wlr_output* output);
@@ -336,6 +349,7 @@ namespace umbriel {
     static int onBackgroundFrameTimer(void* data);
     static int onTerminateSignal(int signal, void* data);
     static void onIpcWindowsIdle(void* data);
+    static void onDisplacedRestoreIdle(void* data);
 
     void addOutput(wlr_output* output);
     void addKeyboard(wlr_input_device* device);
@@ -378,6 +392,7 @@ namespace umbriel {
     void handleWorkspaceCommit(void* data);
     [[nodiscard]] Workspace* workspaceFromHandle(wlr_ext_workspace_handle_v1* handle) const;
     void applyOutputManagerConfig(wlr_output_configuration_v1* config, bool testOnly);
+    void restoreDisplacedViews();
     [[nodiscard]] WorkspaceGroup* workspaceGroupFromHandle(wlr_ext_workspace_group_handle_v1* handle) const;
 
     struct IdleInhibitorWatch {
@@ -422,6 +437,7 @@ namespace umbriel {
     wlr_foreign_toplevel_manager_v1* m_foreignToplevelManager = nullptr;
     wlr_ext_foreign_toplevel_list_v1* m_extForeignToplevelList = nullptr;
     wlr_ext_foreign_toplevel_image_capture_source_manager_v1* m_toplevelCaptureSourceManager = nullptr;
+    wlr_export_dmabuf_manager_v1* m_exportDmabufManager = nullptr;
     wlr_ext_workspace_manager_v1* m_workspaceManager = nullptr;
     wlr_session_lock_manager_v1* m_sessionLockManager = nullptr;
     wlr_pointer_constraints_v1* m_pointerConstraints = nullptr;
@@ -440,6 +456,7 @@ namespace umbriel {
     wlr_scene_tree* m_scratchpadTree = nullptr;
     wlr_scene_tree* m_scratchpadShadowTree = nullptr;
     wlr_scene_tree* m_scratchpadContentTree = nullptr;
+    wlr_scene_tree* m_overviewBlurTree = nullptr;
     wlr_scene_tree* m_overviewTree = nullptr;
     wlr_scene_tree* m_dragShadowTree = nullptr;
     wlr_scene_tree* m_dragTree = nullptr;
@@ -509,6 +526,9 @@ namespace umbriel {
     // Non-null while a windows-event idle callback is pending. The idle source
     // removes itself when it runs, so a non-null pointer means "already queued".
     wl_event_source* m_ipcWindowsIdle = nullptr;
+    wl_event_source* m_displacedRestoreIdle = nullptr;
+    // Name to give the next output the backend hands over, set while createHeadlessOutput is adding one.
+    std::string m_pendingOutputName;
     // SIGINT / SIGTERM, delivered on the event loop rather than in a signal
     // handler, so shutdown runs ordinary code instead of async-signal-safe code.
     wl_event_source* m_signalSources[2]{};

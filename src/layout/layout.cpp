@@ -10,6 +10,7 @@
 
 extern "C" {
 #include <wlr/util/box.h>
+#include <wlr/util/edges.h>
 }
 
 namespace umbriel {
@@ -24,9 +25,9 @@ namespace umbriel {
     };
   }
 
-  int Layout::fractionalWidth(int viewportWidth, double fraction) const {
+  int Layout::fractionalWidth(int viewportPrimary, double fraction) const {
     const int gap = m_config != nullptr ? m_config->totalGap : 0;
-    return std::max(1, static_cast<int>(std::lround(fraction * (viewportWidth + gap) - gap)));
+    return std::max(1, static_cast<int>(std::lround(fraction * (viewportPrimary + gap) - gap)));
   }
 
   std::unique_ptr<Layout> createLayout(LayoutMode mode) {
@@ -37,6 +38,23 @@ namespace umbriel {
     default:
       return std::make_unique<ScrollingLayout>();
     }
+  }
+
+  uint32_t resizeEdgesForPoint(const wlr_box& box, double cx, double cy) {
+    const double px = cx - box.x;
+    const double py = cy - box.y;
+    uint32_t edges = 0;
+    if (px < box.width / 3.0) {
+      edges |= WLR_EDGE_LEFT;
+    } else if (px > 2.0 * box.width / 3.0) {
+      edges |= WLR_EDGE_RIGHT;
+    }
+    if (py < box.height / 3.0) {
+      edges |= WLR_EDGE_TOP;
+    } else if (py > 2.0 * box.height / 3.0) {
+      edges |= WLR_EDGE_BOTTOM;
+    }
+    return edges;
   }
 
 } // namespace umbriel
