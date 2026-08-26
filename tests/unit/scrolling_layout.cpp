@@ -301,16 +301,32 @@ UMBRIEL_TEST(cycleWidthWalksThePresets) {
   fixture.addColumns(1);
   CHECK(fixture.layout.setWidthFraction(0, 1.0 / 3));
 
-  CHECK(fixture.layout.cycleWidth(0));
+  CHECK(fixture.layout.cycleWidth(0, 1));
   const double second = fixture.layout.widthFraction(0);
   CHECK(std::fabs(second - 0.5) < 1e-6);
 
-  CHECK(fixture.layout.cycleWidth(0));
+  CHECK(fixture.layout.cycleWidth(0, 1));
   CHECK(std::fabs(fixture.layout.widthFraction(0) - 2.0 / 3) < 1e-6);
 
   // Wraps back to the first preset.
-  CHECK(fixture.layout.cycleWidth(0));
+  CHECK(fixture.layout.cycleWidth(0, 1));
   CHECK(std::fabs(fixture.layout.widthFraction(0) - 1.0 / 3) < 1e-6);
+}
+
+UMBRIEL_TEST(cycleWidthBackWalksThePresetsInReverse) {
+  Fixture fixture;
+  fixture.addColumns(1);
+  CHECK(fixture.layout.setWidthFraction(0, 2.0 / 3));
+
+  CHECK(fixture.layout.cycleWidth(0, -1));
+  CHECK(std::fabs(fixture.layout.widthFraction(0) - 0.5) < 1e-6);
+
+  CHECK(fixture.layout.cycleWidth(0, -1));
+  CHECK(std::fabs(fixture.layout.widthFraction(0) - 1.0 / 3) < 1e-6);
+
+  // Wraps back to the last preset.
+  CHECK(fixture.layout.cycleWidth(0, -1));
+  CHECK(std::fabs(fixture.layout.widthFraction(0) - 2.0 / 3) < 1e-6);
 }
 
 UMBRIEL_TEST(toggleFullWidthRestoresThePreviousFraction) {
@@ -390,6 +406,24 @@ UMBRIEL_TEST(maximizedToEdgesColumnFillsTheUsableAreaIgnoringFractions) {
   CHECK(!fixture.layout.isFullWidth(1));
 }
 
+UMBRIEL_TEST(preservedFullWidthSurvivesEdgeMaximizeToggle) {
+  Fixture fixture;
+  fixture.addColumns(1);
+  CHECK(fixture.layout.setWidthFraction(0, 0.5));
+  CHECK(fixture.layout.toggleFullWidth(0));
+
+  fixture.layout.setConstraints([](const View* view) {
+    return LayoutConstraints{.maximizedToEdges = view == stub(0)};
+  });
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
+
+  fixture.layout.setConstraints([](const View*) { return LayoutConstraints{}; });
+  CHECK(fixture.layout.isFullWidth(0));
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
+  CHECK(!fixture.layout.toggleFullWidth(0));
+  CHECK(std::fabs(fixture.layout.widthFraction(0) - 0.5) < 1e-6);
+}
+
 UMBRIEL_TEST(unsetConstraintsMeanUnconstrained) {
   Fixture fixture;
   fixture.addColumns(1);
@@ -429,6 +463,28 @@ UMBRIEL_TEST(initialSizeUsesTheDefaultFractionWhenNoRuleApplies) {
   Fixture fixture;
   CHECK_EQ(fixture.layout.initialSize(kUsable, std::nullopt).width, 624);
   CHECK_EQ(fixture.layout.initialSize(kUsable, std::nullopt).height, 700);
+}
+
+UMBRIEL_TEST(initialSizeLeavesTheScrollAxisUnconstrainedWhenNoDefaultIsSet) {
+  Fixture horizontal;
+  horizontal.config.scrolling.defaultWidthFraction.reset();
+  const Layout::InitialSize horizontalSize = horizontal.layout.initialSize(kUsable, std::nullopt);
+  CHECK_EQ(horizontalSize.width, 0);
+  CHECK_EQ(horizontalSize.height, 700);
+
+  Fixture vertical(ScrollingDirection::Vertical);
+  vertical.config.scrolling.defaultWidthFraction.reset();
+  const Layout::InitialSize verticalSize = vertical.layout.initialSize(kUsable, std::nullopt);
+  CHECK_EQ(verticalSize.width, 1260);
+  CHECK_EQ(verticalSize.height, 0);
+}
+
+UMBRIEL_TEST(mappedClientWidthCanBecomeTheColumnWidth) {
+  Fixture fixture;
+  fixture.addColumns(1);
+  CHECK(fixture.layout.setWidthFromPixels(0, kViewport, 800));
+  fixture.layout.arrange(kUsable);
+  CHECK_EQ(fixture.layout.targetBox(stub(0)).width, 800);
 }
 
 // scrolling
@@ -597,10 +653,74 @@ UMBRIEL_TEST(ensureVisibleKeepsAFlushLeftColumnInPlace) {
   CHECK_EQ(fixture.layout.scrollAmountToEnsureVisible(1, kViewport), 0.0);
 }
 
+UMBRIEL_TEST(centerColumnLetsTheFirstColumnRestPastStripStart) {
+  Fixture fixture;
+  fixture.addColumns(3);
+  const double expected = static_cast<double>(fixture.layout.columnX(0, kViewport))
+      - (kViewport - fixture.layout.columnWidth(0, kViewport)) / 2.0;
+
+  CHECK(fixture.layout.centerColumn(0, kViewport));
+  CHECK(expected < 0.0);
+  CHECK_EQ(fixture.layout.scroll(), expected);
+  CHECK(fixture.layout.centeredRest());
+
+  fixture.layout.ensureVisible(0, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), expected);
+  CHECK_EQ(fixture.layout.scrollAmountToEnsureVisible(0, kViewport), 0.0);
+}
+
+UMBRIEL_TEST(centerColumnLetsTheLastColumnRestPastStripEnd) {
+  Fixture fixture;
+  fixture.addColumns(3);
+  const double expected = static_cast<double>(fixture.layout.columnX(2, kViewport))
+      - (kViewport - fixture.layout.columnWidth(2, kViewport)) / 2.0;
+
+  CHECK(fixture.layout.centerColumn(2, kViewport));
+  CHECK(expected > static_cast<double>(fixture.layout.maxScroll(kViewport)));
+  CHECK_EQ(fixture.layout.scroll(), expected);
+  CHECK(fixture.layout.centeredRest());
+
+  fixture.layout.ensureVisible(2, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), expected);
+}
+
+UMBRIEL_TEST(rawScrollDoesNotInheritAColumnCenterRest) {
+  Fixture fixture;
+  fixture.addColumns(3);
+  CHECK(fixture.layout.centerColumn(0, kViewport));
+
+  fixture.layout.setScroll(-126.0);
+  CHECK(!fixture.layout.centeredRest());
+  fixture.layout.ensureVisible(0, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), 0.0);
+}
+
+UMBRIEL_TEST(revealingAHiddenColumnEndsTheCenteredRest) {
+  Fixture fixture;
+  fixture.addColumns(3);
+  CHECK(fixture.layout.centerColumn(0, kViewport));
+
+  fixture.layout.ensureVisible(2, kViewport);
+  CHECK(!fixture.layout.centeredRest());
+  CHECK(fixture.layout.scroll() >= 0.0);
+  CHECK(fixture.layout.scroll() <= static_cast<double>(fixture.layout.maxScroll(kViewport)));
+}
+
+UMBRIEL_TEST(centerColumnRejectsInvalidGeometryWithoutMoving) {
+  Fixture fixture;
+  fixture.addColumns(2);
+  fixture.layout.setScroll(123.0);
+
+  CHECK(!fixture.layout.centerColumn(-1, kViewport));
+  CHECK(!fixture.layout.centerColumn(2, kViewport));
+  CHECK(!fixture.layout.centerColumn(0, 0));
+  CHECK_EQ(fixture.layout.scroll(), 123.0);
+  CHECK(!fixture.layout.centeredRest());
+}
+
 UMBRIEL_TEST(ensureVisibleGivesBackLeftOverscroll) {
-  // A three-finger swipe past the left edge parks the strip at a negative scroll on purpose, and column 0 stays fully
-  // visible while it does. Gesture release settles through ensureVisible alone, so if the visible-column path handed
-  // that overscroll back the strip would rest outside its own range with no spring-back.
+  // Raw gesture overscroll is not a centered resting position. Even though column 0 remains fully visible,
+  // ensureVisible must return the strip to its normal range.
   Fixture fixture;
   fixture.addColumns(3);
   const double overscroll = -126.0; // The gesture caps overscroll at 0.1 * viewport.
@@ -617,8 +737,8 @@ UMBRIEL_TEST(ensureVisibleGivesBackLeftOverscroll) {
 }
 
 UMBRIEL_TEST(ensureVisibleGivesBackRightOverscroll) {
-  // Mirrors the left extremity: past max scroll the last column is still fully visible, so the bound is what pulls the
-  // strip back rather than the reveal.
+  // Mirrors the left extremity: raw overscroll past max scroll is still temporary, even while the last column remains
+  // fully visible.
   Fixture fixture;
   fixture.addColumns(3);
   const double maxScroll = fixture.layout.maxScroll(kViewport);

@@ -120,9 +120,14 @@ namespace umbriel {
     [[nodiscard]] virtual InitialSize
     initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction) const = 0;
 
-    [[nodiscard]] virtual View* focusVerticalLeaf(const View* /*view*/, int /*direction*/) const { return nullptr; }
+    [[nodiscard]] virtual std::optional<View*> focusHorizontalLeaf(const View* /*view*/, int /*direction*/) const {
+      return std::nullopt;
+    }
+    [[nodiscard]] virtual std::optional<View*> focusVerticalLeaf(const View* /*view*/, int /*direction*/) const {
+      return std::nullopt;
+    }
 
-    virtual bool cycleWidth(int columnIndex) = 0;
+    virtual bool cycleWidth(int columnIndex, int direction) = 0;
     virtual bool toggleFullWidth(int columnIndex) = 0;
     virtual bool setWidthFraction(int columnIndex, double fraction) = 0;
     virtual void clearFullWidthState(int columnIndex) = 0;
@@ -166,6 +171,11 @@ namespace umbriel {
     const ResolvedLayoutConfig* m_config = nullptr;
     LayoutConstraintsFn m_constraints = nullptr;
   };
+
+  // Single source of truth for the pointer-to-edge proposal shared by every layout and by floating resize:
+  // the outer thirds of the box propose that side's edge per axis, the middle third proposes none, and a
+  // corner ninth proposes both axes. Callers guard degenerate boxes; layouts mask via sanitizeResizeEdges.
+  [[nodiscard]] uint32_t resizeEdgesForPoint(const wlr_box& box, double cx, double cy);
 
   [[nodiscard]] std::unique_ptr<Layout> createLayout(LayoutMode mode);
 

@@ -9,6 +9,7 @@
 #include "output/output.h"
 #include "overview/overview.h"
 #include "server/server.h"
+#include "view/registry.h"
 #include "view/view.h"
 #include "view/xdg_size.h"
 // clang-format off
@@ -228,9 +229,20 @@ namespace umbriel {
     const int focusedColumn = m_layout->columnOf(m_focusedView);
     const int index = focusedColumn >= 0 ? focusedColumn + 1 : static_cast<int>(m_layout->columns().size());
     m_layout->insertView(view, index);
-    // default_width is a viewport fraction: scrolling only. Dwindle ignores it.
-    if (ScrollingLayout* scrolling = scrollingLayout(); initialWidth && scrolling != nullptr) {
-      scrolling->setWidthFraction(scrolling->columnOf(view), *initialWidth);
+    if (ScrollingLayout* scrolling = scrollingLayout(); scrolling != nullptr) {
+      const int column = scrolling->columnOf(view);
+      const std::optional<double> configuredWidth =
+          initialWidth ? initialWidth : m_layoutConfig.scrolling.defaultWidthFraction;
+      if (configuredWidth) {
+        // default_width is a viewport fraction: scrolling only. Dwindle ignores it.
+        scrolling->setWidthFraction(column, *configuredWidth);
+      } else {
+        const wlr_box& geometry = view->toplevel()->base->geometry;
+        const int primary = scrollingVertical() ? geometry.height : geometry.width;
+        if (primary > 0) {
+          scrolling->setWidthFromPixels(column, scrollViewportExtent(), primary);
+        }
+      }
     }
     markArrange(true);
   }
@@ -523,6 +535,9 @@ namespace umbriel {
   }
 
   View* Workspace::focusAlongStrip(int direction) const {
+    if (const auto horizontal = m_layout->focusHorizontalLeaf(m_focusedView, direction)) {
+      return *horizontal;
+    }
     const int current = m_layout->columnOf(m_focusedView);
     const int target = current + direction;
     if (current < 0 || target < 0 || target >= static_cast<int>(m_layout->columns().size())) {
@@ -533,8 +548,8 @@ namespace umbriel {
   }
 
   View* Workspace::focusWithinLane(int direction) const {
-    if (View* vertical = m_layout->focusVerticalLeaf(m_focusedView, direction)) {
-      return vertical;
+    if (const auto vertical = m_layout->focusVerticalLeaf(m_focusedView, direction)) {
+      return *vertical;
     }
     const int column = m_layout->columnOf(m_focusedView);
     const int row = m_layout->rowOf(m_focusedView);
@@ -554,6 +569,24 @@ namespace umbriel {
     return scrollingVertical() ? focusAlongStrip(direction) : focusWithinLane(direction);
   }
 
+  View* Workspace::focusFirstColumn() const {
+    const auto& columns = m_layout->columns();
+    if (columns.empty()) {
+      return nullptr;
+    }
+    const Column& firstColumn = columns.front();
+    return firstColumn.views.empty() ? nullptr : firstColumn.views.front();
+  }
+
+  View* Workspace::focusLastColumn() const {
+    const auto& columns = m_layout->columns();
+    if (columns.empty()) {
+      return nullptr;
+    }
+    const Column& lastColumn = columns.back();
+    return lastColumn.views.empty() ? nullptr : lastColumn.views.front();
+  }
+
   View* Workspace::focusReplacementForRemoval(const View* view) const {
     if (view == nullptr) {
       return nullptr;
@@ -566,30 +599,47 @@ namespace umbriel {
       return candidate != nullptr && candidate != view && candidate->mapped();
     };
 
-    if (columnIndex >= 0 && columnIndex < static_cast<int>(columns.size())) {
-      const auto& column = columns[static_cast<size_t>(columnIndex)].views;
-      for (int row = rowIndex - 1; row >= 0; --row) {
-        if (View* candidate = column[static_cast<size_t>(row)]; mappedCandidate(candidate)) {
+    const wlr_xdg_toplevel* toplevel = view->toplevel();
+    if (toplevel != nullptr && toplevel->parent != nullptr && toplevel->parent->base != nullptr) {
+      View* parent = View::fromSurface(toplevel->parent->base->surface);
+      if (mappedCandidate(parent) && parent->workspace() == this) {
+        return parent;
+      }
+    }
+
+    // Floating views have no layout successor: hand focus back to the most recently focused mapped view on this
+    // workspace, since nothing else refocuses until a destroy-time fallback that unmap-only clients never reach.
+    if (columnIndex < 0 || columnIndex >= static_cast<int>(columns.size())) {
+      for (const auto& entry : m_group->server()->registry().all()) {
+        if (entry.get() != view && entry->mapped() && entry->workspace() == this) {
+          return entry.get();
+        }
+      }
+      return nullptr;
+    }
+
+    const auto& column = columns[static_cast<size_t>(columnIndex)].views;
+    for (int row = rowIndex - 1; row >= 0; --row) {
+      if (View* candidate = column[static_cast<size_t>(row)]; mappedCandidate(candidate)) {
+        return candidate;
+      }
+    }
+    for (int row = rowIndex + 1; row < static_cast<int>(column.size()); ++row) {
+      if (View* candidate = column[static_cast<size_t>(row)]; mappedCandidate(candidate)) {
+        return candidate;
+      }
+    }
+    for (int targetColumn = columnIndex - 1; targetColumn >= 0; --targetColumn) {
+      for (View* candidate : columns[static_cast<size_t>(targetColumn)].views) {
+        if (mappedCandidate(candidate)) {
           return candidate;
         }
       }
-      for (int row = rowIndex + 1; row < static_cast<int>(column.size()); ++row) {
-        if (View* candidate = column[static_cast<size_t>(row)]; mappedCandidate(candidate)) {
+    }
+    for (int targetColumn = columnIndex + 1; targetColumn < static_cast<int>(columns.size()); ++targetColumn) {
+      for (View* candidate : columns[static_cast<size_t>(targetColumn)].views) {
+        if (mappedCandidate(candidate)) {
           return candidate;
-        }
-      }
-      for (int targetColumn = columnIndex - 1; targetColumn >= 0; --targetColumn) {
-        for (View* candidate : columns[static_cast<size_t>(targetColumn)].views) {
-          if (mappedCandidate(candidate)) {
-            return candidate;
-          }
-        }
-      }
-      for (int targetColumn = columnIndex + 1; targetColumn < static_cast<int>(columns.size()); ++targetColumn) {
-        for (View* candidate : columns[static_cast<size_t>(targetColumn)].views) {
-          if (mappedCandidate(candidate)) {
-            return candidate;
-          }
         }
       }
     }
@@ -611,8 +661,12 @@ namespace umbriel {
   }
 
   bool Workspace::moveLaneAlongStrip(int direction) {
+    View* destination = focusAlongStrip(direction);
+    if (destination == nullptr) {
+      return false;
+    }
     const int current = m_layout->columnOf(m_focusedView);
-    const int target = current + direction;
+    const int target = m_layout->columnOf(destination);
     if (current < 0 || target < 0 || target >= static_cast<int>(m_layout->columns().size())) {
       return false;
     }
@@ -656,12 +710,41 @@ namespace umbriel {
     return scrollingVertical() ? moveLaneAlongStrip(direction) : moveWithinLane(direction);
   }
 
-  bool Workspace::cycleFocusedWidth() {
+  bool Workspace::moveFocusedColumnFirst() {
+    if (m_focusedView == nullptr) {
+      return false;
+    }
+    const int current = m_layout->columnOf(m_focusedView);
+    if (current <= 0) {
+      return false;
+    }
+    m_layout->moveColumn(current, 0);
+    ensureFocusedVisible();
+    markArrange();
+    return true;
+  }
+
+  bool Workspace::moveFocusedColumnLast() {
+    if (m_focusedView == nullptr) {
+      return false;
+    }
+    const int current = m_layout->columnOf(m_focusedView);
+    const int last = static_cast<int>(m_layout->columns().size()) - 1;
+    if (current < 0 || current >= last) {
+      return false;
+    }
+    m_layout->moveColumn(current, last);
+    ensureFocusedVisible();
+    markArrange();
+    return true;
+  }
+
+  bool Workspace::cycleFocusedWidth(int direction) {
     if (m_focusedView != nullptr && m_focusedView->maximizedToEdges()) {
       m_focusedView->setMaximizedToEdges(false);
     }
     const int column = m_layout->columnOf(m_focusedView);
-    if (!m_layout->cycleWidth(column)) {
+    if (!m_layout->cycleWidth(column, direction)) {
       return false;
     }
     wlr_xdg_toplevel_set_maximized(m_focusedView->toplevel(), false);
@@ -680,6 +763,19 @@ namespace umbriel {
     }
     wlr_xdg_toplevel_set_maximized(m_focusedView->toplevel(), false);
     ensureFocusedVisible();
+    markArrange();
+    return true;
+  }
+
+  bool Workspace::centerFocusedColumn() {
+    ScrollingLayout* scrolling = scrollingLayout();
+    if (scrolling == nullptr || m_focusedView == nullptr) {
+      return false;
+    }
+    const int column = scrolling->columnOf(m_focusedView);
+    if (!scrolling->centerColumn(column, scrollViewportExtent())) {
+      return false;
+    }
     markArrange();
     return true;
   }

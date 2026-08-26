@@ -45,6 +45,10 @@ namespace {
     int presentedHeight = 0;
     bool mapped = false;
     bool animateChild = false;
+    bool initialFullscreen = false;
+    bool fullscreenBeforeMap = false;
+    bool transparentContent = false;
+    bool reportedFirstConfigure = false;
   };
 
   void requestChildFrame(State& state);
@@ -121,8 +125,10 @@ namespace {
       return true;
     }
 
-    Buffer parent = createBuffer(state, 0xFFFF0000);
-    Buffer child = createBuffer(state, 0xFF0000FF);
+    const uint32_t parentColor = state.transparentContent ? 0x00000000 : 0xFFFF0000;
+    const uint32_t childColor = state.transparentContent ? 0x00000000 : 0xFF0000FF;
+    Buffer parent = createBuffer(state, parentColor);
+    Buffer child = createBuffer(state, childColor);
     if (parent.resource == nullptr || child.resource == nullptr) {
       destroyBuffer(parent);
       destroyBuffer(child);
@@ -152,6 +158,13 @@ namespace {
   void xdgSurfaceConfigure(void* data, xdg_surface* xdgSurface, uint32_t serial) {
     auto& state = *static_cast<State*>(data);
     xdg_surface_ack_configure(xdgSurface, serial);
+    if (state.fullscreenBeforeMap && !state.mapped) {
+      // Some game bridges request fullscreen after acknowledging the initial windowed configure, then attach their
+      // first buffer before the compositor's fullscreen configure arrives. Keep the request and map commit ordered in
+      // the same client batch so the harness exercises that pending-state window.
+      xdg_toplevel_set_fullscreen(state.toplevel, nullptr);
+      state.fullscreenBeforeMap = false;
+    }
     if (!presentSize(state)) {
       std::println(stderr, "subsurface-client: failed to allocate shared-memory buffers");
       return;
@@ -167,8 +180,21 @@ namespace {
       .configure = xdgSurfaceConfigure,
   };
 
-  void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array*) {
+  void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array* states) {
     auto& state = *static_cast<State*>(data);
+    bool fullscreen = false;
+    auto* value = static_cast<uint32_t*>(states->data);
+    auto* end = value + states->size / sizeof(*value);
+    for (; value != end; ++value) {
+      if (*value == XDG_TOPLEVEL_STATE_FULLSCREEN) {
+        fullscreen = true;
+      }
+    }
+    if (!state.reportedFirstConfigure) {
+      std::println("first-configure {} {} {}", width, height, fullscreen ? "fullscreen" : "windowed");
+      std::fflush(stdout);
+      state.reportedFirstConfigure = true;
+    }
     if (width > 0) {
       state.width = width;
     }
@@ -219,6 +245,9 @@ namespace {
 
 int main(int argc, char** argv) {
   State state;
+  state.initialFullscreen = std::getenv("INITIAL_FULLSCREEN") != nullptr;
+  state.fullscreenBeforeMap = std::getenv("FULLSCREEN_BEFORE_MAP") != nullptr;
+  state.transparentContent = std::getenv("TRANSPARENT_CONTENT") != nullptr;
   if (argc > 2) {
     state.width = std::max(1, std::atoi(argv[2]));
   }
@@ -260,6 +289,10 @@ int main(int argc, char** argv) {
   wl_subsurface_set_position(state.subsurface, 0, 0);
   wl_subsurface_set_desync(state.subsurface);
 
+  if (state.initialFullscreen) {
+    // xwayland-satellite does this when an X11 window is already output-sized as its xdg role is created.
+    xdg_toplevel_set_fullscreen(state.toplevel, nullptr);
+  }
   wl_surface_commit(state.surface);
 
   while (wl_display_dispatch(state.display) >= 0) {

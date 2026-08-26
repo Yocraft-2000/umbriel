@@ -226,6 +226,83 @@ UMBRIEL_TEST(splitsFollowTheLongerEdgeOnALandscapeArea) {
   CHECK(second.y != third.y);
 }
 
+UMBRIEL_TEST(directionalFocusFollowsScreenGeometry) {
+  Fixture fixture;
+  fixture.layout.insertView(stub(0), 0);
+  fixture.layout.arrange(kUsable);
+  fixture.layout.insertView(stub(1), 1);
+  fixture.layout.arrange(kUsable);
+  fixture.layout.insertView(stub(2), 2);
+  fixture.layout.arrange(kUsable);
+
+  const wlr_box left = fixture.layout.targetBox(stub(0));
+  const wlr_box upperRight = fixture.layout.targetBox(stub(1));
+  const wlr_box lowerRight = fixture.layout.targetBox(stub(2));
+  CHECK(left.x < lowerRight.x);
+  CHECK_EQ(upperRight.x, lowerRight.x);
+  CHECK(upperRight.y < lowerRight.y);
+
+  const auto leftTarget = fixture.layout.focusHorizontalLeaf(stub(2), -1);
+  const auto upTarget = fixture.layout.focusVerticalLeaf(stub(2), -1);
+  const auto rightBoundary = fixture.layout.focusHorizontalLeaf(stub(1), 1);
+  CHECK(leftTarget.has_value());
+  CHECK(upTarget.has_value());
+  CHECK(rightBoundary.has_value());
+  if (leftTarget.has_value() && upTarget.has_value() && rightBoundary.has_value()) {
+    CHECK_EQ(*leftTarget, stub(0));
+    CHECK_EQ(*upTarget, stub(1));
+    CHECK_EQ(*rightBoundary, nullptr);
+  }
+}
+
+UMBRIEL_TEST(directionalMoveRefreshesScreenGeometryImmediately) {
+  Fixture fixture;
+  fixture.layout.insertView(stub(0), 0);
+  fixture.layout.arrange(kUsable);
+  fixture.layout.insertView(stub(1), 1);
+  fixture.layout.arrange(kUsable);
+  fixture.layout.insertView(stub(2), 2);
+  fixture.layout.arrange(kUsable);
+
+  const auto leftTarget = fixture.layout.focusHorizontalLeaf(stub(2), -1);
+  CHECK(leftTarget.has_value());
+  if (!leftTarget.has_value() || *leftTarget == nullptr) {
+    return;
+  }
+  fixture.layout.moveColumn(fixture.layout.columnOf(stub(2)), fixture.layout.columnOf(*leftTarget));
+
+  // A repeated key action can arrive before the deferred arrange. Directional
+  // lookup must already see the moved view in its new left-hand tile.
+  const auto rightTarget = fixture.layout.focusHorizontalLeaf(stub(2), 1);
+  CHECK(rightTarget.has_value());
+  if (rightTarget.has_value()) {
+    CHECK_EQ(*rightTarget, stub(1));
+  }
+}
+
+UMBRIEL_TEST(verticalMoveCrossesNestedBranches) {
+  Fixture fixture;
+  for (int i = 0; i < 5; ++i) {
+    fixture.layout.insertView(stub(i), i);
+    fixture.layout.arrange(kUsable);
+  }
+
+  const wlr_box upperRight = fixture.layout.targetBox(stub(1));
+  const wlr_box lowerLeft = fixture.layout.targetBox(stub(2));
+  CHECK_EQ(upperRight.x, lowerLeft.x);
+  CHECK(upperRight.y < lowerLeft.y);
+
+  CHECK(fixture.layout.moveViewVertical(stub(2), -1));
+  fixture.layout.arrange(kUsable);
+  CHECK_EQ(fixture.layout.targetBox(stub(2)).y, upperRight.y);
+  CHECK_EQ(fixture.layout.targetBox(stub(1)).y, lowerLeft.y);
+
+  CHECK(fixture.layout.moveViewVertical(stub(2), 1));
+  fixture.layout.arrange(kUsable);
+  CHECK_EQ(fixture.layout.targetBox(stub(2)).y, lowerLeft.y);
+  CHECK_EQ(fixture.layout.targetBox(stub(1)).y, upperRight.y);
+}
+
 UMBRIEL_TEST(splitsFollowTheLongerEdgeOnAPortraitArea) {
   Fixture fixture;
   fixture.addLeaves(3);
@@ -425,9 +502,74 @@ UMBRIEL_TEST(resizeBoundaryRejectsAScreenFacingEdge) {
   CHECK(!fixture.layout.setResizeBoundary(stub(0), WLR_EDGE_LEFT, 0.75));
 }
 
+UMBRIEL_TEST(cycleWidthBackWalksThePresetsInReverse) {
+  Fixture fixture;
+  fixture.config.widthPresets = {1.0 / 3.0, 0.5, 2.0 / 3.0};
+  fixture.addLeaves(2);
+  fixture.layout.arrange(kUsable);
+
+  const int span = kUsable.width - 2 * fixture.config.edgePad - fixture.config.totalGap;
+
+  CHECK(fixture.layout.setWidthFraction(0, 2.0 / 3.0));
+
+  CHECK(fixture.layout.cycleWidth(0, -1));
+  fixture.layout.arrange(kUsable);
+  CHECK(std::abs(fixture.layout.targetBox(stub(0)).width - static_cast<int>(span * 0.5)) <= 2);
+
+  CHECK(fixture.layout.cycleWidth(0, -1));
+  fixture.layout.arrange(kUsable);
+  CHECK(std::abs(fixture.layout.targetBox(stub(0)).width - static_cast<int>(span * (1.0 / 3.0))) <= 2);
+
+  // Wraps back to the last preset.
+  CHECK(fixture.layout.cycleWidth(0, -1));
+  fixture.layout.arrange(kUsable);
+  CHECK(std::abs(fixture.layout.targetBox(stub(0)).width - static_cast<int>(span * (2.0 / 3.0))) <= 2);
+}
+
 // The scrolling-only API is no longer reachable from a DwindleLayout at all: scroll offsets, column positions, and row
 // weights moved onto ScrollingLayout, so the question a previous test asked here ("does dwindle answer 0?") cannot be
 // compiled any more. That is the point. Callers reach those through Workspace::scrollingLayout(), which is null for a
 // dwindle workspace.
+
+UMBRIEL_TEST(resizeEdgesComeFromTileThirds) {
+  Fixture fixture;
+  fixture.addLeaves(2);
+  fixture.layout.arrange(kUsable);
+
+  // Landscape area splits horizontally: leaf 0 is the left half, leaf 1 the right. Only the shared
+  // vertical boundary is resizable, so leaf 1 resizes only from its left third.
+  const wlr_box right = fixture.layout.targetBox(stub(1));
+  const double rightCenterY = right.y + right.height / 2.0;
+  CHECK_EQ(
+      fixture.layout.resizeEdgesAt(stub(1), right.x + right.width / 6.0, rightCenterY),
+      static_cast<uint32_t>(WLR_EDGE_LEFT)
+  );
+  CHECK_EQ(fixture.layout.resizeEdgesAt(stub(1), right.x + right.width / 2.0, rightCenterY), 0U);
+  // Right third proposes the screen-facing right edge, which sanitize drops.
+  CHECK_EQ(fixture.layout.resizeEdgesAt(stub(1), right.x + 5.0 * right.width / 6.0, rightCenterY), 0U);
+
+  // Leaf 0's left third proposes the screen-facing left edge, also dropped.
+  const wlr_box left = fixture.layout.targetBox(stub(0));
+  CHECK_EQ(fixture.layout.resizeEdgesAt(stub(0), left.x + left.width / 6.0, left.y + left.height / 2.0), 0U);
+}
+
+UMBRIEL_TEST(cornerNinthGrabsBothInternalBoundaries) {
+  Fixture fixture;
+  fixture.addLeaves(3);
+  fixture.layout.arrange(kUsable);
+
+  // The right half stacks: leaf 1 is top-right, with an internal left boundary (shared with leaf 0)
+  // and an internal bottom boundary (shared with leaf 2). Confirm the arrangement before probing.
+  CHECK_EQ(fixture.layout.resizableEdges(stub(1)), static_cast<uint32_t>(WLR_EDGE_LEFT | WLR_EDGE_BOTTOM));
+
+  const wlr_box box = fixture.layout.targetBox(stub(1));
+  // Bottom-left corner ninth: left third and bottom third both back internal boundaries.
+  CHECK_EQ(
+      fixture.layout.resizeEdgesAt(stub(1), box.x + box.width / 6.0, box.y + 5.0 * box.height / 6.0),
+      static_cast<uint32_t>(WLR_EDGE_LEFT | WLR_EDGE_BOTTOM)
+  );
+  // Top-right corner ninth proposes right and top, both screen-facing, so nothing survives sanitize.
+  CHECK_EQ(fixture.layout.resizeEdgesAt(stub(1), box.x + 5.0 * box.width / 6.0, box.y + box.height / 6.0), 0U);
+}
 
 int main() { return RUN_TESTS(); }

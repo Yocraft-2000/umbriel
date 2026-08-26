@@ -25,6 +25,7 @@ namespace umbriel {
     [[nodiscard]] double scroll() const { return m_scroll; }
     [[nodiscard]] int columnX(int columnIndex, int viewportPrimary) const;
     [[nodiscard]] int columnWidth(int columnIndex, int viewportPrimary) const;
+    bool setWidthFromPixels(int columnIndex, int viewportPrimary, int width);
     [[nodiscard]] bool isFullWidth(int columnIndex) const override;
     [[nodiscard]] int maxScroll(int viewportPrimary) const {
       return std::max(0, totalWidth(viewportPrimary) - viewportPrimary);
@@ -37,7 +38,10 @@ namespace umbriel {
     bool moveViewVertical(View* view, int direction) override;
     void removeView(View* view) override;
     void moveColumn(int from, int to) override;
-    void setScroll(double scroll);
+    // Raw scroll mutation. `centeredRest` is true only when restoring a saved column-center resting position.
+    void setScroll(double scroll, bool centeredRest = false);
+    bool centerColumn(int columnIndex, int viewportPrimary);
+    [[nodiscard]] bool centeredRest() const { return m_centeredRest; }
     // How much to subtract from the scroll offset when `columnIndex` is about
     // to lose its last view. Removing a lane closes the primary-axis space it
     // held. Compensation re-anchors content when that space was hidden toward
@@ -52,7 +56,7 @@ namespace umbriel {
     [[nodiscard]] InitialSize
     initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction) const override;
 
-    bool cycleWidth(int columnIndex) override;
+    bool cycleWidth(int columnIndex, int direction) override;
     bool toggleFullWidth(int columnIndex) override;
     bool setWidthFraction(int columnIndex, double fraction) override;
     void clearFullWidthState(int columnIndex) override;
@@ -89,6 +93,7 @@ namespace umbriel {
     std::vector<Column> m_columns;
     std::vector<Target> m_targets;
     double m_scroll = 0;
+    bool m_centeredRest = false;
     // Cross extent available during the last arrange, used to preserve existing
     // pixel sizes when a drop converts an outer gap into another stacked view.
     int m_lastAvailableCross = 0;

@@ -146,6 +146,9 @@ namespace umbriel {
       if (rule.defaultFullscreen) {
         resolved.defaultFullscreen = rule.defaultFullscreen;
       }
+      if (rule.defaultMaximizeToEdges) {
+        resolved.defaultMaximizeToEdges = rule.defaultMaximizeToEdges;
+      }
       if (rule.defaultMaximize) {
         resolved.defaultMaximize = rule.defaultMaximize;
       }
@@ -160,6 +163,9 @@ namespace umbriel {
       }
       if (rule.vrr) {
         resolved.vrr = rule.vrr;
+      }
+      if (rule.allowTearing) {
+        resolved.allowTearing = rule.allowTearing;
       }
       if (rule.hdr) {
         resolved.hdr = rule.hdr;

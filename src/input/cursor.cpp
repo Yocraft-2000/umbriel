@@ -5,6 +5,7 @@
 #include "input/seat.h"
 #include "layer/layer_surface.h"
 #include "layout/drop_target.h"
+#include "layout/layout.h"
 #include "layout/scrolling.h"
 #include "lock/session_lock.h"
 #include "output/output.h"
@@ -22,6 +23,7 @@
 #include <linux/input-event-codes.h>
 #include "wlr.h"
 // clang-format on
+#include "wlr/util/edges.h"
 #include "workspace/scratchpad.h"
 #include "workspace/workspace.h"
 
@@ -231,7 +233,11 @@ namespace umbriel {
   }
 
   void Cursor::hideCursor() {
-    if (m_cursorHidden) {
+    // Detaching the cursor surface in the middle of an implicit pointer grab
+    // disrupts simultaneous mouse and keyboard input in games and other
+    // interactive clients. The release restarts the inactivity timer, and a
+    // later keypress can hide the cursor normally.
+    if (m_cursorHidden || m_server->seat()->wlr()->pointer_state.button_count != 0) {
       return;
     }
     m_cursorHidden = true;
@@ -404,9 +410,13 @@ namespace umbriel {
     return workspace != nullptr && grab != nullptr && grab->workspace == workspace;
   }
 
-  void Cursor::beginMove(View* view) {
+  void Cursor::beginMove(View* view, uint32_t button) {
     if (view == nullptr) {
       return;
+    }
+    if (button == 0) {
+      const wlr_seat_pointer_state& pointer = m_server->seat()->wlr()->pointer_state;
+      button = pointer.button_count > 0 ? pointer.grab_button : 0;
     }
     if (!isPassthrough()) {
       resetMode();
@@ -423,6 +433,7 @@ namespace umbriel {
     const double offsetY = m_cursor->y - view->sceneTree()->node.y;
     if (!tiled) {
       m_grab = FloatingMoveGrab{.view = view, .offsetX = offsetX, .offsetY = offsetY};
+      m_moveButton = button;
       view->enterDragPresentation();
       updateInteractiveCursor(view);
       return;
@@ -449,6 +460,7 @@ namespace umbriel {
         .column = std::max(0, grab.sourceColumn),
     };
     m_grab = grab;
+    m_moveButton = button;
     updateInteractiveCursor(view);
   }
 
@@ -466,10 +478,6 @@ namespace umbriel {
       tiled = false;
     }
 
-    setActiveConstraint(nullptr);
-    if (view->maximizedToEdges()) {
-      view->setMaximizedToEdges(false);
-    }
     if (tiled) {
       Workspace* workspace = view->workspace();
       if (workspace == nullptr || workspace->group() == nullptr || workspace->group()->output() == nullptr) {
@@ -485,6 +493,10 @@ namespace umbriel {
         }
         refreshInteractiveCursor();
         return;
+      }
+      setActiveConstraint(nullptr);
+      if (view->maximizedToEdges()) {
+        view->setMaximizedToEdges(false);
       }
       const wlr_box usable = workspace->group()->output()->usableArea();
       std::unique_ptr<ResizeGrab> session = layout.beginResize(view, resolvedEdges, usable);
@@ -506,6 +518,14 @@ namespace umbriel {
       updateInteractiveCursor(view);
       return;
     }
+    if (edges == 0) {
+      refreshInteractiveCursor();
+      return;
+    }
+    setActiveConstraint(nullptr);
+    if (view->maximizedToEdges()) {
+      view->setMaximizedToEdges(false);
+    }
 
     const wlr_box& geometry = view->toplevel()->base->geometry;
     const double borderX =
@@ -526,7 +546,11 @@ namespace umbriel {
     updateInteractiveCursor(view);
   }
 
-  void Cursor::warpTo(double lx, double ly) {
+  void Cursor::warpTo(double lx, double ly) { warpTo(lx, ly, true); }
+
+  void Cursor::warpToPreservingFocus(double lx, double ly) { warpTo(lx, ly, false); }
+
+  void Cursor::warpTo(double lx, double ly, bool allowFocusChange) {
     noteActivity();
     const double oldX = m_cursor->x;
     const double oldY = m_cursor->y;
@@ -536,7 +560,7 @@ namespace umbriel {
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     const uint32_t timeMsec = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
     m_server->notifyIdleActivity();
-    processMotion(timeMsec, oldX, oldY);
+    processMotion(timeMsec, oldX, oldY, allowFocusChange);
   }
 
   void Cursor::resetMode() {
@@ -548,6 +572,7 @@ namespace umbriel {
       view->finishFloatingResize();
     }
     m_grab = PassthroughGrab{};
+    m_moveButton = 0;
     if (restoreDragPresentation && view != nullptr) {
       view->restoreHomePresentation();
     }
@@ -679,7 +704,7 @@ namespace umbriel {
 
     // Config mouse binds win over the overview and the built-in Mod+drag / Mod+resize grabs. Presses consumed here
     // swallow their paired release so clients never see an unmatched release.
-    if (state == WL_POINTER_BUTTON_STATE_PRESSED && !m_server->sessionLocked() && isPassthrough()) {
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED && isPassthrough()) {
       const uint32_t modifiers = m_server->keyboardModifiers();
       const Keybind* bound = m_server->handleMouseBind(button, modifiers);
       // Any press dismisses the cheatsheet, as any key press does, except one that just ran a cheatsheet action. Unlike
@@ -710,6 +735,14 @@ namespace umbriel {
         // The drag grab suppressed normal pointer motion. Re-run hit testing at
         // the unchanged position so the client can restore its hover cursor.
         processMotion(timeMsec, m_cursor->x, m_cursor->y);
+      }
+      return;
+    }
+
+    // An interactive move ends only when its initiating button is released.
+    if (m_moveButton != 0 && button != m_moveButton) {
+      if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        m_swallowedButtons.push_back(button);
       }
       return;
     }
@@ -815,7 +848,7 @@ namespace umbriel {
     const bool modHeld = (m_server->keyboardModifiers() & m_server->modKey()) != 0;
     if (button == BTN_LEFT && modHeld && view != nullptr) {
       m_server->focusView(view, FocusReason::Grab);
-      beginMove(view);
+      beginMove(view, button);
       return;
     }
     if (button == BTN_RIGHT && modHeld && view != nullptr) {
@@ -840,7 +873,9 @@ namespace umbriel {
       }
     } else if (m_server->exclusiveKeyboardLayer() == nullptr) {
       if (view != nullptr) {
-        m_server->focusView(view, FocusReason::PointerPress);
+        if (!isXdgPopupSurface(surface)) {
+          m_server->focusView(view, FocusReason::PointerPress);
+        }
       } else {
         wlr_output* wlrOutput = wlr_output_layout_output_at(m_server->outputLayout(), m_cursor->x, m_cursor->y);
         m_server->refocus(m_server->outputFromWlr(wlrOutput));
@@ -1001,7 +1036,7 @@ namespace umbriel {
           if (!isXdgPopupSurface(surface)) {
             layer->focus();
           }
-        } else if (view != nullptr) {
+        } else if (view != nullptr && !isXdgPopupSurface(surface)) {
           m_server->focusView(view, FocusReason::PointerPress);
         }
       }
@@ -1069,7 +1104,7 @@ namespace umbriel {
 
   void Cursor::handleTouchFrame() { wlr_seat_touch_notify_frame(m_server->seat()->wlr()); }
 
-  void Cursor::processMotion(uint32_t timeMsec, double oldX, double oldY) {
+  void Cursor::processMotion(uint32_t timeMsec, double oldX, double oldY, bool allowFocusChange) {
     updateHotCorner();
     // Overview owns motion: cards follow a drag, panels keep passthrough, and
     // the inert desktop underneath never receives enter/motion or hover focus.
@@ -1160,7 +1195,7 @@ namespace umbriel {
       updateConstraintForSurface(seat->pointer_state.focused_surface);
       return;
     }
-    updatePointerOutput();
+    updatePointerOutput(allowFocusChange);
 
     double sx = 0;
     double sy = 0;
@@ -1168,7 +1203,11 @@ namespace umbriel {
     LayerSurface* layer = nullptr;
     View* view = m_server->viewAt(m_cursor->x, m_cursor->y, &surface, &sx, &sy, &layer);
 
-    if (config().input.focus.followsMouse && layer == nullptr && view != nullptr && view->mapped()) {
+    if (allowFocusChange
+        && config().input.focus.followsMouse
+        && layer == nullptr
+        && view != nullptr
+        && view->mapped()) {
       view = hoverFocus(view, &surface, &sx, &sy, &layer, oldX, oldY);
     }
 
@@ -1193,13 +1232,14 @@ namespace umbriel {
     updateInteractiveCursor(view);
   }
 
-  void Cursor::updatePointerOutput() {
+  void Cursor::updatePointerOutput(bool allowFocusChange) {
     // Crossing outputs updates keyboard / foreign-toplevel focus so clients that follow the
     // focused screen match preferredOutput() / workspace-switch behavior.
     wlr_output* pointerOutput = wlr_output_layout_output_at(m_server->outputLayout(), m_cursor->x, m_cursor->y);
     if (pointerOutput != m_pointerOutput) {
       m_pointerOutput = pointerOutput;
-      if (config().input.focus.followsMouse
+      if (allowFocusChange
+          && config().input.focus.followsMouse
           && !m_server->sessionLocked()
           && m_server->exclusiveKeyboardLayer() == nullptr) {
         m_server->refocus(m_server->outputFromWlr(pointerOutput));
@@ -1483,7 +1523,7 @@ namespace umbriel {
         if (!isXdgPopupSurface(surface)) {
           layer->focus();
         }
-      } else if (m_server->exclusiveKeyboardLayer() == nullptr && view != nullptr) {
+      } else if (m_server->exclusiveKeyboardLayer() == nullptr && view != nullptr && !isXdgPopupSurface(surface)) {
         m_server->focusView(view, FocusReason::PointerPress);
       }
       wlr_tablet_v2_tablet_tool_notify_down(state->v2);
@@ -1574,7 +1614,14 @@ namespace umbriel {
     }
 
     Workspace* workspace = output->workspaceGroup()->active();
-    grab->drop = computeDropTarget(*workspace, m_cursor->x, m_cursor->y, grab->view);
+    grab->drop = computeDropTarget(
+        *workspace, m_cursor->x, m_cursor->y, grab->view,
+        DropTargetOptions{
+            .clipHintToUsable = true,
+            .reserveScrollingViewportEdges = true,
+            .endpointGapsOutsideColumns = false,
+        }
+    );
     if (grab->drop.hintBox.width > 0 && grab->drop.hintBox.height > 0) {
       m_server->insertHint().show(output, grab->drop.hintBox, config().appearance.cornerRadius);
     } else {
@@ -1618,7 +1665,7 @@ namespace umbriel {
       view->setPosition(x, y);
     } else if (output != nullptr && output->workspaceGroup() != nullptr) {
       if (Workspace* target = output->workspaceGroup()->active(); view->workspace() != target) {
-        view->setWorkspace(target);
+        view->moveToWorkspace(target);
         view->setPosition(x, y);
       }
     }
@@ -1687,28 +1734,8 @@ namespace umbriel {
     const wlr_box& geo = view->toplevel()->base->geometry;
     const int x = view->sceneTree()->node.x + geo.x;
     const int y = view->sceneTree()->node.y + geo.y;
-    const double cx = m_cursor->x;
-    const double cy = m_cursor->y;
-    const double distLeft = std::abs(cx - x);
-    const double distRight = std::abs(cx - (x + geo.width));
-    const double distTop = std::abs(cy - y);
-    const double distBottom = std::abs(cy - (y + geo.height));
-    const double nearestH = std::min(distLeft, distRight);
-    const double nearestV = std::min(distTop, distBottom);
-
-    uint32_t edges = 0;
-    if (nearestH <= nearestV) {
-      edges |= distLeft <= distRight ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT;
-    } else {
-      edges |= distTop <= distBottom ? WLR_EDGE_TOP : WLR_EDGE_BOTTOM;
-    }
-    // Prefer a corner when the cursor is near both axes.
-    constexpr double kCornerSlop = 32.0;
-    if (nearestH < kCornerSlop && nearestV < kCornerSlop) {
-      edges = (distLeft <= distRight ? WLR_EDGE_LEFT : WLR_EDGE_RIGHT)
-          | (distTop <= distBottom ? WLR_EDGE_TOP : WLR_EDGE_BOTTOM);
-    }
-    return edges;
+    const wlr_box box{.x = x, .y = y, .width = geo.width, .height = geo.height};
+    return resizeEdgesForPoint(box, m_cursor->x, m_cursor->y);
   }
 
   uint32_t Cursor::hoverResizeEdges(View* view) const {

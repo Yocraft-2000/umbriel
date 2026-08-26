@@ -6,6 +6,7 @@
 // height]]. The optional dimensions let pointer checks expose a surface that fills its assigned tile.
 
 #include "color-management-v1-client-protocol.h"
+#include "tearing-control-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #include <algorithm>
@@ -19,6 +20,12 @@
 
 namespace {
 
+#ifdef WP_COLOR_MANAGER_V1_CREATE_WINDOWS_BT2100_SINCE_VERSION
+  constexpr uint32_t kColorManagerVersion = WP_COLOR_MANAGER_V1_CREATE_WINDOWS_BT2100_SINCE_VERSION;
+#else
+  constexpr uint32_t kColorManagerVersion = 2;
+#endif
+
   struct Buffer {
     wl_buffer* resource = nullptr;
     void* pixels = MAP_FAILED;
@@ -28,6 +35,7 @@ namespace {
   struct State {
     wl_display* display = nullptr;
     wl_compositor* compositor = nullptr;
+    wl_subcompositor* subcompositor = nullptr;
     wl_shm* shm = nullptr;
     xdg_wm_base* wmBase = nullptr;
     wl_surface* surface = nullptr;
@@ -38,11 +46,18 @@ namespace {
     wp_color_manager_v1* colorManager = nullptr;
     wp_color_management_surface_v1* colorSurface = nullptr;
     wp_image_description_v1* imageDescription = nullptr;
+    wp_tearing_control_manager_v1* tearingManager = nullptr;
+    wp_tearing_control_v1* tearingControl = nullptr;
     Buffer buffer;
+    wl_surface* colorChildSurface = nullptr;
+    wl_subsurface* colorChildSubsurface = nullptr;
+    Buffer colorChildBuffer;
     int width = 64;
     int height = 64;
     bool mapped = false;
     bool closed = false;
+    bool redrawOnClose = false;
+    bool redrawOnceOnClose = false;
     bool keyboardFocused = false;
     bool requestMaximized = false;
     bool maximizeRequested = false;
@@ -50,11 +65,28 @@ namespace {
     bool fullscreenRequested = false;
     bool requestHdr = false;
     bool requestWindowsScrgb = false;
+    bool requestWindowsBt2100 = false;
+    bool colorOnSubsurface = false;
+    bool colorChildLifecycle = false;
+    uint32_t colorChildLifecyclePhase = 0;
     bool hasExtendedTargetVolume = false;
     bool hasWindowsScrgb = false;
+#ifdef WP_COLOR_MANAGER_V1_CREATE_WINDOWS_BT2100_SINCE_VERSION
+    bool hasWindowsBt2100 = false;
+#endif
     bool colorManagerDone = false;
     bool imageDescriptionReady = false;
     bool imageDescriptionFailed = false;
+    int tearingHint = -1;
+  };
+
+  struct AuxiliaryToplevel {
+    State* state = nullptr;
+    wl_surface* surface = nullptr;
+    xdg_surface* xdgSurface = nullptr;
+    xdg_toplevel* toplevel = nullptr;
+    Buffer buffer;
+    bool mapped = false;
   };
 
   void colorManagerSupportedIntent(void*, wp_color_manager_v1*, uint32_t) {}
@@ -65,6 +97,10 @@ namespace {
       state.hasExtendedTargetVolume = true;
     } else if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_SCRGB) {
       state.hasWindowsScrgb = true;
+#ifdef WP_COLOR_MANAGER_V1_CREATE_WINDOWS_BT2100_SINCE_VERSION
+    } else if (feature == WP_COLOR_MANAGER_V1_FEATURE_WINDOWS_BT2100) {
+      state.hasWindowsBt2100 = true;
+#endif
     }
   }
 
@@ -182,10 +218,72 @@ namespace {
     return buffer;
   }
 
+  void auxiliaryXdgSurfaceConfigure(void* data, xdg_surface* xdgSurface, uint32_t serial) {
+    auto& window = *static_cast<AuxiliaryToplevel*>(data);
+    xdg_surface_ack_configure(xdgSurface, serial);
+    if (window.mapped) {
+      return;
+    }
+    window.mapped = true;
+    wl_surface_attach(window.surface, window.buffer.resource, 0, 0);
+    wl_surface_damage_buffer(window.surface, 0, 0, window.state->width, window.state->height);
+    wl_surface_commit(window.surface);
+  }
+
+  constexpr xdg_surface_listener kAuxiliaryXdgSurfaceListener = {
+      .configure = auxiliaryXdgSurfaceConfigure,
+  };
+
+  void auxiliaryToplevelConfigure(void*, xdg_toplevel*, int32_t, int32_t, wl_array*) {}
+
+  void auxiliaryToplevelClose(void* data, xdg_toplevel*) {
+    auto& window = *static_cast<AuxiliaryToplevel*>(data);
+    if (!window.mapped) {
+      return;
+    }
+    window.mapped = false;
+    wl_surface_attach(window.surface, nullptr, 0, 0);
+    wl_surface_commit(window.surface);
+  }
+
+  constexpr xdg_toplevel_listener kAuxiliaryToplevelListener = {
+      .configure = auxiliaryToplevelConfigure,
+      .close = auxiliaryToplevelClose,
+      .configure_bounds = nullptr,
+      .wm_capabilities = nullptr,
+  };
+
+  bool mapAuxiliaryToplevel(State& state, AuxiliaryToplevel& window, const char* title) {
+    window.state = &state;
+    window.buffer = createBuffer(state);
+    if (window.buffer.resource == nullptr) {
+      return false;
+    }
+    window.surface = wl_compositor_create_surface(state.compositor);
+    window.xdgSurface = xdg_wm_base_get_xdg_surface(state.wmBase, window.surface);
+    xdg_surface_add_listener(window.xdgSurface, &kAuxiliaryXdgSurfaceListener, &window);
+    window.toplevel = xdg_surface_get_toplevel(window.xdgSurface);
+    xdg_toplevel_add_listener(window.toplevel, &kAuxiliaryToplevelListener, &window);
+    xdg_toplevel_set_title(window.toplevel, title);
+    wl_surface_commit(window.surface);
+    while (!window.mapped) {
+      if (wl_display_dispatch(state.display) < 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void xdgSurfaceConfigure(void* data, xdg_surface* xdgSurface, uint32_t serial) {
     auto& state = *static_cast<State*>(data);
     xdg_surface_ack_configure(xdgSurface, serial);
-    if (state.mapped || state.closed) {
+    if (state.mapped) {
+      // Apply later toplevel state transitions, such as leaving fullscreen. Acknowledging the configure without a
+      // surface commit leaves the requested state pending forever.
+      wl_surface_commit(state.surface);
+      return;
+    }
+    if (state.closed) {
       return;
     }
     state.mapped = true;
@@ -227,6 +325,45 @@ namespace {
     if (!state.mapped) {
       return;
     }
+    if (state.redrawOnClose) {
+      wl_surface_damage_buffer(state.surface, 0, 0, state.width, state.height);
+      wl_surface_commit(state.surface);
+      if (state.redrawOnceOnClose) {
+        state.redrawOnClose = false;
+      }
+      std::println("redrawn");
+      std::fflush(stdout);
+      return;
+    }
+    if (state.colorChildLifecycle) {
+      if (state.colorChildLifecyclePhase == 0) {
+        wl_surface_attach(state.colorChildSurface, state.colorChildBuffer.resource, 0, 0);
+        wl_surface_damage_buffer(state.colorChildSurface, 0, 0, state.width, state.height);
+        wl_surface_commit(state.colorChildSurface);
+        ++state.colorChildLifecyclePhase;
+        std::println("color-child-mapped");
+        std::fflush(stdout);
+        return;
+      }
+      if (state.colorChildLifecyclePhase == 1) {
+        wp_color_management_surface_v1_set_image_description(
+            state.colorSurface, state.imageDescription, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL
+        );
+        wl_surface_commit(state.colorChildSurface);
+        ++state.colorChildLifecyclePhase;
+        std::println("color-child-hdr");
+        std::fflush(stdout);
+        return;
+      }
+      if (state.colorChildLifecyclePhase == 2) {
+        wl_surface_attach(state.colorChildSurface, nullptr, 0, 0);
+        wl_surface_commit(state.colorChildSurface);
+        ++state.colorChildLifecyclePhase;
+        std::println("color-child-unmapped");
+        std::fflush(stdout);
+        return;
+      }
+    }
     state.mapped = false;
     state.closed = true;
     // Attaching a null buffer unmaps the surface; the toplevel stays alive.
@@ -253,6 +390,9 @@ namespace {
     auto& state = *static_cast<State*>(data);
     if (std::strcmp(interface, wl_compositor_interface.name) == 0) {
       state.compositor = static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, 4));
+    } else if (std::strcmp(interface, wl_subcompositor_interface.name) == 0) {
+      state.subcompositor =
+          static_cast<wl_subcompositor*>(wl_registry_bind(registry, name, &wl_subcompositor_interface, 1));
     } else if (std::strcmp(interface, wl_shm_interface.name) == 0) {
       state.shm = static_cast<wl_shm*>(wl_registry_bind(registry, name, &wl_shm_interface, 1));
     } else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0) {
@@ -264,9 +404,13 @@ namespace {
       wl_seat_add_listener(state.seat, &kSeatListener, &state);
     } else if (std::strcmp(interface, wp_color_manager_v1_interface.name) == 0) {
       state.colorManager = static_cast<wp_color_manager_v1*>(
-          wl_registry_bind(registry, name, &wp_color_manager_v1_interface, std::min(version, 2U))
+          wl_registry_bind(registry, name, &wp_color_manager_v1_interface, std::min(version, kColorManagerVersion))
       );
       wp_color_manager_v1_add_listener(state.colorManager, &kColorManagerListener, &state);
+    } else if (std::strcmp(interface, wp_tearing_control_manager_v1_interface.name) == 0) {
+      state.tearingManager = static_cast<wp_tearing_control_manager_v1*>(
+          wl_registry_bind(registry, name, &wp_tearing_control_manager_v1_interface, std::min(version, 1U))
+      );
     }
   }
 
@@ -286,14 +430,49 @@ namespace {
     }
   }
 
+  void destroyAuxiliaryToplevel(AuxiliaryToplevel& window) {
+    if (window.toplevel != nullptr) {
+      xdg_toplevel_destroy(window.toplevel);
+    }
+    if (window.xdgSurface != nullptr) {
+      xdg_surface_destroy(window.xdgSurface);
+    }
+    if (window.surface != nullptr) {
+      wl_surface_destroy(window.surface);
+    }
+    destroyBuffer(window.buffer);
+  }
+
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--color-manager-version") == 0) {
+    std::println("{}", kColorManagerVersion);
+    return EXIT_SUCCESS;
+  }
+
   State state;
+  if (const char* redraw = std::getenv("REDRAW_ON_CLOSE")) {
+    state.redrawOnClose = true;
+    state.redrawOnceOnClose = std::string_view(redraw) == "once";
+  }
   state.requestMaximized = std::getenv("REQUEST_MAXIMIZED") != nullptr;
   state.requestFullscreen = std::getenv("REQUEST_FULLSCREEN") != nullptr;
   state.requestHdr = std::getenv("COLOR_HDR") != nullptr;
   state.requestWindowsScrgb = std::getenv("COLOR_WINDOWS_SCRGB") != nullptr;
+  state.requestWindowsBt2100 = std::getenv("COLOR_WINDOWS_BT2100") != nullptr;
+  state.colorOnSubsurface = std::getenv("COLOR_ON_SUBSURFACE") != nullptr;
+  state.colorChildLifecycle = std::getenv("COLOR_CHILD_LIFECYCLE") != nullptr;
+  if (const char* hint = std::getenv("TEARING_HINT")) {
+    if (std::strcmp(hint, "async") == 0) {
+      state.tearingHint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+    } else if (std::strcmp(hint, "vsync") == 0) {
+      state.tearingHint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
+    } else {
+      std::println(stderr, "unmap-client: TEARING_HINT must be async or vsync");
+      return EXIT_FAILURE;
+    }
+  }
   if (argc > 2) {
     state.width = std::max(1, std::atoi(argv[2]));
   }
@@ -322,8 +501,43 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
+  const bool transientSuite = std::getenv("TRANSIENT_SUITE") != nullptr;
+  AuxiliaryToplevel transientParent;
+  AuxiliaryToplevel transientUnrelated;
+  if (transientSuite
+      && (!mapAuxiliaryToplevel(state, transientParent, "transient-parent")
+          || !mapAuxiliaryToplevel(state, transientUnrelated, "transient-unrelated"))) {
+    std::println(stderr, "unmap-client: failed to map transient-suite support windows");
+    return EXIT_FAILURE;
+  }
+
   state.surface = wl_compositor_create_surface(state.compositor);
-  if (state.requestHdr || state.requestWindowsScrgb) {
+  if (state.tearingHint >= 0) {
+    if (state.tearingManager == nullptr) {
+      std::println(stderr, "unmap-client: compositor is missing wp_tearing_control_manager_v1");
+      return EXIT_FAILURE;
+    }
+    state.tearingControl = wp_tearing_control_manager_v1_get_tearing_control(state.tearingManager, state.surface);
+    wp_tearing_control_v1_set_presentation_hint(state.tearingControl, static_cast<uint32_t>(state.tearingHint));
+  }
+  wl_surface* colorTargetSurface = state.surface;
+  if (state.colorOnSubsurface) {
+    if (state.subcompositor == nullptr) {
+      std::println(stderr, "unmap-client: compositor is missing wl_subcompositor");
+      return EXIT_FAILURE;
+    }
+    state.colorChildBuffer = createBuffer(state);
+    if (state.colorChildBuffer.resource == nullptr) {
+      std::println(stderr, "unmap-client: failed to allocate color child buffer");
+      return EXIT_FAILURE;
+    }
+    state.colorChildSurface = wl_compositor_create_surface(state.compositor);
+    state.colorChildSubsurface =
+        wl_subcompositor_get_subsurface(state.subcompositor, state.colorChildSurface, state.surface);
+    wl_subsurface_set_desync(state.colorChildSubsurface);
+    colorTargetSurface = state.colorChildSurface;
+  }
+  if (state.requestHdr || state.requestWindowsScrgb || state.requestWindowsBt2100) {
     if (state.colorManager == nullptr) {
       std::println(stderr, "unmap-client: compositor is missing wp_color_manager_v1");
       return EXIT_FAILURE;
@@ -333,9 +547,24 @@ int main(int argc, char** argv) {
       std::println(stderr, "unmap-client: compositor is missing Wine scRGB color-management features");
       return EXIT_FAILURE;
     }
-    state.colorSurface = wp_color_manager_v1_get_surface(state.colorManager, state.surface);
+#ifdef WP_COLOR_MANAGER_V1_CREATE_WINDOWS_BT2100_SINCE_VERSION
+    if (state.requestWindowsBt2100 && (!state.colorManagerDone || !state.hasWindowsBt2100)) {
+      std::println(stderr, "unmap-client: compositor is missing Windows BT.2100 color-management support");
+      return EXIT_FAILURE;
+    }
+#else
+    if (state.requestWindowsBt2100) {
+      std::println(stderr, "unmap-client: Windows BT.2100 requires wayland-protocols 1.49");
+      return EXIT_FAILURE;
+    }
+#endif
+    state.colorSurface = wp_color_manager_v1_get_surface(state.colorManager, colorTargetSurface);
     if (state.requestWindowsScrgb) {
       state.imageDescription = wp_color_manager_v1_create_windows_scrgb(state.colorManager);
+#ifdef WP_COLOR_MANAGER_V1_CREATE_WINDOWS_BT2100_SINCE_VERSION
+    } else if (state.requestWindowsBt2100) {
+      state.imageDescription = wp_color_manager_v1_create_windows_bt2100(state.colorManager);
+#endif
     } else {
       wp_image_description_creator_params_v1* params =
           wp_color_manager_v1_create_parametric_creator(state.colorManager);
@@ -349,9 +578,16 @@ int main(int argc, char** argv) {
     if (!state.imageDescriptionReady) {
       return EXIT_FAILURE;
     }
-    wp_color_management_surface_v1_set_image_description(
-        state.colorSurface, state.imageDescription, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL
-    );
+    if (!state.colorChildLifecycle) {
+      wp_color_management_surface_v1_set_image_description(
+          state.colorSurface, state.imageDescription, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL
+      );
+    }
+  }
+  if (state.colorChildSurface != nullptr && !state.colorChildLifecycle) {
+    wl_surface_attach(state.colorChildSurface, state.colorChildBuffer.resource, 0, 0);
+    wl_surface_damage_buffer(state.colorChildSurface, 0, 0, state.width, state.height);
+    wl_surface_commit(state.colorChildSurface);
   }
   state.xdgSurface = xdg_wm_base_get_xdg_surface(state.wmBase, state.surface);
   xdg_surface_add_listener(state.xdgSurface, &kXdgSurfaceListener, &state);
@@ -360,6 +596,9 @@ int main(int argc, char** argv) {
   xdg_toplevel_set_title(state.toplevel, argc > 1 ? argv[1] : "unmap-client");
   if (const char* appId = std::getenv("APP_ID")) {
     xdg_toplevel_set_app_id(state.toplevel, appId);
+  }
+  if (transientSuite) {
+    xdg_toplevel_set_parent(state.toplevel, transientParent.toplevel);
   }
   wl_surface_commit(state.surface);
 
@@ -372,17 +611,31 @@ int main(int argc, char** argv) {
   if (state.xdgSurface != nullptr) {
     xdg_surface_destroy(state.xdgSurface);
   }
+  if (state.tearingControl != nullptr) {
+    wp_tearing_control_v1_destroy(state.tearingControl);
+  }
   if (state.colorSurface != nullptr) {
     wp_color_management_surface_v1_destroy(state.colorSurface);
   }
   if (state.imageDescription != nullptr) {
     wp_image_description_v1_destroy(state.imageDescription);
   }
+  if (state.colorChildSubsurface != nullptr) {
+    wl_subsurface_destroy(state.colorChildSubsurface);
+  }
+  if (state.colorChildSurface != nullptr) {
+    wl_surface_destroy(state.colorChildSurface);
+  }
   if (state.surface != nullptr) {
     wl_surface_destroy(state.surface);
   }
+  destroyAuxiliaryToplevel(transientUnrelated);
+  destroyAuxiliaryToplevel(transientParent);
   if (state.colorManager != nullptr) {
     wp_color_manager_v1_destroy(state.colorManager);
+  }
+  if (state.tearingManager != nullptr) {
+    wp_tearing_control_manager_v1_destroy(state.tearingManager);
   }
   if (state.keyboard != nullptr) {
     wl_keyboard_destroy(state.keyboard);
@@ -391,6 +644,7 @@ int main(int argc, char** argv) {
     wl_seat_destroy(state.seat);
   }
   destroyBuffer(state.buffer);
+  destroyBuffer(state.colorChildBuffer);
   wl_display_disconnect(state.display);
   return EXIT_SUCCESS;
 }

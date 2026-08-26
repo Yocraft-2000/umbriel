@@ -67,16 +67,29 @@ UMBRIEL_TEST(workspaceOverridesApplyGlobalThenOutputSpecificRules) {
   CHECK_EQ(onDpOne.gap, 20);
   CHECK_EQ(onDpOne.totalGap, 24);
   CHECK_EQ(onDpOne.edgePad, 22);
-  CHECK_EQ(onDpOne.scrolling.defaultWidthFraction, 0.6);
+  CHECK(onDpOne.scrolling.defaultWidthFraction.has_value());
+  CHECK_EQ(*onDpOne.scrolling.defaultWidthFraction, 0.6);
 
   const auto onDpTwo = umbriel::resolveWorkspaceLayout(config, "DP-2", "dev", 0);
   CHECK(onDpTwo.mode == LayoutMode::Scrolling);
   CHECK_EQ(onDpTwo.gap, 30);
-  CHECK_EQ(onDpTwo.scrolling.defaultWidthFraction, 0.6);
+  CHECK(onDpTwo.scrolling.defaultWidthFraction.has_value());
+  CHECK_EQ(*onDpTwo.scrolling.defaultWidthFraction, 0.6);
 
   const auto elsewhere = umbriel::resolveWorkspaceLayout(config, "HDMI-A-1", "dev", 0);
   CHECK_EQ(elsewhere.gap, 12);
-  CHECK_EQ(elsewhere.scrolling.defaultWidthFraction, 0.6);
+  CHECK(elsewhere.scrolling.defaultWidthFraction.has_value());
+  CHECK_EQ(*elsewhere.scrolling.defaultWidthFraction, 0.6);
+}
+
+UMBRIEL_TEST(omittedScrollingDefaultWidthRemainsUnset) {
+  Config config;
+
+  const auto global = umbriel::resolveGlobalLayout(config);
+  CHECK(!global.scrolling.defaultWidthFraction.has_value());
+
+  const auto workspace = umbriel::resolveWorkspaceLayout(config, "DP-1", "dev", 0);
+  CHECK(!workspace.scrolling.defaultWidthFraction.has_value());
 }
 
 UMBRIEL_TEST(workspaceInventoryResolvesStaticAndDynamicOutputs) {
@@ -139,6 +152,7 @@ UMBRIEL_TEST(windowRulesMergeMatchingFieldsInOrder) {
   app.defaultPinned = true;
   app.focusOnActivate = false;
   app.vrr = VrrMode::Disabled;
+  app.allowTearing = false;
   app.hdr = umbriel::HdrMode::Off;
   app.defaultPosition = umbriel::WindowPosition{
       .x = 12,
@@ -153,6 +167,7 @@ UMBRIEL_TEST(windowRulesMergeMatchingFieldsInOrder) {
   title.opacity = 0.8;
   title.focusOnActivate = true;
   title.vrr = VrrMode::Always;
+  title.allowTearing = true;
   title.hdr = umbriel::HdrMode::On;
   title.defaultPinned = false;
   config.windowRules.push_back(std::move(title));
@@ -174,11 +189,13 @@ UMBRIEL_TEST(windowRulesMergeMatchingFieldsInOrder) {
   CHECK(resolved.defaultPinned && !*resolved.defaultPinned);
   CHECK(resolved.focusOnActivate && *resolved.focusOnActivate);
   CHECK(resolved.vrr == VrrMode::Always);
+  CHECK(resolved.allowTearing && *resolved.allowTearing);
   CHECK(resolved.hdr == umbriel::HdrMode::On);
 
   const auto appOnly = umbriel::resolveWindowRules(config, "foot", "editor", false);
   CHECK(appOnly.defaultPinned && *appOnly.defaultPinned);
   CHECK(appOnly.vrr == VrrMode::Disabled);
+  CHECK(appOnly.allowTearing && !*appOnly.allowTearing);
   CHECK(appOnly.hdr == umbriel::HdrMode::Off);
 
   const auto focused = umbriel::resolveWindowRules(config, "foot", "project shell", true);
@@ -193,6 +210,15 @@ UMBRIEL_TEST(windowVrrRuleOverridesTheOutputPolicy) {
   CHECK(!umbriel::effectiveVrrEnabled(VrrMode::Disabled, false, VrrMode::Fullscreen, false));
   CHECK(umbriel::effectiveVrrEnabled(VrrMode::Disabled, false, VrrMode::Fullscreen, true));
   CHECK(umbriel::effectiveVrrEnabled(VrrMode::Fullscreen, true, std::nullopt, false));
+}
+
+UMBRIEL_TEST(tearingRequiresTheOutputGateAndUsesTheWindowOverride) {
+  CHECK(!umbriel::tearingEnabled(false, std::nullopt, true));
+  CHECK(!umbriel::tearingEnabled(false, true, true));
+  CHECK(umbriel::tearingEnabled(true, std::nullopt, true));
+  CHECK(!umbriel::tearingEnabled(true, std::nullopt, false));
+  CHECK(umbriel::tearingEnabled(true, true, false));
+  CHECK(!umbriel::tearingEnabled(true, false, true));
 }
 
 UMBRIEL_TEST(layerRulesMergeMatchingFieldsInOrder) {

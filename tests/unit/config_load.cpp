@@ -191,6 +191,25 @@ center_underfull_strip = true
   CHECK(containsDiagnostic(store, "unknown key general.prefer_no_csd"));
 }
 
+UMBRIEL_TEST(scrollingDefaultWidthIsOptional) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[layout.scrolling]\ncenter_underfull_strip = false\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().layout.scrolling.defaultWidthFraction.has_value());
+
+  file.write("[layout.scrolling]\ndefault_width_fraction = 0.75\n");
+  CHECK(store.reload().success);
+  CHECK(store.config().layout.scrolling.defaultWidthFraction.has_value());
+  CHECK_EQ(*store.config().layout.scrolling.defaultWidthFraction, 0.75);
+
+  file.write("[layout.scrolling]\ncenter_underfull_strip = true\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().layout.scrolling.defaultWidthFraction.has_value());
+}
+
 UMBRIEL_TEST(modKeyIsUserConfigurable) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
@@ -208,6 +227,30 @@ UMBRIEL_TEST(modKeyIsUserConfigurable) {
   CHECK(store.reload().success);
   CHECK(!store.config().general.modKey.has_value());
   CHECK(containsDiagnostic(store, "unknown general.mod_key"));
+}
+
+UMBRIEL_TEST(keybindTableLoadsAllowWhenLocked) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write(
+      "[keybinds]\n"
+      "\"XF86AudioRaiseVolume\" = { action = \"spawn:volume-up\", allow_when_locked = true }\n"
+      "\"XF86AudioLowerVolume\" = \"spawn:volume-down\"\n"
+  );
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().keybinds.size(), size_t{2});
+
+  bool allowedWhenLocked = false;
+  bool defaultsToBlocked = false;
+  for (const auto& bind : store.config().keybinds) {
+    allowedWhenLocked = allowedWhenLocked || bind.allowWhenLocked;
+    defaultsToBlocked = defaultsToBlocked || !bind.allowWhenLocked;
+  }
+  CHECK(allowedWhenLocked);
+  CHECK(defaultsToBlocked);
+  CHECK(!containsDiagnostic(store, "allow_when_locked"));
 }
 
 UMBRIEL_TEST(hotCornersLoadActionsAndValidate) {
@@ -243,6 +286,16 @@ UMBRIEL_TEST(hotCornersLoadActionsAndValidate) {
   CHECK(!store.config().hotCorners.corners[1].action.has_value());
   CHECK(containsDiagnostic(store, "invalid hot_corners.top_right.action \"not-an-action\""));
   CHECK(containsDiagnostic(store, "hot_corners.top_right.delay_ms = -1"));
+}
+
+UMBRIEL_TEST(overviewBackgroundBlurLoads) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[overview]\nbackground_blur = false\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().overview.backgroundBlur);
 }
 
 UMBRIEL_TEST(cornerRadiusClampsToItsRange) {
@@ -307,6 +360,30 @@ UMBRIEL_TEST(outputVrrPolicyLoadsAndDefaultsDisabled) {
   CHECK(store.config().outputs[0].vrr == VrrMode::Disabled);
 }
 
+UMBRIEL_TEST(outputTearingPermissionLoadsAndDefaultsDisabled) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[output.DP-1]\ntearing = true\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().outputs.size(), size_t{1});
+  CHECK(store.config().outputs[0].allowTearing);
+
+  file.write("[output.DP-1]\ntearing = false\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().outputs[0].allowTearing);
+
+  file.write("[output.DP-1]\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().outputs[0].allowTearing);
+
+  file.write("[output.DP-1]\ntearing = \"yes\"\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().outputs[0].allowTearing);
+  CHECK(containsDiagnostic(store, "ignoring output.DP-1.tearing (expected boolean)"));
+}
+
 UMBRIEL_TEST(outputHdrPolicyAndSdrWhiteLoad) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
@@ -365,6 +442,30 @@ UMBRIEL_TEST(windowOutputPoliciesLoadAndRejectInvalidValues) {
   CHECK_EQ(store.config().windowRules.size(), size_t{1});
   CHECK(!store.config().windowRules[0].hdr);
   CHECK(containsDiagnostic(store, "ignoring window_rule.hdr"));
+}
+
+UMBRIEL_TEST(windowTearingOverrideLoadsAsAnOptionalBoolean) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[[window_rule]]\nmatch.app_id = \"^game$\"\ntearing = true\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  CHECK(store.config().windowRules[0].allowTearing && *store.config().windowRules[0].allowTearing);
+
+  file.write("[[window_rule]]\ntearing = false\n");
+  CHECK(store.reload().success);
+  CHECK(store.config().windowRules[0].allowTearing && !*store.config().windowRules[0].allowTearing);
+
+  file.write("[[window_rule]]\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().windowRules[0].allowTearing);
+
+  file.write("[[window_rule]]\ntearing = \"yes\"\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().windowRules[0].allowTearing);
+  CHECK(containsDiagnostic(store, "ignoring window_rule.tearing (expected boolean)"));
 }
 
 UMBRIEL_TEST(outputEnabledFlagParsesAndDefaultsTrue) {
@@ -530,6 +631,8 @@ repeat_rate = 25
 [input.touchpad]
 tap = true
 natural_scroll = true
+accel_profile = "adaptive"
+sensitivity = 0.1
 
 [input.mouse]
 accel_profile = "custom 0.2 0.0 0.5 1.0 2.0"
@@ -546,6 +649,8 @@ repeat_delay = 250
 name = "Acme Precision Touchpad"
 tap = false
 natural_scroll = false
+accel_profile = "flat"
+sensitivity = -0.5
 
 [[input.device]]
 name = "Acme Gaming Mouse"
@@ -559,10 +664,16 @@ sensitivity = -0.5
   const auto& input = store.config().input;
 
   CHECK(result.success);
-  CHECK(input.mouse.accelProfile.kind == umbriel::AccelProfile::Kind::Custom);
-  CHECK_EQ(input.mouse.accelProfile.step, 0.2);
-  CHECK_EQ(input.mouse.accelProfile.points, std::vector<double>({0.0, 0.5, 1.0, 2.0}));
+  CHECK(input.mouse.accelProfile.has_value());
+  CHECK(input.mouse.accelProfile->kind == umbriel::AccelProfile::Kind::Custom);
+  CHECK_EQ(input.mouse.accelProfile->step, 0.2);
+  CHECK_EQ(input.mouse.accelProfile->points, std::vector<double>({0.0, 0.5, 1.0, 2.0}));
   CHECK_EQ(input.mouse.sensitivity, 0.25);
+  CHECK(input.touchpad.accelProfile.has_value());
+  if (input.touchpad.accelProfile.has_value()) {
+    CHECK(input.touchpad.accelProfile->kind == umbriel::AccelProfile::Kind::Adaptive);
+  }
+  CHECK(input.touchpad.sensitivity == std::optional<double>(0.1));
   CHECK_EQ(input.devices.size(), size_t{3});
 
   const auto* keyboard = input.findDevice("Acme Split Keyboard");
@@ -579,6 +690,11 @@ sensitivity = -0.5
   if (touchpad != nullptr) {
     CHECK(touchpad->tap == std::optional<bool>(false));
     CHECK(touchpad->naturalScroll == std::optional<bool>(false));
+    CHECK(touchpad->accelProfile.has_value());
+    if (touchpad->accelProfile.has_value()) {
+      CHECK(touchpad->accelProfile->kind == umbriel::AccelProfile::Kind::Flat);
+    }
+    CHECK(touchpad->sensitivity == std::optional<double>(-0.5));
   }
 
   const auto* mouse = input.findDevice("Acme Gaming Mouse");
@@ -593,10 +709,16 @@ sensitivity = -0.5
   CHECK(input.findDevice("Acme") == nullptr);
 }
 
-UMBRIEL_TEST(mouseAccelerationDefaultsToFlat) {
+UMBRIEL_TEST(mouseAccelerationPreservesDeviceProfileByDefault) {
   const umbriel::Config defaults;
-  CHECK(defaults.input.mouse.accelProfile.kind == umbriel::AccelProfile::Kind::Flat);
+  CHECK(!defaults.input.mouse.accelProfile.has_value());
   CHECK_EQ(defaults.input.mouse.sensitivity, 0.0);
+}
+
+UMBRIEL_TEST(touchpadAccelerationDefaultsToUnset) {
+  const umbriel::Config defaults;
+  CHECK(!defaults.input.touchpad.accelProfile.has_value());
+  CHECK(!defaults.input.touchpad.sensitivity.has_value());
 }
 
 UMBRIEL_TEST(touchpadTapDefaultsToEnabled) {
@@ -656,7 +778,7 @@ accel_profile = "custom 0.2 1.0"
   const umbriel::ConfigReloadResult result = store.reload();
 
   CHECK(result.success);
-  CHECK(store.config().input.mouse.accelProfile.kind == umbriel::AccelProfile::Kind::Flat);
+  CHECK(!store.config().input.mouse.accelProfile.has_value());
   CHECK(containsDiagnostic(store, "custom <step> <points...>"));
 }
 
