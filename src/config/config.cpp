@@ -371,7 +371,8 @@ namespace umbriel {
                 overrides.scrolling.direction = direction;
               }
               sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
-                  .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip);
+                  .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip)
+                  .boolean("always_center_focused", overrides.scrolling.alwaysCenterFocused);
             });
             s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", overrides.dwindle.preserveSplit); });
             s.sub("master", [&](Section& sm) {
@@ -850,7 +851,8 @@ namespace umbriel {
             loaded.layout.scrolling.direction = *direction;
           }
           sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
-              .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip);
+              .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip)
+              .boolean("always_center_focused", loaded.layout.scrolling.alwaysCenterFocused);
         });
         s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", loaded.layout.dwindle.preserveSplit); });
         s.sub("master", [&](Section& sm) {
