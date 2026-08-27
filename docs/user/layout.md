@@ -14,7 +14,7 @@ width_presets = [0.333, 0.5, 0.667]
 direction = "horizontal"             # "horizontal" or "vertical"
 default_width_fraction = 0.5         # remove to let clients choose, 0.1-1.0
 center_underfull_strip = true
-always_center_focused = false
+center_focused = false
 
 [layout.dwindle]
 preserve_split = false              # keep each split direction fixed after it is created
@@ -39,7 +39,7 @@ Scrolling layout options:
 | `direction`              | string | `"horizontal"` | Scroll axis: `"horizontal"` stacks columns left to right; `"vertical"` stacks lanes top to bottom.                                |
 | `default_width_fraction` | float  | unset          | Initial scroll-axis extent assigned to new scrolling lanes (0.1-1.0). The packaged config sets `0.5`; when omitted, the client chooses its initial extent. |
 | `center_underfull_strip` | bool   | `true`         | Center the complete strip whenever it is shorter than the viewport. Disable to align it at the start edge.                        |
-| `always_center_focused`  | bool   | `false`        | Always center the focused column.                                                                                                 |
+| `center_focused`  | bool   | `false`        | Always center the focused column.                                                                                                 |
 
 Dwindle layout options:
 
