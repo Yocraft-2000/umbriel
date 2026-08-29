@@ -899,6 +899,8 @@ namespace umbriel {
         return true;
       }
       group->select(target);
+      Workspace* selected = group->active();
+      maybeWarpCursorToWindow(server, selected != nullptr ? selected->focusedView() : nullptr);
       return true;
     }
 
