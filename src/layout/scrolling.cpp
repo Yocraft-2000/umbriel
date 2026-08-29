@@ -557,6 +557,15 @@ namespace umbriel {
     return true;
   }
 
+  void ScrollingLayout::reconcileFocusedColumn(int columnIndex, int viewportPrimary) {
+    if (m_config->scrolling.centerFocused) {
+      centerColumn(columnIndex, viewportPrimary);
+      return;
+    }
+    m_centeredRest = false;
+    ensureVisible(columnIndex, viewportPrimary);
+  }
+
   double ScrollingLayout::targetScrollForEnsureVisible(int columnIndex, int viewportPrimary, bool force) const {
     if (columnIndex < 0 || columnIndex >= static_cast<int>(m_columns.size()) || viewportPrimary <= 0) {
       return m_scroll;
