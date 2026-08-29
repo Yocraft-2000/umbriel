@@ -1803,7 +1803,7 @@ namespace umbriel {
     }
   }
 
-  void View::handleCommit() {
+  void View::handleCommit(bool reconfigureOpeningState) {
     if (m_captureScene != nullptr) {
       // Restrict the capture to the xdg window geometry. Client subsurfaces
       // remain visible, while buffer content outside the declared window is
@@ -1811,14 +1811,16 @@ namespace umbriel {
       // of the isolated scene.
       wlr_scene_subsurface_tree_set_clip(&m_captureScene->tree.node, &m_toplevel->base->geometry);
     }
-    if (m_toplevel->base->initial_commit) {
+    if (m_toplevel->base->initial_commit || reconfigureOpeningState) {
       // Resolve window rules early to influence initial tiled/float decision and size.
       const ResolvedWindowRule rule = resolvedRules();
       const bool wantTiled = rule.defaultFloating ? !*rule.defaultFloating : looksTiled(m_toplevel);
       const bool wantFullscreen =
           m_toplevel->requested.fullscreen || (rule.defaultFullscreen && *rule.defaultFullscreen);
+      const bool wantMaximizeToEdges = rule.defaultMaximizeToEdges && *rule.defaultMaximizeToEdges;
       const bool wantMaximized = (rule.defaultMaximize && *rule.defaultMaximize)
-          || (rule.defaultMaximizeToEdges && *rule.defaultMaximizeToEdges);
+          || wantMaximizeToEdges
+          || (config().general.honorRestoredMaximize && m_toplevel->requested.maximized);
 
       // Resolve the workspace this view will attach to, so the output and layout that will actually arrange it are the
       // ones that size the first configure.
@@ -1870,13 +1872,21 @@ namespace umbriel {
         }
         const Layout& layout = target != nullptr ? target->layout() : *fallbackLayout;
 
-        const std::optional<double> widthFraction = wantMaximized ? std::optional<double>(1.0) : rule.defaultWidth;
-        const Layout::InitialSize initial =
-            layout.initialSize(usable, widthFraction, target != nullptr ? target->focusedView() : nullptr);
+        Layout::InitialSize initial;
+        if (wantMaximizeToEdges) {
+          initial = {.width = usable.width, .height = usable.height};
+        } else if (wantMaximized && target != nullptr) {
+          initial = target->initialMaximizedSize(this, usable);
+        } else {
+          const std::optional<double> widthFraction = wantMaximized ? std::optional<double>(1.0) : rule.defaultWidth;
+          initial = layout.initialSize(usable, widthFraction, target != nullptr ? target->focusedView() : nullptr);
+        }
         const XdgSizeHints hints = xdgSizeHints(m_toplevel);
         const int requestedWidth = (rule.defaultSize && !wantMaximized) ? (*rule.defaultSize)[0] : initial.width;
-        const int width = requestedWidth > 0 ? clampXdgWidth(requestedWidth, hints) : requestedWidth;
-        const int height = initial.height > 0 ? clampXdgHeight(initial.height, hints) : initial.height;
+        const int width =
+            (requestedWidth > 0 && !wantMaximizeToEdges) ? clampXdgWidth(requestedWidth, hints) : requestedWidth;
+        const int height =
+            (initial.height > 0 && !wantMaximizeToEdges) ? clampXdgHeight(initial.height, hints) : initial.height;
         wlr_xdg_toplevel_set_size(m_toplevel, width, height);
         if (wantMaximized) {
           wlr_xdg_toplevel_set_maximized(m_toplevel, true);
@@ -1887,7 +1897,7 @@ namespace umbriel {
           wlr_box usable = targetOutput != nullptr
               ? targetOutput->usableArea()
               : m_server->usableAreaAt(m_server->cursor()->wlr()->x, m_server->cursor()->wlr()->y);
-          requestFloatingSize(clampXdgWidth(usable.width, hints), clampXdgHeight(usable.height, hints));
+          requestFloatingSize(usable.width, usable.height);
           wlr_xdg_toplevel_set_maximized(m_toplevel, true);
         } else if (rule.defaultSize) {
           requestFloatingSize(
@@ -2071,7 +2081,19 @@ namespace umbriel {
   }
 
   void View::handleRequestMaximize() {
-    if (!m_toplevel->base->initialized || !m_mapped || !m_acceptClientMaximizeRequests) {
+    if (!m_toplevel->base->initialized) {
+      return;
+    }
+    if (!m_mapped) {
+      if (config().general.honorRestoredMaximize && m_toplevel->requested.maximized) {
+        // Some clients restore maximization only after acknowledging the first
+        // configure. Reconfigure before they map a buffer so their first visible
+        // content already matches the maximized layout target.
+        handleCommit(true);
+      }
+      return;
+    }
+    if (!m_acceptClientMaximizeRequests) {
       return;
     }
     if (m_tiled && m_workspace != nullptr) {
