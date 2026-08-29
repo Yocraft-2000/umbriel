@@ -82,6 +82,23 @@ namespace umbriel {
       return std::nullopt;
     }
 
+    std::optional<ContentType> readContentType(const toml::node& node) {
+      const auto value = node.value<std::string>();
+      if (value == "none") {
+        return ContentType::None;
+      }
+      if (value == "photo") {
+        return ContentType::Photo;
+      }
+      if (value == "video") {
+        return ContentType::Video;
+      }
+      if (value == "game") {
+        return ContentType::Game;
+      }
+      return std::nullopt;
+    }
+
     void emitDiag(ConfigDiagnostic::Severity severity, const toml::source_region* src, std::string msg) {
       ConfigDiagnostic diag;
       diag.severity = severity;
@@ -370,6 +387,7 @@ namespace umbriel {
               if (const auto direction = readScrollingDirection(sc, layoutContext + ".scrolling")) {
                 overrides.scrolling.direction = direction;
               }
+              sc.boolean("expand_single_column", overrides.scrolling.expandSingleColumn);
               sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
                   .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip)
                   .boolean("center_focused", overrides.scrolling.centerFocused);
@@ -379,7 +397,8 @@ namespace umbriel {
               if (const auto position = readMasterPosition(sm, layoutContext + ".master")) {
                 overrides.master.position = position;
               }
-              sm.real("default_width_fraction", 0.1, 0.9, overrides.master.defaultWidthFraction);
+              sm.real("default_width_fraction", 0.1, 0.9, overrides.master.defaultWidthFraction)
+                  .boolean("new_on_top", overrides.master.newOnTop);
             });
           },
           layoutContext
@@ -803,7 +822,57 @@ namespace umbriel {
         s.real("zoom", 0.1, 0.75, loaded.overview.zoom)
             .boolean("background_blur", loaded.overview.backgroundBlur)
             .color("background_tint", loaded.overview.backgroundTint)
-            .color("workspace_background", loaded.overview.workspaceBackground);
+            .color("workspace_background", loaded.overview.workspaceBackground)
+            .boolean("shortcuts", loaded.overview.shortcuts);
+
+        if (const toml::node* badgeNode = s.take("badge_color")) {
+          const auto value = badgeNode->value<std::string>();
+          std::array<float, 4> parsed{};
+          if (!value) {
+            warnAt(badgeNode->source(), "ignoring overview.badge_color (expected color string)");
+          } else if (!parseColor(*value, parsed)) {
+            warnAt(badgeNode->source(), "ignoring overview.badge_color (invalid color '{}')", *value);
+          } else {
+            loaded.overview.badgeColor = parsed;
+          }
+        }
+
+        const toml::node* node = s.take("shortcut_keys");
+        if (node == nullptr) {
+          return;
+        }
+        const auto value = node->value<std::string>();
+        if (!value) {
+          warnAt(node->source(), "ignoring overview.shortcut_keys (expected string)");
+          return;
+        }
+        if (value->size() < 2) {
+          warnAt(node->source(), "ignoring overview.shortcut_keys (expected at least 2 characters)");
+          return;
+        }
+
+        std::string normalized;
+        normalized.reserve(value->size());
+        for (const unsigned char character : *value) {
+          if (character < 0x21 || character > 0x7E) {
+            warnAt(
+                node->source(), "ignoring overview.shortcut_keys (invalid character 0x{:02X})",
+                static_cast<unsigned int>(character)
+            );
+            return;
+          }
+          const char lowered =
+              character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a') : character;
+          if (normalized.contains(lowered)) {
+            warnAt(
+                node->source(), R"(ignoring overview.shortcut_keys (duplicate key "{}" ignoring ASCII case))",
+                static_cast<char>(character)
+            );
+            return;
+          }
+          normalized.push_back(lowered);
+        }
+        loaded.overview.shortcutKeys = *value;
       });
     }
 
@@ -850,6 +919,7 @@ namespace umbriel {
           if (const auto direction = readScrollingDirection(sc, "layout.scrolling")) {
             loaded.layout.scrolling.direction = *direction;
           }
+          sc.boolean("expand_single_column", loaded.layout.scrolling.expandSingleColumn);
           sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
               .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip)
               .boolean("center_focused", loaded.layout.scrolling.centerFocused);
@@ -859,13 +929,17 @@ namespace umbriel {
           if (const auto position = readMasterPosition(sm, "layout.master")) {
             loaded.layout.master.position = *position;
           }
-          sm.real("default_width_fraction", 0.1, 0.9, loaded.layout.master.defaultWidthFraction);
+          sm.real("default_width_fraction", 0.1, 0.9, loaded.layout.master.defaultWidthFraction)
+              .boolean("new_on_top", loaded.layout.master.newOnTop);
         });
       });
     }
 
     void readWorkspaceSettings(Section& root, Config& loaded) {
-      root.sub("workspaces", [&](Section& s) { s.boolean("back_and_forth", loaded.workspaces.backAndForth); });
+      root.sub("workspaces", [&](Section& s) {
+        s.boolean("back_and_forth", loaded.workspaces.backAndForth)
+            .boolean("empty_above", loaded.workspaces.emptyAbove);
+      });
     }
 
     void readGeneral(Section& root, Config& loaded) {
@@ -1016,7 +1090,8 @@ namespace umbriel {
             .integer("repeat_delay", 0, 10000, device.repeatDelay)
             .boolean("tap", device.tap)
             .boolean("natural_scroll", device.naturalScroll)
-            .real("sensitivity", -1.0, 1.0, device.sensitivity);
+            .real("sensitivity", -1.0, 1.0, device.sensitivity)
+            .boolean("disable_while_typing", device.disableWhileTyping);
         device.accelProfile = readAccelProfile(keys, "accel_profile", "input.device");
 
         if (!validName) {
@@ -1071,7 +1146,9 @@ namespace umbriel {
         s.sub("touchpad", [&](Section& t) {
           t.boolean("tap", in.touchpad.tap)
               .boolean("natural_scroll", in.touchpad.naturalScroll)
-              .real("sensitivity", -1.0, 1.0, in.touchpad.sensitivity);
+              .real("sensitivity", -1.0, 1.0, in.touchpad.sensitivity)
+              .real("scroll_factor", 0.1, 10.0, in.touchpad.scrollFactor)
+              .boolean("disable_while_typing", in.touchpad.disableWhileTyping);
           in.touchpad.accelProfile = readAccelProfile(t, "accel_profile", "input.touchpad");
         });
         s.sub("mouse", [&](Section& m) {
@@ -1094,6 +1171,7 @@ namespace umbriel {
           c.text("theme", in.cursor.theme)
               .integer("size", 1, 512, in.cursor.size)
               .boolean("hardware_cursor", in.cursor.hardwareCursor)
+              .boolean("follows_focus", in.cursor.followsFocus)
               .boolean("hide_when_typing", in.cursor.hideWhenTyping)
               .integer("hide_timeout_ms", 0, 3600000, in.cursor.hideTimeoutMs);
         });
@@ -1293,6 +1371,8 @@ namespace umbriel {
       for (const auto& [key, entry] : *section) {
         const std::string chord(key.str());
         std::string actionStr;
+        std::string submapAfter;
+        bool hasSubmapAfter = false;
         bool repeatBind = true;
         bool allowWhenLocked = false;
 
@@ -1302,6 +1382,9 @@ namespace umbriel {
           // bad action must not also be told its `repeat` key is unknown.
           bind.boolean("repeat", repeatBind);
           bind.boolean("allow_when_locked", allowWhenLocked);
+          const toml::node* submapNode = bind.node("submap");
+          hasSubmapAfter = submapNode != nullptr && submapNode->is_string();
+          bind.text("submap", submapAfter);
           const toml::node* actionNode = bind.take("action");
           if (actionNode == nullptr) {
             warnAt(entry.source(), "ignoring keybind '{}' (table needs an 'action' string)", chord);
@@ -1322,6 +1405,14 @@ namespace umbriel {
           actionStr = *value;
         }
 
+        if (hasSubmapAfter && !validSubmapName(submapAfter)) {
+          warnAt(
+              entry.source(),
+              "ignoring keybind '{}' (submap must be a non-empty name without ']' and may not be 'disable')", chord
+          );
+          continue;
+        }
+
         Keybind binding;
         if (!parseChord(chord, binding)) {
           if (binding.keysym != XKB_KEY_NoSymbol && binding.modifiers == 0 && !binding.useMod) {
@@ -1331,7 +1422,10 @@ namespace umbriel {
           }
           continue;
         }
-        binding.repeat = binding.modifierOnly ? false : repeatBind;
+        if (hasSubmapAfter) {
+          binding.submapAfter = SubmapArg{.name = std::move(submapAfter)};
+        }
+        binding.repeat = repeatBind && !binding.modifierOnly && !binding.submapAfter.has_value();
         binding.allowWhenLocked = allowWhenLocked;
         if (!parseAction(actionStr, binding)) {
           warnAt(key.source(), "ignoring keybind '{}' (unknown action '{}')", chord, actionStr);
@@ -1368,6 +1462,7 @@ namespace umbriel {
         Section keys(*section, "window_rule", configStore().mutableDiagnostics());
 
         WindowRule rule;
+        bool valid = true;
 
         if (const toml::node* matchNode = keys.take("match")) {
           if (const auto* match = matchNode->as_table()) {
@@ -1379,10 +1474,11 @@ namespace umbriel {
                   rule.appIdRegex = std::regex(rule.appIdPattern);
                 } catch (const std::regex_error& error) {
                   warnAt(appIdNode->source(), "invalid regex in window_rule.match.app_id: {}", error.what());
-                  continue;
+                  valid = false;
                 }
               } else {
                 warnAt(appIdNode->source(), "ignoring window_rule.match.app_id (expected string)");
+                valid = false;
               }
             }
             if (const toml::node* titleNode = matchKeys.take("title")) {
@@ -1392,10 +1488,36 @@ namespace umbriel {
                   rule.titleRegex = std::regex(rule.titlePattern);
                 } catch (const std::regex_error& error) {
                   warnAt(titleNode->source(), "invalid regex in window_rule.match.title: {}", error.what());
-                  continue;
+                  valid = false;
                 }
               } else {
                 warnAt(titleNode->source(), "ignoring window_rule.match.title (expected string)");
+                valid = false;
+              }
+            }
+            if (const toml::node* xdgTagNode = matchKeys.take("xdg_tag")) {
+              if (const auto value = xdgTagNode->value<std::string>()) {
+                rule.xdgTagPattern = *value;
+                try {
+                  rule.xdgTagRegex = std::regex(rule.xdgTagPattern);
+                } catch (const std::regex_error& error) {
+                  warnAt(xdgTagNode->source(), "invalid regex in window_rule.match.xdg_tag: {}", error.what());
+                  valid = false;
+                }
+              } else {
+                warnAt(xdgTagNode->source(), "ignoring window_rule.match.xdg_tag (expected string)");
+                valid = false;
+              }
+            }
+            if (const toml::node* contentTypeNode = matchKeys.take("content_type")) {
+              if (const auto value = readContentType(*contentTypeNode)) {
+                rule.matchContentType = *value;
+              } else {
+                warnAt(
+                    contentTypeNode->source(),
+                    "ignoring window_rule.match.content_type (expected none|photo|video|game)"
+                );
+                valid = false;
               }
             }
             if (const toml::node* focusedNode = matchKeys.take("is_focused")) {
@@ -1403,10 +1525,12 @@ namespace umbriel {
                 rule.matchFocused = focusedNode->value<bool>();
               } else {
                 warnAt(focusedNode->source(), "ignoring window_rule.match.is_focused (expected boolean)");
+                valid = false;
               }
             }
           } else {
             warnAt(matchNode->source(), "ignoring window_rule.match (expected table)");
+            valid = false;
           }
         }
 
@@ -1544,7 +1668,9 @@ namespace umbriel {
           }
         }
 
-        loaded.windowRules.push_back(std::move(rule));
+        if (valid) {
+          loaded.windowRules.push_back(std::move(rule));
+        }
       }
     }
 

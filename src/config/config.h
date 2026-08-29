@@ -50,6 +50,7 @@ namespace umbriel {
       std::optional<bool> centerUnderfullStrip;
       std::optional<bool> centerFocused;
       std::optional<ScrollingDirection> direction;
+      std::optional<bool> expandSingleColumn;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
     struct Dwindle {
@@ -58,6 +59,7 @@ namespace umbriel {
     } dwindle;
     struct Master {
       std::optional<double> defaultWidthFraction;
+      std::optional<bool> newOnTop;
       std::optional<MasterPosition> position;
       bool operator==(const Master&) const = default;
     } master;
@@ -85,6 +87,7 @@ namespace umbriel {
       bool centerFocused = false;
       // Axis-agnostic layout state is preserved when config reload changes direction.
       ScrollingDirection direction = ScrollingDirection::Horizontal;
+      bool expandSingleColumn = false;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
     struct Dwindle {
@@ -93,6 +96,7 @@ namespace umbriel {
     } dwindle;
     struct Master {
       double defaultWidthFraction = 0.55;
+      bool newOnTop = true;
       MasterPosition position = MasterPosition::Left;
       bool operator==(const Master&) const = default;
     } master;
@@ -195,11 +199,35 @@ namespace umbriel {
     bool operator==(const WindowPosition&) const = default;
   };
 
+  enum class ContentType {
+    None,
+    Photo,
+    Video,
+    Game,
+  };
+
+  [[nodiscard]] inline constexpr std::string_view contentTypeName(ContentType type) {
+    switch (type) {
+    case ContentType::None:
+      return "none";
+    case ContentType::Photo:
+      return "photo";
+    case ContentType::Video:
+      return "video";
+    case ContentType::Game:
+      return "game";
+    }
+    return "none";
+  }
+
   struct WindowRule {
     std::string appIdPattern;
     std::string titlePattern;
+    std::string xdgTagPattern;
     std::regex appIdRegex;
     std::regex titleRegex;
+    std::regex xdgTagRegex;
+    std::optional<ContentType> matchContentType;
     std::optional<bool> matchFocused;
     std::optional<std::string> defaultOutput;
     std::optional<bool> defaultFloating;
@@ -224,11 +252,13 @@ namespace umbriel {
     std::optional<double> blurIgnoreAlpha;
     std::optional<bool> blurOptimized;
 
-    // The compiled regexes are derived from the patterns and are not comparable,
-    // so equality is decided by the patterns they came from.
+    // The compiled regexes are derived from the app ID, title, and XDG tag patterns and
+    // are not comparable, so equality is decided by the patterns themselves.
     [[nodiscard]] bool operator==(const WindowRule& other) const {
       return appIdPattern == other.appIdPattern
           && titlePattern == other.titlePattern
+          && xdgTagPattern == other.xdgTagPattern
+          && matchContentType == other.matchContentType
           && matchFocused == other.matchFocused
           && defaultOutput == other.defaultOutput
           && defaultFloating == other.defaultFloating
@@ -445,6 +475,13 @@ namespace umbriel {
       std::array<float, 4> backgroundTint{0.0627451F, 0.0627451F, 0.0784314F, 0.1882353F};
       // Rounded background behind each workspace; alpha controls opacity.
       std::array<float, 4> workspaceBackground{0.0F, 0.0F, 0.0F, 0.2666667F};
+      // Keyboard shortcut badges on overview cards. Pressing a badge key focuses
+      // that window and closes the overview.
+      bool shortcuts = true;
+      // Favorite badge keys in preference order, one ASCII character each.
+      std::string shortcutKeys = "1234567890";
+      // Badge accent override. Unset follows colors.accent_primary.
+      std::optional<std::array<float, 4>> badgeColor;
       bool operator==(const Overview&) const = default;
     } overview;
 
@@ -470,6 +507,7 @@ namespace umbriel {
         bool centerUnderfullStrip = true;
         bool centerFocused = false;
         ScrollingDirection direction = ScrollingDirection::Horizontal;
+        bool expandSingleColumn = false;
         bool operator==(const Scrolling&) const = default;
       } scrolling;
       struct Dwindle {
@@ -478,6 +516,7 @@ namespace umbriel {
       } dwindle;
       struct Master {
         double defaultWidthFraction = 0.55;
+        bool newOnTop = true;
         MasterPosition position = MasterPosition::Left;
         bool operator==(const Master&) const = default;
       } master;
@@ -492,6 +531,7 @@ namespace umbriel {
     struct Workspaces {
       // Re-selecting the active workspace jumps back to the previous one.
       bool backAndForth = false;
+      bool emptyAbove = false;
       bool operator==(const Workspaces&) const = default;
     } workspaces;
 
@@ -540,6 +580,8 @@ namespace umbriel {
         std::optional<bool> naturalScroll;
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
+        std::optional<double> scrollFactor;
+        std::optional<bool> disableWhileTyping;
         bool operator==(const Touchpad&) const = default;
       } touchpad;
 
@@ -555,6 +597,8 @@ namespace umbriel {
         std::string theme;
         int size = 24;
         bool hardwareCursor = true;
+        // Warp to the window selected by explicit focus-navigation actions.
+        bool followsFocus = false;
         bool hideWhenTyping = false;
         // Milliseconds without pointer activity before hiding the cursor. Zero disables it.
         int hideTimeoutMs = 0;
@@ -590,6 +634,7 @@ namespace umbriel {
         std::optional<bool> naturalScroll;
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
+        std::optional<bool> disableWhileTyping;
         bool operator==(const Device&) const = default;
       };
 

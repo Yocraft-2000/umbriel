@@ -23,6 +23,7 @@ struct wlr_backend;
 struct wlr_box;
 struct wlr_compositor;
 struct wlr_color_manager_v1;
+struct wlr_content_type_manager_v1;
 struct wlr_image_description_v1_data;
 struct wlr_ext_foreign_toplevel_handle_v1;
 struct wlr_ext_foreign_toplevel_list_v1;
@@ -58,6 +59,7 @@ struct wlr_xdg_activation_v1;
 struct wlr_xdg_activation_token_v1;
 struct wlr_xdg_decoration_manager_v1;
 struct wlr_xdg_shell;
+struct wlr_xdg_toplevel_tag_manager_v1;
 struct wlr_server_decoration_manager;
 struct wlr_ext_workspace_group_handle_v1;
 struct wlr_ext_workspace_handle_v1;
@@ -71,6 +73,7 @@ struct wlr_virtual_pointer_manager_v1;
 struct wlr_virtual_pointer_v1;
 
 namespace umbriel {
+  enum class ContentType;
   struct ConfigEffects;
 
   // Slow tick that ferries wl_surface.frame callbacks to toplevels that are mapped but not on the active workspace.
@@ -127,6 +130,7 @@ namespace umbriel {
     [[nodiscard]] wlr_renderer* renderer() const { return m_renderer; }
     [[nodiscard]] wlr_allocator* allocator() const { return m_allocator; }
     [[nodiscard]] wlr_scene* scene() const { return m_scene; }
+    [[nodiscard]] ContentType surfaceContentType(wlr_surface* surface) const;
     [[nodiscard]] wlr_color_manager_v1* colorManager() const { return m_colorManager; }
     [[nodiscard]] wlr_export_dmabuf_manager_v1* exportDmabufManager() const { return m_exportDmabufManager; }
     [[nodiscard]] wlr_tearing_control_manager_v1* tearingControlManager() const { return m_tearingControlManager; }
@@ -229,9 +233,6 @@ namespace umbriel {
     // Re-evaluate application idle inhibitors after a surface's presentation
     // visibility changes.
     void updateIdleInhibit();
-    // Rotate the view registry until the front is a mapped view on the active
-    // workspace, and focus it. Repeated calls walk the list.
-    bool focusNextWindow();
     // Lock the next XKB group on every physical keyboard. False when no keyboard
     // has a second layout to switch to.
     bool cycleKeyboardLayout();
@@ -258,7 +259,7 @@ namespace umbriel {
     View* viewAt(double lx, double ly, wlr_surface** surface, double* sx, double* sy, LayerSurface** layer = nullptr) {
       return m_focus.viewAt(lx, ly, surface, sx, sy, layer);
     }
-    const Keybind* handleKeybind(uint32_t keysym, uint32_t rawKeysym, uint32_t modifiers);
+    std::optional<Keybind> handleKeybind(uint32_t keysym, uint32_t rawKeysym, uint32_t modifiers);
     // The bind this press would fire, without running it. Null when nothing
     // matches (locked sessions match nothing, matching handleKeybind).
     [[nodiscard]] const Keybind* matchKeybind(uint32_t keysym, uint32_t rawKeysym, uint32_t modifiers) const;
@@ -268,7 +269,7 @@ namespace umbriel {
     bool handleWheelBind(WheelDirection direction, uint32_t modifiers);
     // Null when no bind matched or its action declined; otherwise the bind that
     // ran, so the caller can tell which action consumed the press.
-    const Keybind* handleMouseBind(uint32_t button, uint32_t modifiers);
+    std::optional<Keybind> handleMouseBind(uint32_t button, uint32_t modifiers);
     bool handleVtSwitch(uint32_t keysym, uint32_t modifiers);
     void armModifierTap(const void* source, uint32_t keycode, std::span<const uint32_t> keysyms, uint32_t modifiers);
     [[nodiscard]] std::optional<Keybind> releaseModifierTap(const void* source, uint32_t keycode);
@@ -306,8 +307,12 @@ namespace umbriel {
     void raiseLockTree();
     void updateLockBlank();
     void updateBackdrop();
+    // Continuations such as releases and repeats still reset the idle timer, but only a new press or motion may wake
+    // outputs that were powered off through a DPMS action.
     void notifyIdleActivity();
-    // Input activity wakes outputs powered down through the DPMS actions.
+    void notifyInputActivity();
+    // Input wake applies only when every configured output is powered off. A named DPMS action therefore remains in
+    // effect while another configured output is still awake.
     void wakeDpmsOutputs();
     void refocus(Output* preferred = nullptr) { m_focus.refocus(preferred); }
     void reconcileDynamicWorkspaces();
@@ -329,6 +334,7 @@ namespace umbriel {
     static void onNewOutput(wl_listener* listener, void* data);
     static void onNewInput(wl_listener* listener, void* data);
     static void onNewXdgToplevel(wl_listener* listener, void* data);
+    static void onSetXdgToplevelTag(wl_listener* listener, void* data);
     static void onNewXdgPopup(wl_listener* listener, void* data);
     static void onNewXdgDecoration(wl_listener* listener, void* data);
     static void onNewLayerSurface(wl_listener* listener, void* data);
@@ -439,9 +445,11 @@ namespace umbriel {
     wlr_output_layout* m_outputLayout = nullptr;
     wlr_scene* m_scene = nullptr;
     wlr_color_manager_v1* m_colorManager = nullptr;
+    wlr_content_type_manager_v1* m_contentTypeManager = nullptr;
     std::unique_ptr<WineColorManager> m_wineColorManager;
     wlr_scene_output_layout* m_sceneLayout = nullptr;
     wlr_xdg_shell* m_xdgShell = nullptr;
+    wlr_xdg_toplevel_tag_manager_v1* m_xdgToplevelTagManager = nullptr;
     wlr_xdg_decoration_manager_v1* m_xdgDecorationManager = nullptr;
     wlr_server_decoration_manager* m_serverDecorationManager = nullptr;
     wlr_layer_shell_v1* m_layerShell = nullptr;
@@ -561,6 +569,7 @@ namespace umbriel {
     wl_listener m_newOutput{};
     wl_listener m_newInput{};
     wl_listener m_newXdgToplevel{};
+    wl_listener m_setXdgToplevelTag{};
     wl_listener m_newXdgPopup{};
     wl_listener m_newXdgDecoration{};
     wl_listener m_newLayerSurface{};

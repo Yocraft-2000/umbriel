@@ -42,12 +42,7 @@ namespace umbriel {
       return error == std::errc{} && end == name.data() + name.size() ? index : std::numeric_limits<size_t>::max();
     }
 
-    View* viewForSurface(Server& server, wlr_surface* surface) {
-      if (surface == nullptr) {
-        return nullptr;
-      }
-      wlr_surface* root = wlr_surface_get_root_surface(surface);
-      wlr_xdg_toplevel* toplevel = wlr_xdg_toplevel_try_from_wlr_surface(root);
+    View* viewForToplevel(Server& server, wlr_xdg_toplevel* toplevel) {
       if (toplevel == nullptr) {
         return nullptr;
       }
@@ -57,6 +52,14 @@ namespace umbriel {
         }
       }
       return nullptr;
+    }
+
+    View* viewForSurface(Server& server, wlr_surface* surface) {
+      if (surface == nullptr) {
+        return nullptr;
+      }
+      wlr_surface* root = wlr_surface_get_root_surface(surface);
+      return viewForToplevel(server, wlr_xdg_toplevel_try_from_wlr_surface(root));
     }
 
     pid_t surfaceClientPid(wlr_surface* surface) {
@@ -273,6 +276,32 @@ namespace umbriel {
           kLog.warn(
               "input: failed to apply {} to '{}'",
               override != nullptr && override->tap ? "input.device.tap" : "input.touchpad.tap", deviceName(device)
+          );
+        }
+
+        const bool hasDwtOverride = override != nullptr && override->disableWhileTyping.has_value();
+        const std::optional<bool>& dwt =
+            hasDwtOverride ? override->disableWhileTyping : input.touchpad.disableWhileTyping;
+        const std::string_view dwtSetting =
+            hasDwtOverride ? "input.device.disable_while_typing" : "input.touchpad.disable_while_typing";
+        if (libinput_device_config_dwt_is_available(libinputDevice)) {
+          const auto dwtState =
+              dwt.value_or(
+                  libinput_device_config_dwt_get_default_enabled(libinputDevice) == LIBINPUT_CONFIG_DWT_ENABLED
+              )
+              ? LIBINPUT_CONFIG_DWT_ENABLED
+              : LIBINPUT_CONFIG_DWT_DISABLED;
+          if (libinput_device_config_dwt_set_enabled(libinputDevice, dwtState) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+            if (dwt) {
+              kLog.warn("input: failed to apply {} to '{}'", dwtSetting, deviceName(device));
+            } else {
+              kLog.warn("input: failed to restore default disable-while-typing for '{}'", deviceName(device));
+            }
+          }
+        } else if (dwt) {
+          kLog.warn(
+              "input: could not apply {} to '{}': device does not support disable-while-typing", dwtSetting,
+              deviceName(device)
           );
         }
       }
@@ -572,6 +601,15 @@ namespace umbriel {
     Server* self;
     self = wl_container_of(listener, self, m_newXdgToplevel);
     self->m_registry.add(std::make_unique<View>(*self, static_cast<wlr_xdg_toplevel*>(data)));
+  }
+
+  void Server::onSetXdgToplevelTag(wl_listener* listener, void* data) {
+    Server* self;
+    self = wl_container_of(listener, self, m_setXdgToplevelTag);
+    const auto* event = static_cast<wlr_xdg_toplevel_tag_manager_v1_set_tag_event*>(data);
+    if (View* view = viewForToplevel(*self, event->toplevel)) {
+      view->setXdgTag(event->tag != nullptr ? event->tag : "");
+    }
   }
 
   void Server::onNewXdgPopup(wl_listener* /*listener*/, void* data) {
@@ -904,12 +942,20 @@ namespace umbriel {
     wlr_idle_notifier_v1_set_inhibited(m_idleNotifier, inhibited);
   }
 
-  void Server::notifyIdleActivity() {
+  void Server::notifyIdleActivity() { wlr_idle_notifier_v1_notify_activity(m_idleNotifier, m_seat->wlr()); }
+
+  void Server::notifyInputActivity() {
     wakeDpmsOutputs();
-    wlr_idle_notifier_v1_notify_activity(m_idleNotifier, m_seat->wlr());
+    notifyIdleActivity();
   }
 
   void Server::wakeDpmsOutputs() {
+    const bool anyPowered = std::ranges::any_of(m_outputs, [](const std::unique_ptr<Output>& output) {
+      return output->configuredEnabled() && !output->dpmsOff();
+    });
+    if (anyPowered) {
+      return;
+    }
     for (const auto& output : m_outputs) {
       if (output->dpmsOff()) {
         (void)output->setPowered(true);
@@ -1290,7 +1336,11 @@ namespace umbriel {
     TabletPadDevice* watch;
     watch = wl_container_of(listener, watch, button);
     auto* event = static_cast<wlr_tablet_pad_button_event*>(data);
-    watch->server->notifyIdleActivity();
+    if (event->state == WLR_BUTTON_PRESSED) {
+      watch->server->notifyInputActivity();
+    } else {
+      watch->server->notifyIdleActivity();
+    }
     wlr_tablet_v2_tablet_pad_notify_button(
         watch->v2, event->button, event->time_msec,
         event->state == WLR_BUTTON_PRESSED ? ZWP_TABLET_PAD_V2_BUTTON_STATE_PRESSED
@@ -1302,7 +1352,11 @@ namespace umbriel {
     TabletPadDevice* watch;
     watch = wl_container_of(listener, watch, ring);
     auto* event = static_cast<wlr_tablet_pad_ring_event*>(data);
-    watch->server->notifyIdleActivity();
+    if (event->position < 0) {
+      watch->server->notifyIdleActivity();
+    } else {
+      watch->server->notifyInputActivity();
+    }
     wlr_tablet_v2_tablet_pad_notify_ring(
         watch->v2, event->ring, event->position, event->source == WLR_TABLET_PAD_RING_SOURCE_FINGER, event->time_msec
     );
@@ -1312,7 +1366,11 @@ namespace umbriel {
     TabletPadDevice* watch;
     watch = wl_container_of(listener, watch, strip);
     auto* event = static_cast<wlr_tablet_pad_strip_event*>(data);
-    watch->server->notifyIdleActivity();
+    if (event->position < 0) {
+      watch->server->notifyIdleActivity();
+    } else {
+      watch->server->notifyInputActivity();
+    }
     wlr_tablet_v2_tablet_pad_notify_strip(
         watch->v2, event->strip, event->position, event->source == WLR_TABLET_PAD_STRIP_SOURCE_FINGER, event->time_msec
     );

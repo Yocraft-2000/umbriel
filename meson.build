@@ -206,6 +206,32 @@ xdg_shell_client_c = custom_target(
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+xdg_toplevel_tag_client_h = custom_target(
+  'xdg-toplevel-tag-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml',
+  output: 'xdg-toplevel-tag-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+xdg_toplevel_tag_client_c = custom_target(
+  'xdg-toplevel-tag-v1-client-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml',
+  output: 'xdg-toplevel-tag-v1-client-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+content_type_client_h = custom_target(
+  'content-type-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/content-type/content-type-v1.xml',
+  output: 'content-type-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+content_type_client_c = custom_target(
+  'content-type-v1-client-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/content-type/content-type-v1.xml',
+  output: 'content-type-v1-client-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 color_management_client_h = custom_target(
   'color-management-v1-client-protocol.h',
   input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/color-management/color-management-v1.xml',
@@ -242,6 +268,32 @@ color_management_server_c = custom_target(
   'color-management-v1-server-protocol.c',
   input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/color-management/color-management-v1.xml',
   output: 'color-management-v1-server-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+viewporter_client_h = custom_target(
+  'viewporter-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'stable/viewporter/viewporter.xml',
+  output: 'viewporter-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+viewporter_client_c = custom_target(
+  'viewporter-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'stable/viewporter/viewporter.xml',
+  output: 'viewporter-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+fractional_scale_client_h = custom_target(
+  'fractional-scale-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/fractional-scale/fractional-scale-v1.xml',
+  output: 'fractional-scale-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+fractional_scale_client_c = custom_target(
+  'fractional-scale-v1-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/fractional-scale/fractional-scale-v1.xml',
+  output: 'fractional-scale-v1-protocol.c',
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
@@ -344,12 +396,14 @@ pure_sources = files(
   'src/config/value_parse.cpp',
   'src/config/section.cpp',
   'src/input/modifier_tap.cpp',
+  'src/input/shortcut_keysym.cpp',
   'src/layout/layout.cpp',
   'src/layout/scrolling.cpp',
   'src/layout/dwindle.cpp',
   'src/layout/master.cpp',
   'src/output/direction.cpp',
   'src/scene/cheatsheet_rows.cpp',
+  'src/overview/shortcut_labels.cpp',
   'src/view/border_ring.cpp',
   'src/view/floating.cpp',
 )
@@ -480,6 +534,7 @@ unit_tests = [
   ['value-parse', ['tests/unit/value_parse.cpp'], []],
   ['keybind-parse', ['tests/unit/keybind_parse.cpp'], []],
   ['modifier-tap', ['tests/unit/modifier_tap.cpp'], []],
+  ['shortcut-keysym', ['tests/unit/shortcut_keysym.cpp'], []],
   ['output-direction', ['tests/unit/output_direction.cpp'], []],
   ['output-frame-schedule', ['tests/unit/output_frame_schedule.cpp'], []],
   ['hdr-format', ['tests/unit/hdr_format.cpp'], []],
@@ -487,6 +542,7 @@ unit_tests = [
   ['dwindle-layout', ['tests/unit/dwindle_layout.cpp'], []],
   ['master-layout', ['tests/unit/master_layout.cpp'], []],
   ['cheatsheet-rows', ['tests/unit/cheatsheet_rows.cpp'], []],
+  ['shortcut-labels', ['tests/unit/shortcut_labels.cpp'], []],
   ['border-ring', ['tests/unit/border_ring.cpp'], []],
   ['floating', ['tests/unit/floating.cpp'], []],
   ['maximize', ['tests/unit/maximize.cpp'], []],
@@ -575,6 +631,10 @@ unmap_client = executable(
     'tests/harness/clients/unmap_client.cpp',
     xdg_shell_client_h,
     xdg_shell_client_c,
+    xdg_toplevel_tag_client_h,
+    xdg_toplevel_tag_client_c,
+    content_type_client_h,
+    content_type_client_c,
     color_management_client_h,
     color_management_client_c,
     tearing_control_client_h,
@@ -596,6 +656,23 @@ popup_client = executable(
 subsurface_client = executable(
   'subsurface-client',
   ['tests/harness/clients/subsurface_client.cpp', xdg_shell_client_h, xdg_shell_client_c],
+  dependencies: [wayland_client_dep],
+)
+
+# Harness helper that renders one buffer at the preferred fractional scale and
+# publishes its logical size through wp_viewporter, the way a fractional-scale
+# aware toolkit does.
+fractional_client = executable(
+  'fractional-client',
+  [
+    'tests/harness/clients/fractional_client.cpp',
+    xdg_shell_client_h,
+    xdg_shell_client_c,
+    viewporter_client_h,
+    viewporter_client_c,
+    fractional_scale_client_h,
+    fractional_scale_client_c,
+  ],
   dependencies: [wayland_client_dep],
 )
 
@@ -627,6 +704,7 @@ alias_target(
   unmap_client,
   popup_client,
   subsurface_client,
+  fractional_client,
   idle_inhibit_client,
 )
 

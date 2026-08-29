@@ -5,10 +5,15 @@
 // request lands, then keeps the connection alive until the harness kills it. Usage: unmap-client [title [width
 // height]]. The optional dimensions let pointer checks expose a surface that fills its assigned tile. With
 // REMAP_ON_STDIN set, reading any byte performs a fresh initial commit and maps the same toplevel again.
+// CONTENT_TYPE sets a surface hint before its initial commit. CONTENT_TYPE_ON_SUBSURFACE places it on a rendering
+// child, matching current Proton behavior. XDG_TAG sets a toplevel tag before the initial commit.
+// CONTENT_TYPE_AFTER_MAP, XDG_TAG_AFTER_MAP, and TITLE_AFTER_MAP update their metadata on stdin.
 
 #include "color-management-v1-client-protocol.h"
+#include "content-type-v1-client-protocol.h"
 #include "tearing-control-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
+#include "xdg-toplevel-tag-v1-client-protocol.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -29,6 +34,22 @@ namespace {
   constexpr uint32_t kColorManagerVersion = 2;
 #endif
 
+  int parseContentType(const char* value) {
+    if (value == nullptr || std::strcmp(value, "none") == 0) {
+      return WP_CONTENT_TYPE_V1_TYPE_NONE;
+    }
+    if (std::strcmp(value, "photo") == 0) {
+      return WP_CONTENT_TYPE_V1_TYPE_PHOTO;
+    }
+    if (std::strcmp(value, "video") == 0) {
+      return WP_CONTENT_TYPE_V1_TYPE_VIDEO;
+    }
+    if (std::strcmp(value, "game") == 0) {
+      return WP_CONTENT_TYPE_V1_TYPE_GAME;
+    }
+    return -1;
+  }
+
   struct Buffer {
     wl_buffer* resource = nullptr;
     void* pixels = MAP_FAILED;
@@ -41,6 +62,10 @@ namespace {
     wl_subcompositor* subcompositor = nullptr;
     wl_shm* shm = nullptr;
     xdg_wm_base* wmBase = nullptr;
+    xdg_toplevel_tag_manager_v1* xdgTagManager = nullptr;
+    wp_content_type_manager_v1* contentTypeManager = nullptr;
+    wp_content_type_v1* contentType = nullptr;
+    wl_surface* contentTypeSurface = nullptr;
     wl_surface* surface = nullptr;
     xdg_surface* xdgSurface = nullptr;
     xdg_toplevel* toplevel = nullptr;
@@ -63,13 +88,16 @@ namespace {
     bool redrawOnceOnClose = false;
     bool keyboardFocused = false;
     bool requestMaximized = false;
+    bool requestMaximizedAfterConfigure = false;
     bool maximizeRequested = false;
+    bool logConfigures = false;
     bool requestFullscreen = false;
     bool fullscreenRequested = false;
     bool requestHdr = false;
     bool requestWindowsScrgb = false;
     bool requestWindowsBt2100 = false;
     bool colorOnSubsurface = false;
+    bool contentTypeOnSubsurface = false;
     bool colorChildLifecycle = false;
     uint32_t colorChildLifecyclePhase = 0;
     bool hasExtendedTargetVolume = false;
@@ -80,6 +108,7 @@ namespace {
     bool colorManagerDone = false;
     bool imageDescriptionReady = false;
     bool imageDescriptionFailed = false;
+    bool metadataUpdated = false;
     int tearingHint = -1;
   };
 
@@ -289,15 +318,16 @@ namespace {
     if (state.closed) {
       return;
     }
+    if (state.requestMaximizedAfterConfigure && !state.maximizeRequested) {
+      xdg_toplevel_set_maximized(state.toplevel);
+      wl_surface_commit(state.surface);
+      state.maximizeRequested = true;
+      return;
+    }
     state.mapped = true;
     wl_surface_attach(state.surface, state.buffer.resource, 0, 0);
     wl_surface_damage_buffer(state.surface, 0, 0, state.width, state.height);
     wl_surface_commit(state.surface);
-    if (state.requestMaximized && !state.maximizeRequested) {
-      xdg_toplevel_set_maximized(state.toplevel);
-      wl_surface_commit(state.surface);
-      state.maximizeRequested = true;
-    }
     if (state.requestFullscreen && !state.fullscreenRequested) {
       xdg_toplevel_set_fullscreen(state.toplevel, nullptr);
       wl_surface_commit(state.surface);
@@ -311,7 +341,12 @@ namespace {
       .configure = xdgSurfaceConfigure,
   };
 
-  void toplevelConfigure(void*, xdg_toplevel*, int32_t, int32_t, wl_array* states) {
+  void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array* states) {
+    auto& state = *static_cast<State*>(data);
+    if (state.logConfigures) {
+      std::println("configured-size={}x{}", width, height);
+      std::fflush(stdout);
+    }
     const auto* configured = static_cast<const uint32_t*>(states->data);
     const size_t count = states->size / sizeof(uint32_t);
     for (size_t index = 0; index < count; ++index) {
@@ -402,6 +437,14 @@ namespace {
       state.wmBase =
           static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, std::min(version, 1U)));
       xdg_wm_base_add_listener(state.wmBase, &kWmBaseListener, &state);
+    } else if (std::strcmp(interface, xdg_toplevel_tag_manager_v1_interface.name) == 0) {
+      state.xdgTagManager = static_cast<xdg_toplevel_tag_manager_v1*>(
+          wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, std::min(version, 1U))
+      );
+    } else if (std::strcmp(interface, wp_content_type_manager_v1_interface.name) == 0) {
+      state.contentTypeManager = static_cast<wp_content_type_manager_v1*>(
+          wl_registry_bind(registry, name, &wp_content_type_manager_v1_interface, std::min(version, 1U))
+      );
     } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
       state.seat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 2U)));
       wl_seat_add_listener(state.seat, &kSeatListener, &state);
@@ -456,16 +499,29 @@ int main(int argc, char** argv) {
 
   State state;
   const bool remapOnStdin = std::getenv("REMAP_ON_STDIN") != nullptr;
+  const char* initialContentType = std::getenv("CONTENT_TYPE");
+  const char* updatedContentType = std::getenv("CONTENT_TYPE_AFTER_MAP");
+  const char* initialXdgTag = std::getenv("XDG_TAG");
+  const char* updatedXdgTag = std::getenv("XDG_TAG_AFTER_MAP");
+  const char* updatedTitle = std::getenv("TITLE_AFTER_MAP");
+  const bool updateOnStdin = updatedContentType != nullptr || updatedXdgTag != nullptr || updatedTitle != nullptr;
+  if (parseContentType(initialContentType) < 0 || parseContentType(updatedContentType) < 0) {
+    std::println(stderr, "unmap-client: CONTENT_TYPE values must be none, photo, video, or game");
+    return EXIT_FAILURE;
+  }
   if (const char* redraw = std::getenv("REDRAW_ON_CLOSE")) {
     state.redrawOnClose = true;
     state.redrawOnceOnClose = std::string_view(redraw) == "once";
   }
   state.requestMaximized = std::getenv("REQUEST_MAXIMIZED") != nullptr;
+  state.requestMaximizedAfterConfigure = std::getenv("REQUEST_MAXIMIZED_AFTER_CONFIGURE") != nullptr;
+  state.logConfigures = std::getenv("LOG_CONFIGURES") != nullptr;
   state.requestFullscreen = std::getenv("REQUEST_FULLSCREEN") != nullptr;
   state.requestHdr = std::getenv("COLOR_HDR") != nullptr;
   state.requestWindowsScrgb = std::getenv("COLOR_WINDOWS_SCRGB") != nullptr;
   state.requestWindowsBt2100 = std::getenv("COLOR_WINDOWS_BT2100") != nullptr;
   state.colorOnSubsurface = std::getenv("COLOR_ON_SUBSURFACE") != nullptr;
+  state.contentTypeOnSubsurface = std::getenv("CONTENT_TYPE_ON_SUBSURFACE") != nullptr;
   state.colorChildLifecycle = std::getenv("COLOR_CHILD_LIFECYCLE") != nullptr;
   if (const char* hint = std::getenv("TEARING_HINT")) {
     if (std::strcmp(hint, "async") == 0) {
@@ -498,6 +554,14 @@ int main(int argc, char** argv) {
     std::println(stderr, "unmap-client: compositor is missing a required Wayland global");
     return EXIT_FAILURE;
   }
+  if ((initialContentType != nullptr || updatedContentType != nullptr) && state.contentTypeManager == nullptr) {
+    std::println(stderr, "unmap-client: compositor is missing wp_content_type_manager_v1");
+    return EXIT_FAILURE;
+  }
+  if ((initialXdgTag != nullptr || updatedXdgTag != nullptr) && state.xdgTagManager == nullptr) {
+    std::println(stderr, "unmap-client: compositor is missing xdg_toplevel_tag_manager_v1");
+    return EXIT_FAILURE;
+  }
 
   state.buffer = createBuffer(state);
   if (state.buffer.resource == nullptr) {
@@ -525,7 +589,7 @@ int main(int argc, char** argv) {
     wp_tearing_control_v1_set_presentation_hint(state.tearingControl, static_cast<uint32_t>(state.tearingHint));
   }
   wl_surface* colorTargetSurface = state.surface;
-  if (state.colorOnSubsurface) {
+  if (state.colorOnSubsurface || state.contentTypeOnSubsurface) {
     if (state.subcompositor == nullptr) {
       std::println(stderr, "unmap-client: compositor is missing wl_subcompositor");
       return EXIT_FAILURE;
@@ -539,7 +603,19 @@ int main(int argc, char** argv) {
     state.colorChildSubsurface =
         wl_subcompositor_get_subsurface(state.subcompositor, state.colorChildSurface, state.surface);
     wl_subsurface_set_desync(state.colorChildSubsurface);
-    colorTargetSurface = state.colorChildSurface;
+    if (state.colorOnSubsurface) {
+      colorTargetSurface = state.colorChildSurface;
+    }
+  }
+  if (initialContentType != nullptr || updatedContentType != nullptr) {
+    state.contentTypeSurface = state.contentTypeOnSubsurface ? state.colorChildSurface : state.surface;
+    state.contentType =
+        wp_content_type_manager_v1_get_surface_content_type(state.contentTypeManager, state.contentTypeSurface);
+    if (initialContentType != nullptr) {
+      wp_content_type_v1_set_content_type(
+          state.contentType, static_cast<uint32_t>(parseContentType(initialContentType))
+      );
+    }
   }
   if (state.requestHdr || state.requestWindowsScrgb || state.requestWindowsBt2100) {
     if (state.colorManager == nullptr) {
@@ -601,12 +677,21 @@ int main(int argc, char** argv) {
   if (const char* appId = std::getenv("APP_ID")) {
     xdg_toplevel_set_app_id(state.toplevel, appId);
   }
+  if (initialXdgTag != nullptr) {
+    xdg_toplevel_tag_manager_v1_set_toplevel_tag(state.xdgTagManager, state.toplevel, initialXdgTag);
+  }
+  if (state.requestMaximized) {
+    // A restored client state is requested before the initial commit. This lets
+    // the compositor include it in the first configure instead of treating it
+    // as a post-map maximize request.
+    xdg_toplevel_set_maximized(state.toplevel);
+  }
   if (transientSuite) {
     xdg_toplevel_set_parent(state.toplevel, transientParent.toplevel);
   }
   wl_surface_commit(state.surface);
 
-  if (!remapOnStdin) {
+  if (!remapOnStdin && !updateOnStdin) {
     while (wl_display_dispatch(state.display) >= 0) {
     }
   } else {
@@ -625,13 +710,32 @@ int main(int argc, char** argv) {
       }
       if ((sources[1].revents & POLLIN) != 0) {
         char command = 0;
-        if (read(STDIN_FILENO, &command, 1) > 0 && !state.mapped) {
-          state.closed = false;
-          xdg_toplevel_set_title(state.toplevel, argc > 1 ? argv[1] : "unmap-client");
-          wl_surface_attach(state.surface, nullptr, 0, 0);
-          wl_surface_commit(state.surface);
-          std::println("remap-requested");
-          std::fflush(stdout);
+        if (read(STDIN_FILENO, &command, 1) > 0) {
+          if (state.mapped && updateOnStdin && !state.metadataUpdated) {
+            if (updatedContentType != nullptr) {
+              wp_content_type_v1_set_content_type(
+                  state.contentType, static_cast<uint32_t>(parseContentType(updatedContentType))
+              );
+              wl_surface_commit(state.contentTypeSurface);
+            }
+            if (updatedXdgTag != nullptr) {
+              xdg_toplevel_tag_manager_v1_set_toplevel_tag(state.xdgTagManager, state.toplevel, updatedXdgTag);
+            }
+            if (updatedTitle != nullptr) {
+              xdg_toplevel_set_title(state.toplevel, updatedTitle);
+            }
+            wl_display_flush(state.display);
+            state.metadataUpdated = true;
+            std::println("{}", updatedXdgTag != nullptr ? "xdg-tag-updated" : "content-type-updated");
+            std::fflush(stdout);
+          } else if (!state.mapped && remapOnStdin) {
+            state.closed = false;
+            xdg_toplevel_set_title(state.toplevel, argc > 1 ? argv[1] : "unmap-client");
+            wl_surface_attach(state.surface, nullptr, 0, 0);
+            wl_surface_commit(state.surface);
+            std::println("remap-requested");
+            std::fflush(stdout);
+          }
         }
       }
       if ((sources[0].revents & POLLIN) != 0 && wl_display_dispatch(state.display) < 0) {
@@ -655,6 +759,9 @@ int main(int argc, char** argv) {
   if (state.imageDescription != nullptr) {
     wp_image_description_v1_destroy(state.imageDescription);
   }
+  if (state.contentType != nullptr) {
+    wp_content_type_v1_destroy(state.contentType);
+  }
   if (state.colorChildSubsurface != nullptr) {
     wl_subsurface_destroy(state.colorChildSubsurface);
   }
@@ -671,6 +778,12 @@ int main(int argc, char** argv) {
   }
   if (state.tearingManager != nullptr) {
     wp_tearing_control_manager_v1_destroy(state.tearingManager);
+  }
+  if (state.contentTypeManager != nullptr) {
+    wp_content_type_manager_v1_destroy(state.contentTypeManager);
+  }
+  if (state.xdgTagManager != nullptr) {
+    xdg_toplevel_tag_manager_v1_destroy(state.xdgTagManager);
   }
   if (state.keyboard != nullptr) {
     wl_keyboard_destroy(state.keyboard);

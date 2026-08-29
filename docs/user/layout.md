@@ -15,6 +15,7 @@ direction = "horizontal"             # "horizontal" or "vertical"
 default_width_fraction = 0.5         # remove to let clients choose, 0.1-1.0
 center_underfull_strip = true
 center_focused = false
+expand_single_column = true           # fill lone column to viewport width
 
 [layout.dwindle]
 preserve_split = false              # keep each split direction fixed after it is created
@@ -22,6 +23,7 @@ preserve_split = false              # keep each split direction fixed after it i
 [layout.master]
 position = "left"                   # "left" or "right"
 default_width_fraction = 0.55       # 0.1-0.9
+new_on_top = true                 # place new windows at the top of the stack
 ```
 
 Shared layout options:
@@ -40,6 +42,7 @@ Scrolling layout options:
 | `default_width_fraction` | float  | unset          | Initial scroll-axis extent assigned to new scrolling lanes (0.1-1.0). The packaged config sets `0.5`; when omitted, the client chooses its initial extent. |
 | `center_underfull_strip` | bool   | `true`         | Center the complete strip whenever it is shorter than the viewport. Disable to align it at the start edge.                        |
 | `center_focused`  | bool   | `false`        | Always center the focused column.                                                                                                 |
+| `expand_single_column`    | bool   | `false`        | Fill the viewport width for a workspace's lone tiled column. Disable to keep the configured/default width. |
 
 Dwindle layout options:
 
@@ -53,6 +56,7 @@ Master layout options:
 | ------------------------ | ------ | -------- | --------------------------------------------------------------------------- |
 | `position`               | string | `"left"` | Side occupied by the master area: `"left"` or `"right"`.                    |
 | `default_width_fraction` | float  | `0.55`   | Initial fraction assigned to the master area when both areas exist (0.1-0.9). |
+| `new_on_top`             | bool   | `true`   | Place newly opened windows at the top of the stack. Disable to place them at the bottom. |
 
 On a vertical scrolling workspace, each column becomes a horizontal lane. Lanes
 stack from top to bottom, and windows within a lane sit side by side. Existing
@@ -60,6 +64,8 @@ width vocabulary, including `default_width_fraction`, `width_presets`,
 `window-cycle-width`, `window-set-width`, `window-modify-width`, and
 `window-toggle-maximize`, controls the lane's extent along the scroll axis. In
 other words, it controls lane height on a vertical workspace.
+`window-set-height` and `window-modify-height` control a window's extent within
+its lane, which is visually horizontal in this orientation.
 
 The packaged config sets `default_width_fraction = 0.5` so new scrolling lanes
 start at half the viewport. When the option is removed, Umbriel leaves the
@@ -67,10 +73,20 @@ scroll-axis dimension unconstrained in the initial configure and retains the
 logical size chosen by the client. A numeric window-rule `default_width` still
 takes precedence for matching applications.
 
+`expand_single_column` only changes the display of a column while it is the only
+tiled column. Client size hints still constrain the expanded size, and the
+viewport bounds take precedence over a larger minimum. The option never rewrites
+the column's stored fraction, so each window's `default_width` (or the global
+`default_width_fraction`) still applies the moment a second column appears.
+Explicit `default_maximize` and `default_maximize_to_edges` window rules are
+unaffected and win.
+
 Directional focus and movement follow the screen: left and right operate within
 a vertical lane, while up and down walk or reorder lanes along the strip.
 `window-consume-left` still merges into the previous lane, which is visually
 above, and `window-expel-right` creates the next lane, which is visually below.
+`window-consume-or-expel` selects between those two operations from the focused
+window's current lane membership.
 The three-finger vertical swipe continues to switch workspaces. The
 three-finger horizontal strip gesture is inert on vertical workspaces, so use
 keyboard or wheel bindings to scroll the strip.
@@ -119,8 +135,9 @@ from top to bottom. When only one area has windows, that area fills the complete
 content box.
 
 The first window becomes master. A new window also becomes master whenever the
-master area is empty. Otherwise, new windows join the top of the stack. Removing
-the final master window promotes the top stack window. Explicitly moving every
+master area is empty. Otherwise, new windows join the top of the stack when
+`new_on_top = true`, or the bottom when it is false. Removing the final master
+window promotes the top stack window. Explicitly moving every
 window out of master does not promote one, so the remaining stack stays
 full-width until another window opens or is moved into master.
 
@@ -128,12 +145,26 @@ full-width until another window opens or is moved into master.
 With `position = "left"`, consume moves a stack window into master and expel
 moves a master window into the stack. With `position = "right"`, those area
 roles reverse because master is visually right.
+`window-consume-or-expel` provides the corresponding one-action toggle between
+the master and stack areas.
 
-Width actions operate on the master fraction. The stack fraction is its
-complement. Width actions are inert while either area is empty because the
-single occupied area already fills the viewport. Tiled resizing is available
-on the boundary between master and stack and on boundaries between rows in
-either area.
+Master workflows use a deterministic layout-order ring: master windows from top
+to bottom, then stack windows from top to bottom. `window-focus-next` and
+`window-focus-previous` cycle through that ring and wrap. `window-swap-next` and
+`window-swap-previous` exchange the focused window with the neighboring slot
+while keeping focus on that window. `master-count-increase` promotes the stack
+top into master; `master-count-decrease` demotes the master bottom into the
+stack. At least one window remains in master.
+
+Width actions operate on the master fraction; the stack fraction is its
+complement. `window-modify-width:<delta>` changes the focused area's fraction
+by the requested increment. `window-cycle-width` and
+`window-cycle-width-back` walk the configured `width_presets`. Width actions
+are inert while either area is empty because the single occupied area already
+fills the viewport. Height actions adjust a window's row fraction within its
+current area and are inert when that window is the area's only row. Tiled
+resizing is available on the boundary between master and stack and on
+boundaries between rows in either area.
 
 Dragging over a master workspace previews the destination row within the
 nearest area. Hint bands appear at the top, bottom, and between existing rows.
