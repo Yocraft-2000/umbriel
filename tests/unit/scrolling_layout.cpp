@@ -25,7 +25,9 @@ namespace {
   // one. These are addresses, never dereferenced.
   View* stub(int id) { return reinterpret_cast<View*>(static_cast<uintptr_t>(0x1000 + (id * 0x10))); }
 
-  // Mirrors the shipped defaults: gap 8, border 2, no outer border.
+  // Mirrors the shipped defaults except expandSingleColumn: geometry tests pin
+  // false so they exercise the resting-width math, and the expand_single_column
+  // behavior is covered by its own tests that flip the value back to true.
   //   totalGap = gap + 2 * border = 12,  edgePad = gap + border = 10
   ResolvedLayoutConfig defaultConfig() {
     ResolvedLayoutConfig config;
@@ -34,6 +36,7 @@ namespace {
     config.edgePad = 10;
     config.scrolling.defaultWidthFraction = 0.5;
     config.scrolling.centerUnderfullStrip = true;
+    config.scrolling.expandSingleColumn = false;
     config.widthPresets = {1.0 / 3, 0.5, 2.0 / 3};
     return config;
   }
@@ -153,12 +156,70 @@ UMBRIEL_TEST(moveViewVerticalReordersWithinAColumn) {
   CHECK(!fixture.layout.moveViewVertical(stub(1), -1));
 }
 
+UMBRIEL_TEST(swapViewsAcrossColumnsKeepsGeometryWithTheSlots) {
+  Fixture fixture;
+  fixture.addColumns(2);
+  CHECK(fixture.layout.setWidthFraction(0, 1.0 / 3.0));
+  CHECK(fixture.layout.setWidthFraction(1, 2.0 / 3.0));
+  fixture.layout.arrange(kUsable);
+  const wlr_box firstSlot = fixture.layout.targetBox(stub(0));
+  const wlr_box secondSlot = fixture.layout.targetBox(stub(1));
+
+  CHECK(fixture.layout.swapViews(stub(0), stub(1)));
+  fixture.layout.arrange(kUsable);
+  CHECK_EQ(fixture.layout.columnOf(stub(1)), 0);
+  CHECK_EQ(fixture.layout.targetBox(stub(1)).x, firstSlot.x);
+  CHECK_EQ(fixture.layout.targetBox(stub(1)).width, firstSlot.width);
+  CHECK_EQ(fixture.layout.columnOf(stub(0)), 1);
+  CHECK_EQ(fixture.layout.targetBox(stub(0)).x, secondSlot.x);
+  CHECK_EQ(fixture.layout.targetBox(stub(0)).width, secondSlot.width);
+}
+
 // width math
 UMBRIEL_TEST(halfWidthColumnMatchesTheGapAwareFormula) {
   Fixture fixture;
   fixture.addColumns(1);
   // round(0.5 * (1260 + 12)) - 12 = 636 - 12 = 624
   CHECK_EQ(fixture.layout.columnWidth(0, kViewport), 624);
+}
+
+// expand_single_column
+UMBRIEL_TEST(expandSingleColumnFalseKeepsTheConfiguredWidth) {
+  Fixture fixture;
+  fixture.addColumns(1);
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), 624);
+}
+
+UMBRIEL_TEST(expandSingleColumnTrueFillsALoneColumn) {
+  Fixture fixture;
+  fixture.config.scrolling.expandSingleColumn = true;
+  fixture.addColumns(1);
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
+}
+
+UMBRIEL_TEST(expandSingleColumnTrueHonorsClientMaxWidth) {
+  Fixture fixture;
+  fixture.config.scrolling.expandSingleColumn = true;
+  fixture.layout.setConstraints([](const View*) { return LayoutConstraints{.maxWidth = 300}; });
+  fixture.addColumns(1);
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), 300);
+}
+
+UMBRIEL_TEST(expandSingleColumnTrueSizesTheFirstConfigureFull) {
+  Fixture fixture;
+  fixture.config.scrolling.expandSingleColumn = true;
+  const Layout::InitialSize initial = fixture.layout.initialSize(kUsable, std::nullopt, nullptr);
+  CHECK_EQ(initial.width, 1260);
+  CHECK_EQ(initial.height, 700);
+}
+
+UMBRIEL_TEST(expandSingleColumnTrueReexpandsTheLastSurvivor) {
+  Fixture fixture;
+  fixture.config.scrolling.expandSingleColumn = true;
+  fixture.addColumns(2);
+  fixture.layout.removeView(stub(1));
+  CHECK_EQ(fixture.layout.columns().size(), size_t{1});
+  CHECK_EQ(fixture.layout.columnWidth(0, kViewport), kViewport);
 }
 
 UMBRIEL_TEST(twoHalfColumnsTileExactlyAcrossTheViewport) {
@@ -438,7 +499,7 @@ UMBRIEL_TEST(initialSizeMatchesWhatArrangeWillAssign) {
   // The invariant: the size a view is configured with before it joins the layout must equal the size the layout gives
   // it once it has. Any drift and the client's first buffer is wrong and the window resizes on first paint.
   Fixture fixture;
-  const Layout::InitialSize initial = fixture.layout.initialSize(kUsable, std::nullopt);
+  const Layout::InitialSize initial = fixture.layout.initialSize(kUsable, std::nullopt, nullptr);
 
   fixture.addColumns(1);
   fixture.layout.arrange(kUsable);
@@ -450,32 +511,32 @@ UMBRIEL_TEST(initialSizeMatchesWhatArrangeWillAssign) {
 
 UMBRIEL_TEST(initialSizeHonoursARuleWidthFraction) {
   Fixture fixture;
-  const Layout::InitialSize initial = fixture.layout.initialSize(kUsable, 1.0 / 3);
+  const Layout::InitialSize initial = fixture.layout.initialSize(kUsable, 1.0 / 3, nullptr);
 
   fixture.addColumns(1);
   CHECK(fixture.layout.setWidthFraction(0, 1.0 / 3));
   fixture.layout.arrange(kUsable);
 
   CHECK_EQ(initial.width, fixture.layout.targetBox(stub(0)).width);
-  CHECK(initial.width < fixture.layout.initialSize(kUsable, std::nullopt).width);
+  CHECK(initial.width < fixture.layout.initialSize(kUsable, std::nullopt, nullptr).width);
 }
 
 UMBRIEL_TEST(initialSizeUsesTheDefaultFractionWhenNoRuleApplies) {
   Fixture fixture;
-  CHECK_EQ(fixture.layout.initialSize(kUsable, std::nullopt).width, 624);
-  CHECK_EQ(fixture.layout.initialSize(kUsable, std::nullopt).height, 700);
+  CHECK_EQ(fixture.layout.initialSize(kUsable, std::nullopt, nullptr).width, 624);
+  CHECK_EQ(fixture.layout.initialSize(kUsable, std::nullopt, nullptr).height, 700);
 }
 
 UMBRIEL_TEST(initialSizeLeavesTheScrollAxisUnconstrainedWhenNoDefaultIsSet) {
   Fixture horizontal;
   horizontal.config.scrolling.defaultWidthFraction.reset();
-  const Layout::InitialSize horizontalSize = horizontal.layout.initialSize(kUsable, std::nullopt);
+  const Layout::InitialSize horizontalSize = horizontal.layout.initialSize(kUsable, std::nullopt, nullptr);
   CHECK_EQ(horizontalSize.width, 0);
   CHECK_EQ(horizontalSize.height, 700);
 
   Fixture vertical(ScrollingDirection::Vertical);
   vertical.config.scrolling.defaultWidthFraction.reset();
-  const Layout::InitialSize verticalSize = vertical.layout.initialSize(kUsable, std::nullopt);
+  const Layout::InitialSize verticalSize = vertical.layout.initialSize(kUsable, std::nullopt, nullptr);
   CHECK_EQ(verticalSize.width, 1260);
   CHECK_EQ(verticalSize.height, 0);
 }
@@ -981,7 +1042,7 @@ UMBRIEL_TEST(verticalLaneExtentUsesTheGapAwareFormula) {
 
 UMBRIEL_TEST(verticalInitialSizeMatchesWhatArrangeWillAssign) {
   Fixture fixture(ScrollingDirection::Vertical);
-  const Layout::InitialSize initial = fixture.layout.initialSize(kUsable, std::nullopt);
+  const Layout::InitialSize initial = fixture.layout.initialSize(kUsable, std::nullopt, nullptr);
   CHECK_EQ(initial.width, 1260);
   CHECK_EQ(initial.height, 344);
 

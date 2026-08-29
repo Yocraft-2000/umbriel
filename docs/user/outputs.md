@@ -11,8 +11,10 @@ to its previously active workspace. Floating and pinned windows retain their
 full-output-relative positions even when a panel recreates its exclusive zone
 after the output. Scratchpad windows move with their output assignment and
 return with it too. Tiled windows retain their order, grouping, split ratios,
-and sizes in the scrolling, dwindle, and master layouts. If no enabled output
-remains, windows stay without a workspace until one becomes available.
+and sizes in the scrolling, dwindle, and master layouts. Taskbars and docks
+continue to associate windows on inactive workspaces with the restored output
+without requiring each workspace to be visited. If no enabled output remains,
+windows stay without a workspace until one becomes available.
 
 Run `umbriel outputs` inside a session to list connector names and modes.
 
@@ -23,37 +25,74 @@ position = [0, 0]
 scale = 1.25
 vrr = "fullscreen"
 tearing = true
+direct_scanout = false
 workspaces = 5
 ```
 
 ## Settings
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | bool | `true` | Set to `false` to turn the monitor off and remove it from the desktop. |
-| `mode` | string | (native) | Resolution and refresh rate: `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@HZ"`. Fractional Hz allowed. Ignored in nested sessions (the parent controls size). |
-| `position` | `[x, y]` | (auto) | Layout coordinates. |
-| `scale` | float | (auto) | Output scale (0.25-4.0). |
-| `vrr` | string | `"disabled"` | Variable refresh rate policy: `"disabled"`, `"always"`, or `"fullscreen"`. |
-| `tearing` | bool | `false` | Permit asynchronous page flips for eligible fullscreen windows on this output. |
-| `hdr` | string | `"off"` | HDR policy: `"off"`, `"on"`, `"auto"`, or `"fullscreen"`. |
-| `sdr_white` | float | `203` | SDR reference white in cd/m2 while the output is in HDR mode (80-1000). |
-| `workspaces` | int, string array, or `"dynamic"` | `"dynamic"` | Dynamic numbered workspaces, a static count from 1 to 64, or a static ordered list of 1 to 64 names. |
-| `transform` | string | `"normal"` | Output rotation/flip. |
+| Key              | Type                              | Default      | Description                                                                                                                                         |
+| ---------------- | --------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`        | bool                              | `true`       | Set to `false` to turn the monitor off and remove it from the desktop.                                                                              |
+| `mode`           | string                            | (native)     | Resolution and refresh rate: `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@HZ"`. Fractional Hz allowed. Ignored in nested sessions (the parent controls size). |
+| `position`       | `[x, y]`                          | (auto)       | Top-left corner in logical layout coordinates. Omit for automatic placement.                                                                        |
+| `scale`          | float                             | `1.0`        | Output scale (0.25-4.0).                                                                                                                            |
+| `vrr`            | string                            | `"disabled"` | Variable refresh rate policy: `"disabled"`, `"always"`, or `"fullscreen"`.                                                                          |
+| `tearing`        | bool                              | `false`      | Permit asynchronous page flips for eligible fullscreen windows on this output.                                                                      |
+| `direct_scanout` | bool                              | `true`       | Permit eligible client buffers to bypass composition on this output. Set to `false` to always composite.                                            |
+| `hdr`            | string                            | `"off"`      | HDR policy: `"off"`, `"on"`, `"auto"`, or `"fullscreen"`.                                                                                           |
+| `sdr_white`      | float                             | `203`        | SDR reference white in cd/m2 while the output is in HDR mode (80-1000).                                                                             |
+| `workspaces`     | int, string array, or `"dynamic"` | `"dynamic"`  | Dynamic numbered workspaces, a static count from 1 to 64, or a static ordered list of 1 to 64 names.                                                |
+| `transform`      | string                            | `"normal"`   | Output rotation/flip.                                                                                                                               |
+
+### Position and scale
+
+An output's logical size is its transformed mode size divided by `scale`. A
+`2560x1600` output at scale `1.25` occupies `2048x1280` logical units. If it
+starts at `[0, 0]`, an output immediately to its right starts at `[2048, 0]`.
+A 1920-wide output at scale `1.0` immediately to its left starts at
+`[-1920, 0]`.
+
+The pointer can cross only where output rectangles touch or overlap. Omit
+`position` to place outputs automatically from left to right and keep them
+adjacent when their mode, scale, or transform changes. Removing a configured
+`scale` restores `1.0` on reload.
 
 ### Transform values
 
 `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`,
 `flipped-270`.
 
+### Direct scanout
+
+Direct scanout lets an eligible fullscreen client buffer be presented without
+first rendering it into Umbriel's composited output buffer. Disable it for an
+output when a fullscreen application causes graphical corruption, black
+frames, flicker, or driver-specific presentation problems:
+
+```toml
+[output.DP-1]
+direct_scanout = false
+```
+
+The setting applies on reload. Changing it fully damages and schedules that
+output. Setting it to `false` returns an active direct scanout to composition on
+the next frame; setting it to `true` makes eligible future frames candidates
+for direct scanout. Disabling it can increase GPU use and power consumption
+while fullscreen content is visible.
+
+`WLR_SCENE_DISABLE_DIRECT_SCANOUT=1` is a process-wide startup override. When
+set, it disables direct scanout on every output regardless of
+`direct_scanout = true`.
+
 ### Variable refresh rate
 
 VRR accepts these policies:
 
-| Value | Behavior |
-|-------|----------|
-| `"disabled"` | Never enable adaptive sync. This is the default. |
-| `"always"` | Keep adaptive sync enabled whenever the output supports it. |
+| Value          | Behavior                                                                                  |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| `"disabled"`   | Never enable adaptive sync. This is the default.                                          |
+| `"always"`     | Keep adaptive sync enabled whenever the output supports it.                               |
 | `"fullscreen"` | Enable adaptive sync only while the active workspace contains a mapped fullscreen window. |
 
 With `"fullscreen"`, switching away from the fullscreen workspace, leaving
@@ -108,12 +147,12 @@ overrides.
 
 HDR accepts these policies:
 
-| Value | Behavior |
-|-------|----------|
-| `"off"` | Keep the output in its normal SDR mode. This is the default. |
-| `"on"` | Keep the output in PQ and BT.2020 continuously. SDR surfaces are mapped to `sdr_white`. |
-| `"auto"` | Enable PQ and BT.2020 while a fullscreen surface with supported HDR metadata is visible on the active workspace. This includes PQ with BT.2020 and Wine's Windows scRGB or BT.2100 descriptions. |
-| `"fullscreen"` | Enable PQ and BT.2020 while any fullscreen surface is visible on the active workspace. |
+| Value          | Behavior                                                                                                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `"off"`        | Keep the output in its normal SDR mode. This is the default.                                                                                                                                     |
+| `"on"`         | Keep the output in PQ and BT.2020 continuously. SDR surfaces are mapped to `sdr_white`.                                                                                                          |
+| `"auto"`       | Enable PQ and BT.2020 while a fullscreen surface with supported HDR metadata is visible on the active workspace. This includes PQ with BT.2020 and Wine's Windows scRGB or BT.2100 descriptions. |
+| `"fullscreen"` | Enable PQ and BT.2020 while any fullscreen surface is visible on the active workspace.                                                                                                           |
 
 Automatic HDR tracks the fullscreen surface that triggered the transition.
 Other applications that adopt the HDR output color space after activation do
@@ -138,6 +177,19 @@ Some native Wayland Wine builds require a runtime-specific launch option before
 they publish HDR metadata. With Proton-CachyOS, use `DXVK_HDR=1` instead of
 `PROTON_ENABLE_HDR=1`. Other Proton variants may behave differently; follow the
 documentation for the selected compatibility tool.
+
+A Steam launch option scopes the variable to one game. To publish it to newly
+started systemd session services and their applications instead, configure it
+for the Umbriel session:
+
+```toml
+[environment]
+PROTON_ENABLE_WAYLAND = "1"
+DXVK_HDR = "1"
+```
+
+This requires an Umbriel restart. Fully exit and relaunch Steam afterward,
+because an existing Steam process keeps the environment with which it started.
 
 The `"fullscreen"` policy activates HDR before a client supplies color
 metadata. This can break the discovery loop for native Wayland games that only
@@ -201,9 +253,16 @@ umbriel msg dpms-off:DP-1
 umbriel msg dpms-on:DP-1
 ```
 
-Any keyboard, pointer, touch, gesture, or tablet activity powers all DPMS-off
-outputs back on. This includes pointer motion. Outputs disabled with
-`enabled = false` remain disabled and are not affected by these actions.
+When every configured output is DPMS-off, a new keyboard or button press,
+pointer or touch motion, wheel input, gesture activity, or tablet activity
+powers all of them back on. Releases, repeated keybind actions, and gesture
+end events do not wake outputs on their own, so the trailing release from a
+`dpms-off` key or button cannot immediately undo it.
+
+If another configured output remains powered, input activity leaves a named
+DPMS-off output off. Use `dpms-on:<output>` to power that monitor back on.
+Outputs disabled with `enabled = false` remain disabled and are not affected
+by these actions.
 
 ## Live reconfiguration
 
@@ -226,6 +285,10 @@ the adjacent monitor's active workspace. `workspace-move-to-output-*` instead
 creates a new workspace on the adjacent monitor and moves every window of the
 active workspace into it, preserving column order and widths. See
 [Actions](actions.md) for the full list and their exact semantics.
+
+Whole-column moves between scrolling workspaces retain member order, width,
+full-width restore state, and stacked row proportions. A destination using the
+dwindle layout flattens the moved stack into ordered single-window columns.
 
 Direction is determined from output centers in logical layout coordinates.
 Small overlaps caused by fractional scaling and coordinate rounding therefore
@@ -255,6 +318,9 @@ position = [3072, 0]
 scale = 1.0
 workspaces = ["CHAT", "STATS"]
 ```
+
+The primary output is 3072 logical units wide (`3840 / 1.25`), so the HDMI
+output starts at x = 3072.
 
 Tiled windows are clipped to the logical bounds of their owning output.
 Partially visible scrolling columns do not render onto adjacent outputs,

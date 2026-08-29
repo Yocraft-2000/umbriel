@@ -153,6 +153,7 @@ namespace umbriel {
     virtual bool consumeLeft(View* view) = 0;
     virtual bool expelRight(View* view) = 0;
     virtual bool moveViewVertical(View* view, int direction) = 0;
+    virtual bool swapViews(View* a, View* b) = 0;
     virtual void removeView(View* view) = 0;
     virtual void moveColumn(int from, int to) = 0;
     virtual void arrange(const wlr_box& usable) = 0;
@@ -168,8 +169,9 @@ namespace umbriel {
     // later assign, or the client's first buffer is the wrong size and the window visibly resizes on its first paint
     // (Electron and friends keep that buffer until they redraw). `ruleWidthFraction` is a window rule's default_width,
     // which is a viewport fraction and so means nothing to a splitting layout.
+    // `splitAnchor` is the view whose leaf a subsequent focused insert would split; nullptr means append.
     [[nodiscard]] virtual InitialSize
-    initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction) const = 0;
+    initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction, const View* splitAnchor) const = 0;
 
     [[nodiscard]] virtual std::optional<View*> focusHorizontalLeaf(const View* /*view*/, int /*direction*/) const {
       return std::nullopt;

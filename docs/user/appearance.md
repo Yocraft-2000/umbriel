@@ -39,7 +39,7 @@ remain opaque so text stays legible over translucent panels.
 prefer_no_csd = true
 border_width = 2               # 0-100
 outer_border_width = 0         # 0-100
-corner_radius = 10             # 0-100, 0 disables
+corner_radius = 10             # 0-100, final outer edge; 0 disables
 border_focused = "#7AA3FFFF"   # #RRGGBB or #RRGGBBAA
 border_unfocused = "#292933FF"
 scratchpad_border_focused = "#E5C07BFF"
@@ -55,7 +55,7 @@ drag_opacity = 0.75
 | `prefer_no_csd`               | bool  | `true`      | Ask clients to omit client-side decorations (xdg-decoration). Clients that explicitly request CSD are still honored. Restart apps after changing. |
 | `border_width`                | int   | `2`         | Inner border width in logical pixels (0-100), including around rounded corners.                                                                   |
 | `outer_border_width`          | int   | `0`         | Ring outside the inner border in logical pixels (0-100).                                                                                          |
-| `corner_radius`               | int   | `10`        | Rounded corner radius (0-100). 0 disables.                                                                                                        |
+| `corner_radius`               | int   | `10`        | Final decorated outer-edge radius in logical pixels (0-100). 0 disables.                                                                          |
 | `border_focused`              | color | `#7AA3FFFF` | Border color for the focused window.                                                                                                              |
 | `border_unfocused`            | color | `#292933FF` | Border color for unfocused windows.                                                                                                               |
 | `scratchpad_border_focused`   | color | `#E5C07BFF` | Border color for the focused scratchpad window.                                                                                                   |
@@ -66,6 +66,12 @@ drag_opacity = 0.75
 | `drag_opacity`                | float | `0.75`      | Opacity of the window while dragging.                                                                                                             |
 
 Colors are `#RRGGBB` or `#RRGGBBAA`.
+
+Border widths and corner radius are measured in logical pixels. `corner_radius`
+describes the final outside edge of the complete decoration. Positive color-seam
+and content radii decrease smoothly as their border inset grows, but never
+collapse to square; `corner_radius = 0` keeps every contour square. Inner and
+outer borders render outside the window and are included in layout spacing.
 
 See [Scratchpads](scratchpad.md) for how scratchpad windows behave and use the
 dedicated border colors.
@@ -91,10 +97,10 @@ the surface's owning output when a window overflows into a neighbouring output.
 Disabling the master switch also releases SceneFX's per-output blur render
 targets.
 
-| Key          | Type  | Default | Description                                                              |
-| ------------ | ----- | ------- | ------------------------------------------------------------------------ |
-| `enabled`    | bool  | `true`  | Master blur switch.                                                      |
-| `optimized`  | bool  | `true`  | Cache one background blur per output instead of recomputing per surface. |
+| Key          | Type  | Default | Description                                                                                                                       |
+| ------------ | ----- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`    | bool  | `true`  | Master blur switch.                                                                                                              |
+| `optimized`  | bool  | `true`  | Use one cached background blur per output for all surfaces. This is the X-ray mode: translucent surfaces blur the background beneath the window stack instead of the surfaces behind them. |
 | `passes`     | int   | `3`     | Blur passes (0-8). 0 disables.                                           |
 | `radius`     | int   | `5`     | Blur radius (0-100). 0 disables.                                         |
 | `noise`      | float | `0.02`  | Noise overlay (0.0-1.0).                                                 |

@@ -27,13 +27,17 @@ namespace umbriel {
     bool consumeLeft(View* view) override;
     bool expelRight(View* view) override;
     bool moveViewVertical(View* view, int direction) override;
+    bool swapViews(View* a, View* b) override;
+    bool promoteFromStack();
+    bool demoteToStack();
     void removeView(View* view) override;
     void moveColumn(int from, int to) override;
     void arrange(const wlr_box& usable) override;
 
     [[nodiscard]] wlr_box targetBox(const View* view) const override;
-    [[nodiscard]] InitialSize
-    initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction) const override;
+    [[nodiscard]] InitialSize initialSize(
+        const wlr_box& usable, std::optional<double> ruleWidthFraction, const View* /*splitAnchor*/
+    ) const override;
     [[nodiscard]] std::optional<View*> focusHorizontalLeaf(const View* view, int direction) const override;
     [[nodiscard]] std::optional<View*> focusVerticalLeaf(const View* view, int direction) const override;
 

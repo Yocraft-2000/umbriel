@@ -24,6 +24,17 @@ namespace umbriel {
   namespace {
     constexpr Logger kLog("view");
 
+    void setCompositorOpacity(wlr_scene_buffer* buffer, int /*sx*/, int /*sy*/, void* data) {
+      float opacity = *static_cast<float*>(data);
+      if (wlr_scene_surface* sceneSurface = wlr_scene_surface_try_from_buffer(buffer)) {
+        if (const wlr_alpha_modifier_surface_v1_state* clientAlpha =
+                wlr_alpha_modifier_v1_get_surface_state(sceneSurface->surface)) {
+          opacity *= static_cast<float>(clientAlpha->multiplier);
+        }
+      }
+      wlr_scene_buffer_set_opacity(buffer, opacity);
+    }
+
     // How long the layout withholds the column size after an unfullscreen configure (sent with size 0x0).
     // xwayland-satellite acks configures immediately, so acks prove nothing; the X11 client's re-request arrives
     // through a full X round trip (observed 310-330 ms for a loaded game). A client that truly accepts windowed mode
@@ -263,9 +274,9 @@ namespace umbriel {
     }
     notifyOutputScale();
     if (m_mapped) {
-      if (m_workspace != nullptr && m_onActiveWorkspace) {
+      if (m_workspace != nullptr) {
         enterForeignOutput();
-      } else if (m_workspace == nullptr) {
+      } else {
         // An unassigned view has no output to advertise. In particular, the preferred output may be the one currently
         // being destroyed, and foreign-toplevel output membership installs a bind listener that must be gone before
         // wlr_output_finish completes.
@@ -426,17 +437,17 @@ namespace umbriel {
     }
   }
 
+  float View::effectiveOpacity() const {
+    // Overshooting curves can push this past [0, 1]; wlr_scene_buffer_set_opacity asserts.
+    const float ruleOpacity = m_toplevel->scheduled.fullscreen ? 1.0F : m_ruleOpacity;
+    return std::clamp(m_fadeAlpha * ruleOpacity * m_dragOpacity * static_cast<float>(m_focusDim.current()), 0.0F, 1.0F);
+  }
+
   void View::setFadeAlpha(float alpha) {
     // Overshooting curves can push this out of range; wlr_scene_buffer_set_opacity asserts opacity is in [0, 1].
     m_fadeAlpha = std::clamp(alpha, 0.0F, 1.0F);
     float effective = effectiveOpacity();
-    wlr_scene_node_for_each_buffer(
-        &m_sceneTree->node,
-        [](wlr_scene_buffer* buffer, int /*sx*/, int /*sy*/, void* data) {
-          wlr_scene_buffer_set_opacity(buffer, *static_cast<float*>(data));
-        },
-        &effective
-    );
+    wlr_scene_node_for_each_buffer(&m_sceneTree->node, setCompositorOpacity, &effective);
     setBorderFocused(m_borderFocusedState);
     m_decoration.setAlpha(effective, m_fadeAlpha);
   }
@@ -449,13 +460,7 @@ namespace umbriel {
     if (effective >= 1.0F) {
       return;
     }
-    wlr_scene_node_for_each_buffer(
-        &m_sceneTree->node,
-        [](wlr_scene_buffer* buffer, int /*sx*/, int /*sy*/, void* data) {
-          wlr_scene_buffer_set_opacity(buffer, *static_cast<float*>(data));
-        },
-        &effective
-    );
+    wlr_scene_node_for_each_buffer(&m_sceneTree->node, setCompositorOpacity, &effective);
   }
 
   void View::flushPendingEffectiveOpacity() {
@@ -1052,7 +1057,9 @@ namespace umbriel {
   int View::borderInset() const { return decorated() ? config().appearance.totalBorderWidth() : 0; }
 
   int View::surfaceRadius() const {
-    return decorated() && !m_toplevel->scheduled.fullscreen ? config().appearance.cornerRadius : 0;
+    return decorated() && !m_toplevel->scheduled.fullscreen
+        ? nestedRadius(config().appearance.cornerRadius, borderInset())
+        : 0;
   }
 
   void View::setBorderFocused(bool focused) {
@@ -1193,9 +1200,9 @@ namespace umbriel {
   }
 
   void View::updateShadow(int contentWidth, int contentHeight) {
-    const int inset = borderInset();
+    const int borderTotal = borderInset();
     m_decoration.updateShadow(
-        contentWidth, contentHeight, inset, decorated() ? expandedRadius(config().appearance.cornerRadius, inset) : 0
+        contentWidth, contentHeight, borderTotal, decorated() ? config().appearance.cornerRadius : 0
     );
   }
 
@@ -1252,10 +1259,8 @@ namespace umbriel {
     }
     wlr_scene_node_set_position(&snap->node, m_sceneTree->node.x, m_sceneTree->node.y);
 
-    // Collect border rects for the snapshot.
-    std::vector<std::pair<wlr_scene_rect*, std::array<float, 4>>> snapRects;
-
-    m_decoration.snapshotBorders(snap, m_borderFocusedState, snapRects);
+    std::vector<BorderSnapshot> snapBorders;
+    m_decoration.snapshotBorders(snap, m_borderFocusedState, snapBorders);
 
     // Copy surface buffers.
     struct CopyCtx {
@@ -1301,7 +1306,7 @@ namespace umbriel {
       return;
     }
 
-    m_server->animateCloseSnapshot(output, snap, std::move(snapRects));
+    m_server->animateCloseSnapshot(output, snap, std::move(snapBorders));
     wlr_output_schedule_frame(output->wlr());
   }
 
@@ -1866,9 +1871,13 @@ namespace umbriel {
         const Layout& layout = target != nullptr ? target->layout() : *fallbackLayout;
 
         const std::optional<double> widthFraction = wantMaximized ? std::optional<double>(1.0) : rule.defaultWidth;
-        const Layout::InitialSize initial = layout.initialSize(usable, widthFraction);
-        const int width = (rule.defaultSize && !wantMaximized) ? (*rule.defaultSize)[0] : initial.width;
-        wlr_xdg_toplevel_set_size(m_toplevel, width, initial.height);
+        const Layout::InitialSize initial =
+            layout.initialSize(usable, widthFraction, target != nullptr ? target->focusedView() : nullptr);
+        const XdgSizeHints hints = xdgSizeHints(m_toplevel);
+        const int requestedWidth = (rule.defaultSize && !wantMaximized) ? (*rule.defaultSize)[0] : initial.width;
+        const int width = requestedWidth > 0 ? clampXdgWidth(requestedWidth, hints) : requestedWidth;
+        const int height = initial.height > 0 ? clampXdgHeight(initial.height, hints) : initial.height;
+        wlr_xdg_toplevel_set_size(m_toplevel, width, height);
         if (wantMaximized) {
           wlr_xdg_toplevel_set_maximized(m_toplevel, true);
         }
@@ -2455,6 +2464,7 @@ namespace umbriel {
     }
     cancelSizeAnimation();
     wlr_xdg_toplevel_set_fullscreen(m_toplevel, fullscreen);
+    setFadeAlpha(m_fadeAlpha);
     updateFullscreenPresentation(0, 0);
     if (fullscreen) {
       // scheduled.fullscreen is set; reparent to fullscreen layer.
@@ -2485,6 +2495,7 @@ namespace umbriel {
     }
     m_decoration.setBordersEnabled(!fullscreen);
     applyCornerRadius();
+    updateBlur();
     updateShadow();
     if (!fullscreen) {
       // scheduled.fullscreen is already false; arrange into usable area (exclusive zones).

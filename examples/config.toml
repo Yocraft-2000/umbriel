@@ -19,12 +19,18 @@ show_cheatsheet = true         # show keybinds overlay on startup
 focus_on_activate = false      # activation requests mark urgent without stealing focus
 honor_restored_maximize = false # let apps restore their saved maximized state
 
+# Applied only at session startup. Native sessions also publish these values to
+# newly started systemd session services and applications they launch. D-Bus
+# receives only graphical connection variables. Nested sessions do not modify the
+# host session environment. Without systemd, direct Umbriel children still inherit
+# the values. Relaunch applications that were already running.
 # [environment]
 # GTK_THEME = "Adwaita:dark"
 # QT_QPA_PLATFORMTHEME = "qt5ct"
 
 [workspaces]
 back_and_forth = false
+empty_above = false
 
 # Colors ---------------------------------------------------------------------
 
@@ -104,7 +110,7 @@ curve = "easeout"
 prefer_no_csd = true
 border_width = 2               # 0-100
 outer_border_width = 0         # 0-100
-corner_radius = 10             # 0-100
+corner_radius = 10             # 0-100, radius of the final decorated outer edge
 drag_opacity = 0.75
 # border_focused = "#7AA3FFFF"
 # border_unfocused = "#292933FF"
@@ -138,6 +144,9 @@ zoom = 0.5                     # 0.1-0.75
 # background_blur = true        # blur the wallpaper while the overview is open
 # background_tint = "#10101430"
 # workspace_background = "#00000044" # set alpha to FF for an opaque background
+# shortcuts = true
+# shortcut_keys = "1234567890" # favorite keys in preference order
+# badge_color = "#7AA3FFFF"   # defaults to colors.accent_primary
 
 # Hot corners ---------------------------------------------------------------
 
@@ -165,6 +174,7 @@ action = "spawn:notify-send 'Bottom right'"
 
 [layout]
 mode = "scrolling"             # "scrolling", "dwindle", or "master"
+# Inspect every workspace's effective mode with `umbriel workspaces --json`.
 gap = 8                        # 0-500
 width_presets = [0.333, 0.5, 0.667] # shared by scrolling, dwindle, and master
 
@@ -173,29 +183,36 @@ width_presets = [0.333, 0.5, 0.667] # shared by scrolling, dwindle, and master
 # direction = "horizontal"
 default_width_fraction = 0.5  # remove to let clients choose their initial width
 center_underfull_strip = true  # center the strip whenever it is narrower than the viewport
+expand_single_column = true # fill lone column to viewport width
 
+
+[layout.dwindle]
+# Keep each split direction fixed after it is created.
+# preserve_split = false
 [layout.master]
 position = "left"              # "left" or "right"
 default_width_fraction = 0.55  # 0.1-0.9
 
-# Workspace layout overrides (see docs/user/outputs.md#workspace-rules)
+# Workspace layout overrides (see docs/user/workspaces.md#workspace-rules)
 # [[workspace]]
 # name = "chat"
 # layout.mode = "dwindle"
 # layout.gap = 4
 # layout.scrolling.center_underfull_strip = false
+# layout.dwindle.preserve_split = true
 
 # Outputs (see docs/user/outputs.md) ----------------------------------------
 
 # [output."DP-1"]
 # mode = "2560x1440@144"
-# position = [0, 0]
-# scale = 1.25
+# position = [0, 0]             # logical top-left; omit for automatic placement
+# scale = 1.25                  # divides the mode size in layout coordinates
 # vrr = "fullscreen"            # "disabled" (default), "always", or "fullscreen"
 # tearing = true                 # allow eligible fullscreen clients to request tearing
+# direct_scanout = true           # false forces composition on this output
 # hdr = "auto"                  # "off", "on", metadata-driven "auto", or any-app "fullscreen"
 # sdr_white = 203                # SDR reference white in cd/m2 while HDR is active
-# enabled = true                # false removes it; re-enabling restores windows, layout, and active workspace
+# enabled = true                # false removes it; re-enabling restores windows, layout, active workspace, and taskbar entries
 # Dynamic workspaces are the default; use a count or name list for static workspaces.
 # workspaces = 5
 
@@ -205,6 +222,8 @@ default_width_fraction = 0.55  # 0.1-0.9
 middle_click_paste = true      # primary-selection clipboard, applies on reload
 
 [input.keyboard]
+# ASCII keybind fallback uses only layouts listed for this keyboard; a single
+# non-Latin layout has no implicit Latin fallback.
 layout = ""                    # "us,de" loads both; switch with keyboard-layout-next
 variant = ""
 options = ""                   # XKB options, e.g. "grp:alt_shift_toggle"
@@ -217,6 +236,8 @@ tap = true                      # enabled by default; false disables tap-to-clic
 # natural_scroll = true
 # accel_profile = "adaptive"    # "flat", "adaptive", or "custom <step> <points...>"
 # sensitivity = 0.5             # pointer speed, -1.0 to 1.0
+# scroll_factor = 1.5           # touchpad scroll speed, 0.1 to 10.0
+# disable_while_typing = true   # omitted preserves the device's libinput default
 
 [input.mouse]
 # natural_scroll = false
@@ -225,15 +246,16 @@ sensitivity = 0.0              # pointer speed, -1.0 to 1.0
 scroll_wheel_step = 60         # 1-1000
 # Override only the listed settings for an exact, case-sensitive device name.
 # Applies per device kind: layout, variant, options, repeat_rate, and
-# repeat_delay to keyboards; tap to touchpads; natural_scroll, accel_profile,
-# and sensitivity to touchpads and mice. Find names with
-# `libinput list-devices`.
+# repeat_delay to keyboards; tap and disable_while_typing to touchpads;
+# natural_scroll, accel_profile, and sensitivity to touchpads and mice.
+# Find names with `libinput list-devices`.
 # [[input.device]]
 # name = "Acme Precision Touchpad"
 # tap = true
 # natural_scroll = false
 # accel_profile = "flat"
 # sensitivity = 0.0
+# disable_while_typing = false
 # [[input.device]]
 # name = "Gaming Mouse"
 # accel_profile = "flat"
@@ -251,6 +273,7 @@ enabled = true                 # false disables the tablet and its pads
 theme = ""
 size = 24                      # 1-512
 hardware_cursor = true         # false forces software cursor composition
+follows_focus = false          # warp to windows selected by focus navigation
 hide_when_typing = false       # hide after typing unless a pointer button is held
 hide_timeout_ms = 0            # 0-3600000, 0 disables hiding
 
@@ -285,6 +308,11 @@ follows_mouse = false
 "Mod+O" = "overview-toggle"
 # "Mod+Space" is taken above; pick a free chord for layout switching.
 # "Mod+Shift+K" = "keyboard-layout-next"
+# Submaps can nest; entry binds should not repeat. Inspect the active layer with `umbriel submap`.
+# "Mod+R" = { action = "submap:resize", repeat = false }
+# Omit `submap` to add no post-action transition, or set it to "reset" to exit after the action.
+# "submap[resize],1" = { action = "window-set-width:0.5", submap = "reset" }
+# "submap[resize],Escape" = "submap:reset"
 
 # Output, workspace, and window movement actions.
 # "Mod+Home" = "column-focus-first"
@@ -295,11 +323,20 @@ follows_mouse = false
 # "Mod+Period" = "workspace-next"
 # "Mod+Shift+Comma" = "window-move-to-workspace-previous"
 # "Mod+Shift+Period" = "window-move-to-workspace-next"
+# "Mod+Ctrl+Page_Up" = "column-move-to-workspace-previous"
+# "Mod+Ctrl+Page_Down" = "column-move-to-workspace-next"
+# "Mod+Bracketright" = "window-focus-next"
+# "Mod+Bracketleft" = "window-focus-previous"
+# "Mod+Shift+Bracketright" = "window-swap-next"
+# "Mod+Shift+Bracketleft" = "window-swap-previous"
+# "Mod+Shift+Equal" = "master-count-increase"
+# "Mod+Shift+Minus" = "master-count-decrease"
+# "Mod+Ctrl+1" = "column-move-to-workspace:1"
 # "Mod+Ctrl+Comma" = "workspace-move-up"
 # "Mod+Ctrl+Period" = "workspace-move-down"
 # "Mod+Ctrl+H" = "output-focus-left"
-# "Mod+Shift+O" = "dpms-off"        # input activity powers displays back on
-# "Mod+Ctrl+O" = "dpms-off:DP-1"   # target one connector
+# "Mod+Shift+O" = "dpms-off"        # new input wakes displays after all are off
+# "Mod+Ctrl+O" = "dpms-off:DP-1"   # stays off while another display is awake
 # "Mod+Minus" = "window-modify-width:-0.1"
 # "Mod+C" = "column-center"
 # "Mod+Shift+C" = "window-center"
@@ -343,6 +380,7 @@ default_size = [800, 600]
 # default_floating = true
 # default_focused = false
 # focus_on_activate = true
+# opacity = 0.95                 # bypassed while fullscreen, restored after leaving fullscreen
 # vrr = "always"                # override the output VRR policy while focused
 # tearing = true                 # force a tearing request; false vetoes the client hint
 # hdr = "fullscreen"            # override the output HDR policy while focused

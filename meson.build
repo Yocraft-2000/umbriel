@@ -109,6 +109,10 @@ if pkgconfig.found()
       'capture_sdr',
       prefix: '#include <scenefx/types/wlr_scene.h>',
       args: scenefx_cflags,
+    ) and cpp.has_header_symbol(
+      'scenefx/types/wlr_scene.h',
+      'wlr_scene_output_set_direct_scanout_enabled',
+      args: scenefx_cflags,
     )
   endif
 endif
@@ -127,6 +131,7 @@ else
     or not scenefx_header_source.contains('wlr_scene_output_set_sdr_white_level')
     or not scenefx_header_source.contains('wlr_scene_buffer_set_luminance_multiplier')
     or not scenefx_header_source.contains('capture_sdr')
+    or not scenefx_header_source.contains('wlr_scene_output_set_direct_scanout_enabled')
   )
     error('SceneFX submodule must provide Umbriel patched APIs')
   endif
@@ -172,6 +177,19 @@ layer_shell_client_c = custom_target(
   'wlr-layer-shell-unstable-v1-client-protocol.c',
   input: 'protocols/wlr-layer-shell-unstable-v1.xml',
   output: 'wlr-layer-shell-unstable-v1-client-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+foreign_toplevel_client_h = custom_target(
+  'wlr-foreign-toplevel-management-unstable-v1-client-protocol.h',
+  input: 'protocols/wlr-foreign-toplevel-management-unstable-v1.xml',
+  output: 'wlr-foreign-toplevel-management-unstable-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+foreign_toplevel_client_c = custom_target(
+  'wlr-foreign-toplevel-management-unstable-v1-client-protocol.c',
+  input: 'protocols/wlr-foreign-toplevel-management-unstable-v1.xml',
+  output: 'wlr-foreign-toplevel-management-unstable-v1-client-protocol.c',
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
@@ -224,6 +242,32 @@ color_management_server_c = custom_target(
   'color-management-v1-server-protocol.c',
   input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/color-management/color-management-v1.xml',
   output: 'color-management-v1-server-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+viewporter_client_h = custom_target(
+  'viewporter-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'stable/viewporter/viewporter.xml',
+  output: 'viewporter-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+viewporter_client_c = custom_target(
+  'viewporter-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'stable/viewporter/viewporter.xml',
+  output: 'viewporter-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+fractional_scale_client_h = custom_target(
+  'fractional-scale-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/fractional-scale/fractional-scale-v1.xml',
+  output: 'fractional-scale-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+fractional_scale_client_c = custom_target(
+  'fractional-scale-v1-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/fractional-scale/fractional-scale-v1.xml',
+  output: 'fractional-scale-v1-protocol.c',
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
@@ -326,12 +370,14 @@ pure_sources = files(
   'src/config/value_parse.cpp',
   'src/config/section.cpp',
   'src/input/modifier_tap.cpp',
+  'src/input/shortcut_keysym.cpp',
   'src/layout/layout.cpp',
   'src/layout/scrolling.cpp',
   'src/layout/dwindle.cpp',
   'src/layout/master.cpp',
   'src/output/direction.cpp',
   'src/scene/cheatsheet_rows.cpp',
+  'src/overview/shortcut_labels.cpp',
   'src/view/border_ring.cpp',
   'src/view/floating.cpp',
 )
@@ -462,6 +508,7 @@ unit_tests = [
   ['value-parse', ['tests/unit/value_parse.cpp'], []],
   ['keybind-parse', ['tests/unit/keybind_parse.cpp'], []],
   ['modifier-tap', ['tests/unit/modifier_tap.cpp'], []],
+  ['shortcut-keysym', ['tests/unit/shortcut_keysym.cpp'], []],
   ['output-direction', ['tests/unit/output_direction.cpp'], []],
   ['output-frame-schedule', ['tests/unit/output_frame_schedule.cpp'], []],
   ['hdr-format', ['tests/unit/hdr_format.cpp'], []],
@@ -469,6 +516,7 @@ unit_tests = [
   ['dwindle-layout', ['tests/unit/dwindle_layout.cpp'], []],
   ['master-layout', ['tests/unit/master_layout.cpp'], []],
   ['cheatsheet-rows', ['tests/unit/cheatsheet_rows.cpp'], []],
+  ['shortcut-labels', ['tests/unit/shortcut_labels.cpp'], []],
   ['border-ring', ['tests/unit/border_ring.cpp'], []],
   ['floating', ['tests/unit/floating.cpp'], []],
   ['maximize', ['tests/unit/maximize.cpp'], []],
@@ -537,6 +585,18 @@ workspace_client = executable(
   dependencies: [wayland_client_dep],
 )
 
+# Harness helper that checks the output membership advertised for a foreign
+# toplevel, including while its workspace is inactive.
+foreign_toplevel_client = executable(
+  'foreign-toplevel-client',
+  [
+    'tests/harness/clients/foreign_toplevel_client.cpp',
+    foreign_toplevel_client_h,
+    foreign_toplevel_client_c,
+  ],
+  dependencies: [wayland_client_dep],
+)
+
 # Harness helper that unmaps its toplevel on a close request without destroying
 # it, so the compositor keeps the View registered but unmapped.
 unmap_client = executable(
@@ -569,6 +629,23 @@ subsurface_client = executable(
   dependencies: [wayland_client_dep],
 )
 
+# Harness helper that renders one buffer at the preferred fractional scale and
+# publishes its logical size through wp_viewporter, the way a fractional-scale
+# aware toolkit does.
+fractional_client = executable(
+  'fractional-client',
+  [
+    'tests/harness/clients/fractional_client.cpp',
+    xdg_shell_client_h,
+    xdg_shell_client_c,
+    viewporter_client_h,
+    viewporter_client_c,
+    fractional_scale_client_h,
+    fractional_scale_client_c,
+  ],
+  dependencies: [wayland_client_dep],
+)
+
 # Harness helper that keeps an idle inhibitor attached to a mapped toplevel and
 # reports when the compositor starts honoring its idle notification.
 idle_inhibit_client = executable(
@@ -593,9 +670,11 @@ alias_target(
   layer_client,
   global_client,
   workspace_client,
+  foreign_toplevel_client,
   unmap_client,
   popup_client,
   subsurface_client,
+  fractional_client,
   idle_inhibit_client,
 )
 

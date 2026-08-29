@@ -39,7 +39,8 @@ namespace umbriel {
     }
   } // namespace
 
-  Output::Output(Server& server, wlr_output* output) : m_server(&server), m_output(output) {
+  Output::Output(Server& server, wlr_output* output)
+      : m_server(&server), m_output(output), m_defaultScale(output->scale) {
     m_output->data = this;
     wlr_output_init_render(m_output, m_server->allocator(), m_server->renderer());
 
@@ -61,6 +62,7 @@ namespace umbriel {
     applyCursorConfig();
     (void)applyConfiguredState();
     m_sceneOutput = wlr_scene_output_create(m_server->scene(), m_output);
+    wlr_scene_output_set_direct_scanout_enabled(m_sceneOutput, configuredDirectScanoutEnabled());
     updateSceneSdrWhite();
     if (configuredEnabled()) {
       wlr_output_layout_output* layoutOutput = addToLayout();
@@ -127,6 +129,11 @@ namespace umbriel {
     return rule != nullptr ? rule->sdrWhite : 203.0F;
   }
 
+  bool Output::configuredDirectScanoutEnabled() const {
+    const OutputRule* rule = findRule(m_output->name);
+    return rule == nullptr || rule->directScanout;
+  }
+
   bool Output::configuredTearingAllowed() const {
     const OutputRule* rule = findRule(m_output->name);
     return rule != nullptr && rule->allowTearing;
@@ -185,6 +192,10 @@ namespace umbriel {
     wlr_output_schedule_frame(m_output);
   }
 
+  void Output::applyDirectScanoutConfig() {
+    wlr_scene_output_set_direct_scanout_enabled(m_sceneOutput, configuredDirectScanoutEnabled());
+  }
+
   void Output::setHdrFallbackReason(std::string_view reason) {
     if (m_hdrFallbackReason == reason) {
       return;
@@ -216,6 +227,7 @@ namespace umbriel {
 
   bool Output::applyConfiguredState() {
     const OutputRule* rule = findRule(m_output->name);
+    const std::optional<double> configuredScale = rule != nullptr ? rule->scale : std::nullopt;
     const bool configured = configuredEnabled();
     const bool enabled = configured && !m_dpmsOff;
     wlr_output_state state{};
@@ -229,6 +241,7 @@ namespace umbriel {
 
     bool vrrRequested = false;
     bool vrrStaged = false;
+    bool scaleStaged = false;
     if (enabled) {
       if (rule != nullptr && rule->mode) {
         if (wlr_output_is_wl(m_output)) {
@@ -267,8 +280,12 @@ namespace umbriel {
         }
       }
 
-      if (rule != nullptr && rule->scale) {
-        wlr_output_state_set_scale(&state, static_cast<float>(*rule->scale));
+      if (configuredScale) {
+        wlr_output_state_set_scale(&state, static_cast<float>(*configuredScale));
+        scaleStaged = true;
+      } else if (m_appliedConfiguredScale) {
+        wlr_output_state_set_scale(&state, m_defaultScale);
+        scaleStaged = true;
       }
       if (rule != nullptr && rule->transform) {
         wlr_output_state_set_transform(&state, static_cast<wl_output_transform>(*rule->transform));
@@ -373,6 +390,9 @@ namespace umbriel {
     if (!committed) {
       kLog.error("output '{}': failed to commit configured state", m_output->name);
       return false;
+    }
+    if (enabled && scaleStaged) {
+      m_appliedConfiguredScale = configuredScale.has_value();
     }
     const bool hdrIsActive = hdrActive();
     if (hdrIsActive) {

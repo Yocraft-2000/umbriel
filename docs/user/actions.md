@@ -8,8 +8,10 @@ through `umbriel msg`. See [Keybinds](keybinds.md) for binding syntax.
 | Action | Parameter | Example |
 |--------|-----------|---------|
 | `spawn:<cmd>` | Shell command | `"spawn:kitty"` |
+| `submap:<name>` | Enter a named submap; `submap:reset` exits one level | `"submap:resize"` |
 | `workspace-switch:<ws>` | Workspace name, optionally `/<output>` | `"workspace-switch:3"`, `"workspace-switch:CHAT/HDMI-A-1"` |
 | `window-move-to-workspace:<ws>` | Same as above | `"window-move-to-workspace:2"` |
+| `column-move-to-workspace:<ws>` | Same as above; moves the focused window's whole column, except in master layout where it moves only the focused window | `"column-move-to-workspace:CHAT/HDMI-A-1"` |
 | `window-set-width:<frac>` | Fraction 0.1-1.0 | `"window-set-width:0.667"` |
 | `window-modify-width:<delta>` | Signed fraction -0.9..0.9; the resulting width clamps to 0.1..1.0 | `"window-modify-width:-0.2"` |
 | `workspace-set-layout:<scrolling\|dwindle\|master\|toggle>` | Switch the active workspace's layout at runtime; `toggle` cycles scrolling to dwindle to master to scrolling. The override remains until a config reload reasserts the configured mode. | `"workspace-set-layout:toggle"` |
@@ -29,12 +31,13 @@ selects that 1-based position on the preferred output. On a dynamic output, a
 number beyond the current workspace list selects the last workspace. Add
 `/output` to target another output explicitly.
 
-When `workspace-switch` targets a workspace on another monitor, the cursor warps
-to the center of that monitor, so focus follows the switch.
+When `workspace-switch`, `window-move-to-workspace`, or
+`column-move-to-workspace` targets another monitor, the cursor warps to that
+monitor's center so subsequent actions continue there.
 
 ## Window and layout actions
 
-These take no argument.
+Unless shown with a `:<parameter>` suffix below, these take no argument.
 
 ### Focus
 
@@ -53,14 +56,26 @@ These take no argument.
 - **At a column's output edge:** `window-focus-or-output-up`,
   `window-focus-or-output-down`. Move focus to the adjacent window, or to the
   output in that direction when already at the edge.
-- **Next window:** `window-focus-next`. Cycle focus to the next mapped window
-  on the active workspace.
+- **Next or previous window:** `window-focus-next`, `window-focus-previous`.
+  Cycle through tiled windows in layout order, then floating windows, with
+  wrapping in both directions.
+
+With `input.cursor.follows_focus` enabled, these navigation actions warp the
+cursor to the visible center of the selected window. This also applies to
+`window-focus-switch-floating`. Pointer-driven and automatic focus changes do
+not move the cursor. `window-focus:<id>` remains focus-only, while
+`window-focus-warp:<id>` always moves it.
 
 ### Moving windows and columns
 
-- **To the next or previous workspace:** `window-move-to-workspace-next`,
-  `window-move-to-workspace-previous`. Move the focused window to the adjacent
-  workspace and follow it. These actions do not wrap around.
+- **To a selected workspace:** `window-move-to-workspace:<ws>` moves the focused
+  window, while `column-move-to-workspace:<ws>` moves its whole column. Both
+  use the workspace selectors described above and follow the moved focus.
+- **To the next or previous workspace:** `window-move-to-workspace-next` and
+  `window-move-to-workspace-previous` move the focused window.
+  `column-move-to-workspace-next` and `column-move-to-workspace-previous` move
+  its whole column. All four follow the moved focus and do not wrap around.
+  In master layout, the column-scoped forms move only the focused window.
 - **A column within a row:** `column-move-left`, `column-move-right`. Move the
   focused window's column left or right.
 - **A column across an output edge:** `window-move-or-output-left`,
@@ -69,6 +84,13 @@ These take no argument.
 - **First or last column position:** `column-move-to-first`,
   `column-move-to-last`. Move the focused window's column to the first or last
   position in the workspace.
+- **Next or previous layout position:** `window-swap-next`,
+  `window-swap-previous`. Exchange the focused tiled window with its next or
+  previous layout-order neighbor, wrapping at both ends. Focus stays on the
+  moved window.
+- **Master count:** `master-count-increase` promotes the stack's top window to
+  the bottom of master. `master-count-decrease` demotes the bottom master window
+  to the top of the stack. The minimum master count is one.
 - **Within a column:** `window-move-up`, `window-move-down`. Move the focused
   window up or down within its column.
 - **Across a workspace boundary:** `window-move-or-workspace-up`,
@@ -83,8 +105,9 @@ These take no argument.
 
 ### Size, state, and viewport
 
-- **Column width:** `window-cycle-width`, `window-cycle-width-back`. Cycle the
-  focused column through its preset widths, forward or backward.
+- **Column width:** `window-modify-width:<delta>` changes the focused area's
+  width by a signed fraction. `window-cycle-width` and
+  `window-cycle-width-back` cycle through preset widths in either direction.
 - **Fullscreen:** `window-toggle-fullscreen`. Toggle fullscreen for the focused
   window.
 - **Column width state:** `window-toggle-maximize`. Toggle the focused column's
@@ -142,13 +165,23 @@ the trailing empty workspace, which becomes active as usual.
 `workspace-move-down` and `workspace-move-up` move the focused workspace up or down
 on the focused output. They do not wrap around either.
 
-The matching window actions can be bound independently:
+The matching window and column actions can be bound independently:
 
 ```toml
 [keybinds]
 "Mod+Shift+Comma" = "window-move-to-workspace-previous"
 "Mod+Shift+Period" = "window-move-to-workspace-next"
+"Mod+Ctrl+Page_Up" = "column-move-to-workspace-previous"
+"Mod+Ctrl+Page_Down" = "column-move-to-workspace-next"
 ```
+
+Whole-column moves between scrolling workspaces preserve member order and
+scrolling-layout state, including the column width, its full-width restore
+value, and stacked row proportions. Destination-moving column actions act like
+their matching window action when a floating window is focused because it has
+no tiled column.
+In master layout, column-scoped workspace moves transfer only the focused
+window because the master and stack areas are not movable columns.
 
 `window-center` centers the focused floating window on its output's usable
 area. It is a no-op while a tiled window is focused.
@@ -159,14 +192,15 @@ The directional output actions target the adjacent monitor:
 |--------|--------------|
 | `output-focus-left` / `output-focus-right` / `output-focus-up` / `output-focus-down` | Move focus to the adjacent monitor in that direction. |
 | `window-move-to-output-left` / `window-move-to-output-right` / `window-move-to-output-up` / `window-move-to-output-down` | Move the focused window to the adjacent monitor's active workspace. |
-| `column-move-to-output-left` / `column-move-to-output-right` / `column-move-to-output-up` / `column-move-to-output-down` | Move the focused window's whole column to the adjacent monitor's active workspace. |
+| `column-move-to-output-left` / `column-move-to-output-right` / `column-move-to-output-up` / `column-move-to-output-down` | Move the focused window's whole column to the adjacent monitor's active workspace. In master layout, move only the focused window. |
 | `workspace-move-to-output-left` / `workspace-move-to-output-right` / `workspace-move-to-output-up` / `workspace-move-to-output-down` | Move every window of the active workspace to the adjacent monitor, preserving column order and widths. |
 
 Directions do not wrap around: with no monitor in that direction the action
 fails with an IPC error ("no output to the left" and friends). The cursor warps
 to the center of the target monitor, so focus follows the action. Floating
 windows keep their relative position on the new monitor; a column moved onto a
-dwindle output flattens into single-window columns, the same as drag-and-drop.
+dwindle workspace flattens into single-window columns, whether it is moved by a
+workspace or output action, the same as drag-and-drop.
 
 ## Overview actions
 

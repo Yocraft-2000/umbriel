@@ -44,6 +44,7 @@ namespace umbriel {
     bool consumeLeft(View* view) override;
     bool expelRight(View* view) override;
     bool moveViewVertical(View* view, int direction) override;
+    bool swapViews(View* a, View* b) override;
     void removeView(View* view) override;
     void moveColumn(int from, int to) override;
     // Raw scroll mutation. `centeredRest` is true only when restoring a saved column-center resting position.
@@ -61,8 +62,9 @@ namespace umbriel {
     [[nodiscard]] double scrollAmountToEnsureVisible(int columnIndex, int viewportPrimary) const;
     void arrange(const wlr_box& usable) override;
     [[nodiscard]] wlr_box targetBox(const View* view) const override;
-    [[nodiscard]] InitialSize
-    initialSize(const wlr_box& usable, std::optional<double> ruleWidthFraction) const override;
+    [[nodiscard]] InitialSize initialSize(
+        const wlr_box& usable, std::optional<double> ruleWidthFraction, const View* /*splitAnchor*/
+    ) const override;
 
     bool cycleWidth(int columnIndex, int direction) override;
     bool toggleFullWidth(int columnIndex) override;
@@ -96,6 +98,7 @@ namespace umbriel {
     [[nodiscard]] int centeringOffset(int viewportPrimary) const;
     [[nodiscard]] double targetScrollForEnsureVisible(int columnIndex, int viewportPrimary, bool force = false) const;
     [[nodiscard]] bool vertical() const;
+    [[nodiscard]] bool expandSingleColumn() const;
     void syncHeightWeights(Column& column);
 
     std::vector<Column> m_columns;

@@ -5,6 +5,7 @@
 #include "core/log.h"
 #include "input/cursor.h"
 #include "layout/dwindle.h"
+#include "layout/master.h"
 #include "layout/scrolling.h"
 #include "output/output.h"
 #include "overview/overview.h"
@@ -106,6 +107,10 @@ namespace umbriel {
 
   DwindleLayout* Workspace::dwindleLayout() {
     return m_layoutMode == LayoutMode::Dwindle ? static_cast<DwindleLayout*>(m_layout.get()) : nullptr;
+  }
+
+  MasterStackLayout* Workspace::masterLayout() {
+    return m_layoutMode == LayoutMode::Master ? dynamic_cast<MasterStackLayout*>(m_layout.get()) : nullptr;
   }
 
   const ScrollingLayout* Workspace::scrollingLayout() const {
@@ -226,7 +231,18 @@ namespace umbriel {
     if (view == nullptr || !view->mapped() || !view->tiled() || m_layout->columnOf(view) >= 0) {
       return;
     }
-    const int focusedColumn = m_layout->columnOf(m_focusedView);
+    int focusedColumn = m_layout->columnOf(m_focusedView);
+    if (focusedColumn < 0 && m_group != nullptr) {
+      for (const auto& entry : m_group->server()->registry().all()) {
+        View* candidate = entry.get();
+        if (candidate != view && candidate->mapped() && candidate->tiled() && candidate->workspace() == this) {
+          focusedColumn = m_layout->columnOf(candidate);
+          if (focusedColumn >= 0) {
+            break;
+          }
+        }
+      }
+    }
     const int index = focusedColumn >= 0 ? focusedColumn + 1 : static_cast<int>(m_layout->columns().size());
     m_layout->insertView(view, index);
     if (ScrollingLayout* scrolling = scrollingLayout(); scrolling != nullptr) {
@@ -660,6 +676,68 @@ namespace umbriel {
     return nullptr;
   }
 
+  View* Workspace::cycleFocusTarget(int direction) const {
+    std::vector<View*> ring;
+    for (const Column& column : m_layout->columns()) {
+      ring.insert(ring.end(), column.views.begin(), column.views.end());
+    }
+    ring.insert(ring.end(), m_floatingStack.begin(), m_floatingStack.end());
+    if (ring.size() < 2) {
+      return nullptr;
+    }
+
+    const auto focused = std::ranges::find(ring, m_focusedView);
+    if (focused == ring.end()) {
+      return direction > 0 ? ring.front() : ring.back();
+    }
+    const auto index = static_cast<std::ptrdiff_t>(focused - ring.begin());
+    const auto count = static_cast<std::ptrdiff_t>(ring.size());
+    const auto target = (index + direction % count + count) % count;
+    return ring[static_cast<size_t>(target)];
+  }
+
+  bool Workspace::swapFocusedInCycle(int direction) {
+    std::vector<View*> ring;
+    for (const Column& column : m_layout->columns()) {
+      ring.insert(ring.end(), column.views.begin(), column.views.end());
+    }
+    if (ring.size() < 2) {
+      return false;
+    }
+
+    const auto focused = std::ranges::find(ring, m_focusedView);
+    if (focused == ring.end()) {
+      return false;
+    }
+    const auto index = static_cast<std::ptrdiff_t>(focused - ring.begin());
+    const auto count = static_cast<std::ptrdiff_t>(ring.size());
+    const auto target = (index + direction % count + count) % count;
+    if (!m_layout->swapViews(m_focusedView, ring[static_cast<size_t>(target)])) {
+      return false;
+    }
+    markArrange();
+    ensureFocusedVisible();
+    return true;
+  }
+
+  bool Workspace::increaseMasterCount() {
+    MasterStackLayout* master = masterLayout();
+    if (master == nullptr || !master->promoteFromStack()) {
+      return false;
+    }
+    markArrange();
+    return true;
+  }
+
+  bool Workspace::decreaseMasterCount() {
+    MasterStackLayout* master = masterLayout();
+    if (master == nullptr || !master->demoteToStack()) {
+      return false;
+    }
+    markArrange();
+    return true;
+  }
+
   bool Workspace::moveLaneAlongStrip(int direction) {
     View* destination = focusAlongStrip(direction);
     if (destination == nullptr) {
@@ -1046,6 +1124,16 @@ namespace umbriel {
     return result;
   }
 
+  Workspace* WorkspaceGroup::prependDynamicWorkspace() {
+    const std::string name = "1";
+    const char* outputName = m_output->wlr()->name != nullptr ? m_output->wlr()->name : "output";
+    ResolvedLayoutConfig layout = resolveWorkspaceLayout(config(), outputName, name, 0);
+    auto workspace = createConfiguredWorkspace({name, std::move(layout)}, 0);
+    Workspace* result = workspace.get();
+    m_workspaces.insert(m_workspaces.begin(), std::move(workspace));
+    return result;
+  }
+
   void WorkspaceGroup::refreshDynamicWorkspaceMetadata() {
     const char* outputName = m_output->wlr()->name != nullptr ? m_output->wlr()->name : "output";
     for (size_t index = 0; index < m_workspaces.size(); ++index) {
@@ -1096,25 +1184,29 @@ namespace umbriel {
     if (target < 0 || target >= static_cast<std::ptrdiff_t>(m_workspaces.size())) {
       return false;
     }
-    if (m_dynamic && direction > 0) {
-      const bool targetIsTrailingEmpty = static_cast<size_t>(target) == m_workspaces.size() - 1
-          && !m_workspaces[static_cast<size_t>(target)]->hasViews();
-      if (targetIsTrailingEmpty) {
-        return false;
+    if (m_dynamic) {
+      if (direction > 0) {
+        const bool targetIsTrailingEmpty = static_cast<size_t>(target) == m_workspaces.size() - 1
+            && !m_workspaces[static_cast<size_t>(target)]->hasViews();
+        if (targetIsTrailingEmpty) {
+          return false;
+        }
+      } else if (config().workspaces.emptyAbove) {
+        const bool targetIsLeadingEmpty = target == 0 && !m_workspaces[0]->hasViews();
+        if (targetIsLeadingEmpty) {
+          return false;
+        }
       }
     }
     slideFinish();
     std::swap(m_workspaces[index], m_workspaces[static_cast<size_t>(target)]);
     if (m_dynamic) {
-      refreshDynamicWorkspaceMetadata();
-      if (m_workspaces.back()->hasViews()) {
-        appendDynamicWorkspace();
-      }
-    } else {
-      for (const size_t slot : {index, static_cast<size_t>(target)}) {
-        Workspace* moved = m_workspaces[slot].get();
-        moved->rename(moved->name(), slot);
-      }
+      reconcileDynamic();
+      return true;
+    }
+    for (const size_t slot : {index, static_cast<size_t>(target)}) {
+      Workspace* moved = m_workspaces[slot].get();
+      moved->rename(moved->name(), slot);
     }
     if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
       overview->onWorkspaceInventoryChanged(this);
@@ -1129,27 +1221,7 @@ namespace umbriel {
     m_dynamic = resolvedSet.dynamic;
 
     if (m_dynamic) {
-      auto old = std::move(m_workspaces);
-      m_workspaces.clear();
-      m_workspaces.reserve(old.size() + 1);
-      for (auto& workspace : old) {
-        if (workspace != nullptr && (workspace->hasViews() || workspace.get() == m_active)) {
-          m_workspaces.push_back(std::move(workspace));
-        } else if (workspace.get() == m_previous) {
-          m_previous = nullptr;
-        }
-      }
-      old.clear();
-
-      if (m_workspaces.empty() || m_workspaces.back()->hasViews()) {
-        appendDynamicWorkspace();
-      }
-      for (size_t index = 0; index < m_workspaces.size(); ++index) {
-        m_workspaces[index]->rename(std::to_string(index + 1), index);
-      }
-      if (m_previous == m_active) {
-        m_previous = nullptr;
-      }
+      reconcileDynamic();
       kLog.info("reconciled {} to {} workspaces (0 windows relocated)", outputName, m_workspaces.size());
       return;
     }
@@ -1248,24 +1320,42 @@ namespace umbriel {
       return;
     }
 
-    // Dynamic groups keep exactly one empty workspace. Prefer an empty active workspace so closing its last window does
-    // not destroy the workspace the user is currently viewing; otherwise retain the last existing empty one to avoid
-    // replacing its protocol identity on every reconciliation.
-    Workspace* emptyKeeper = m_active != nullptr && !m_active->hasViews() ? m_active : nullptr;
-    if (emptyKeeper == nullptr && !m_workspaces.empty() && !m_workspaces.back()->hasViews()) {
-      emptyKeeper = m_workspaces.back().get();
+    // Dynamic groups keep one trailing empty workspace. Prefer an empty active workspace so closing its last window
+    // does not destroy the workspace the user is currently viewing; otherwise retain the existing trailing empty to
+    // avoid replacing its protocol identity on every reconciliation.
+    const bool emptyAbove = config().workspaces.emptyAbove;
+    Workspace* frontKeeper = nullptr;
+    if (emptyAbove && !m_workspaces.empty() && !m_workspaces.front()->hasViews()) {
+      frontKeeper = m_workspaces.front().get();
     }
+
+    // The optional leading empty and the trailing empty are distinct inventory entries, including before the first
+    // view maps. A leading empty therefore cannot also serve as the trailing keeper.
+    Workspace* backKeeper = nullptr;
+    if (m_active != nullptr && !m_active->hasViews() && m_active != frontKeeper) {
+      backKeeper = m_active;
+    }
+    if (backKeeper == nullptr
+        && !m_workspaces.empty()
+        && !m_workspaces.back()->hasViews()
+        && m_workspaces.back().get() != frontKeeper) {
+      backKeeper = m_workspaces.back().get();
+    }
+
     for (size_t index = m_workspaces.size(); index-- > 0;) {
       Workspace* workspace = m_workspaces[index].get();
-      if (!workspace->hasViews() && workspace != emptyKeeper) {
+      if (!workspace->hasViews() && workspace != backKeeper && workspace != frontKeeper) {
         if (m_previous == workspace) {
           m_previous = nullptr;
         }
         m_workspaces.erase(m_workspaces.begin() + static_cast<std::ptrdiff_t>(index));
       }
     }
-    if (emptyKeeper == nullptr) {
+    if (backKeeper == nullptr) {
       appendDynamicWorkspace();
+    }
+    if (emptyAbove && frontKeeper == nullptr) {
+      prependDynamicWorkspace();
     }
 
     refreshDynamicWorkspaceMetadata();

@@ -16,6 +16,7 @@
 // clang-format on
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -33,6 +34,11 @@ namespace umbriel {
   namespace {
 
     constexpr Logger kLog("config");
+
+    constexpr std::array<std::string_view, 7> kReservedEnvironmentNames{
+        "WAYLAND_DISPLAY",     "WAYLAND_SOCKET",      "DISPLAY",          "UMBRIEL_SOCKET",
+        "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "XDG_SESSION_TYPE",
+    };
 
     // Well past any real layout: a value this large already means "no limit".
     constexpr double kMaxFollowsMouseScroll = 100.0;
@@ -364,9 +370,11 @@ namespace umbriel {
               if (const auto direction = readScrollingDirection(sc, layoutContext + ".scrolling")) {
                 overrides.scrolling.direction = direction;
               }
+              sc.boolean("expand_single_column", overrides.scrolling.expandSingleColumn);
               sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
                   .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip);
             });
+            s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", overrides.dwindle.preserveSplit); });
             s.sub("master", [&](Section& sm) {
               if (const auto position = readMasterPosition(sm, layoutContext + ".master")) {
                 overrides.master.position = position;
@@ -795,7 +803,57 @@ namespace umbriel {
         s.real("zoom", 0.1, 0.75, loaded.overview.zoom)
             .boolean("background_blur", loaded.overview.backgroundBlur)
             .color("background_tint", loaded.overview.backgroundTint)
-            .color("workspace_background", loaded.overview.workspaceBackground);
+            .color("workspace_background", loaded.overview.workspaceBackground)
+            .boolean("shortcuts", loaded.overview.shortcuts);
+
+        if (const toml::node* badgeNode = s.take("badge_color")) {
+          const auto value = badgeNode->value<std::string>();
+          std::array<float, 4> parsed{};
+          if (!value) {
+            warnAt(badgeNode->source(), "ignoring overview.badge_color (expected color string)");
+          } else if (!parseColor(*value, parsed)) {
+            warnAt(badgeNode->source(), "ignoring overview.badge_color (invalid color '{}')", *value);
+          } else {
+            loaded.overview.badgeColor = parsed;
+          }
+        }
+
+        const toml::node* node = s.take("shortcut_keys");
+        if (node == nullptr) {
+          return;
+        }
+        const auto value = node->value<std::string>();
+        if (!value) {
+          warnAt(node->source(), "ignoring overview.shortcut_keys (expected string)");
+          return;
+        }
+        if (value->size() < 2) {
+          warnAt(node->source(), "ignoring overview.shortcut_keys (expected at least 2 characters)");
+          return;
+        }
+
+        std::string normalized;
+        normalized.reserve(value->size());
+        for (const unsigned char character : *value) {
+          if (character < 0x21 || character > 0x7E) {
+            warnAt(
+                node->source(), "ignoring overview.shortcut_keys (invalid character 0x{:02X})",
+                static_cast<unsigned int>(character)
+            );
+            return;
+          }
+          const char lowered =
+              character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a') : character;
+          if (normalized.contains(lowered)) {
+            warnAt(
+                node->source(), R"(ignoring overview.shortcut_keys (duplicate key "{}" ignoring ASCII case))",
+                static_cast<char>(character)
+            );
+            return;
+          }
+          normalized.push_back(lowered);
+        }
+        loaded.overview.shortcutKeys = *value;
       });
     }
 
@@ -842,9 +900,11 @@ namespace umbriel {
           if (const auto direction = readScrollingDirection(sc, "layout.scrolling")) {
             loaded.layout.scrolling.direction = *direction;
           }
+          sc.boolean("expand_single_column", loaded.layout.scrolling.expandSingleColumn);
           sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
               .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip);
         });
+        s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", loaded.layout.dwindle.preserveSplit); });
         s.sub("master", [&](Section& sm) {
           if (const auto position = readMasterPosition(sm, "layout.master")) {
             loaded.layout.master.position = *position;
@@ -855,7 +915,10 @@ namespace umbriel {
     }
 
     void readWorkspaceSettings(Section& root, Config& loaded) {
-      root.sub("workspaces", [&](Section& s) { s.boolean("back_and_forth", loaded.workspaces.backAndForth); });
+      root.sub("workspaces", [&](Section& s) {
+        s.boolean("back_and_forth", loaded.workspaces.backAndForth)
+            .boolean("empty_above", loaded.workspaces.emptyAbove);
+      });
     }
 
     void readGeneral(Section& root, Config& loaded) {
@@ -891,7 +954,32 @@ namespace umbriel {
     }
 
     void readEnvironment(Section& root, Config& loaded) {
-      root.sub("environment", [&](Section& s) { s.eachString(loaded.environment.variables); });
+      root.sub("environment", [&](Section& s) {
+        s.freeform();
+        std::vector<std::pair<std::string, std::string>> parsed;
+        parsed.reserve(s.table().size());
+        for (const auto& [key, value] : s.table()) {
+          const auto entry = value.value<std::string>();
+          if (!entry) {
+            warnAt(value.source(), "ignoring environment.{} (expected string)", key.str());
+            continue;
+          }
+          if (!isEnvironmentVariableName(key.str())) {
+            warnAt(key.source(), R"(ignoring environment key "{}" (expected [A-Za-z_][A-Za-z0-9_]*))", key.str());
+            continue;
+          }
+          if (std::ranges::find(kReservedEnvironmentNames, key.str()) != kReservedEnvironmentNames.end()) {
+            warnAt(key.source(), "ignoring environment.{} (reserved by Umbriel)", key.str());
+            continue;
+          }
+          if (entry->contains('\0')) {
+            warnAt(value.source(), "ignoring environment.{} (value contains NUL)", key.str());
+            continue;
+          }
+          parsed.emplace_back(std::string(key.str()), *entry);
+        }
+        loaded.environment.variables = std::move(parsed);
+      });
     }
 
     bool validateKeyboardInput(
@@ -981,7 +1069,8 @@ namespace umbriel {
             .integer("repeat_delay", 0, 10000, device.repeatDelay)
             .boolean("tap", device.tap)
             .boolean("natural_scroll", device.naturalScroll)
-            .real("sensitivity", -1.0, 1.0, device.sensitivity);
+            .real("sensitivity", -1.0, 1.0, device.sensitivity)
+            .boolean("disable_while_typing", device.disableWhileTyping);
         device.accelProfile = readAccelProfile(keys, "accel_profile", "input.device");
 
         if (!validName) {
@@ -1036,7 +1125,9 @@ namespace umbriel {
         s.sub("touchpad", [&](Section& t) {
           t.boolean("tap", in.touchpad.tap)
               .boolean("natural_scroll", in.touchpad.naturalScroll)
-              .real("sensitivity", -1.0, 1.0, in.touchpad.sensitivity);
+              .real("sensitivity", -1.0, 1.0, in.touchpad.sensitivity)
+              .real("scroll_factor", 0.1, 10.0, in.touchpad.scrollFactor)
+              .boolean("disable_while_typing", in.touchpad.disableWhileTyping);
           in.touchpad.accelProfile = readAccelProfile(t, "accel_profile", "input.touchpad");
         });
         s.sub("mouse", [&](Section& m) {
@@ -1059,6 +1150,7 @@ namespace umbriel {
           c.text("theme", in.cursor.theme)
               .integer("size", 1, 512, in.cursor.size)
               .boolean("hardware_cursor", in.cursor.hardwareCursor)
+              .boolean("follows_focus", in.cursor.followsFocus)
               .boolean("hide_when_typing", in.cursor.hideWhenTyping)
               .integer("hide_timeout_ms", 0, 3600000, in.cursor.hideTimeoutMs);
         });
@@ -1100,7 +1192,9 @@ namespace umbriel {
         }
         OutputRule rule;
         rule.name = name;
-        keys.boolean("enabled", rule.enabled).boolean("tearing", rule.allowTearing);
+        keys.boolean("enabled", rule.enabled)
+            .boolean("tearing", rule.allowTearing)
+            .boolean("direct_scanout", rule.directScanout);
         if (const toml::node* workspacesNode = keys.take("workspaces")) {
           if (const auto count = workspacesNode->value<std::int64_t>()) {
             if (*count < 1 || *count > static_cast<std::int64_t>(kMaxWorkspaces)) {
@@ -1256,6 +1350,8 @@ namespace umbriel {
       for (const auto& [key, entry] : *section) {
         const std::string chord(key.str());
         std::string actionStr;
+        std::string submapAfter;
+        bool hasSubmapAfter = false;
         bool repeatBind = true;
         bool allowWhenLocked = false;
 
@@ -1265,6 +1361,9 @@ namespace umbriel {
           // bad action must not also be told its `repeat` key is unknown.
           bind.boolean("repeat", repeatBind);
           bind.boolean("allow_when_locked", allowWhenLocked);
+          const toml::node* submapNode = bind.node("submap");
+          hasSubmapAfter = submapNode != nullptr && submapNode->is_string();
+          bind.text("submap", submapAfter);
           const toml::node* actionNode = bind.take("action");
           if (actionNode == nullptr) {
             warnAt(entry.source(), "ignoring keybind '{}' (table needs an 'action' string)", chord);
@@ -1285,6 +1384,14 @@ namespace umbriel {
           actionStr = *value;
         }
 
+        if (hasSubmapAfter && !validSubmapName(submapAfter)) {
+          warnAt(
+              entry.source(),
+              "ignoring keybind '{}' (submap must be a non-empty name without ']' and may not be 'disable')", chord
+          );
+          continue;
+        }
+
         Keybind binding;
         if (!parseChord(chord, binding)) {
           if (binding.keysym != XKB_KEY_NoSymbol && binding.modifiers == 0 && !binding.useMod) {
@@ -1294,7 +1401,10 @@ namespace umbriel {
           }
           continue;
         }
-        binding.repeat = binding.modifierOnly ? false : repeatBind;
+        if (hasSubmapAfter) {
+          binding.submapAfter = SubmapArg{.name = std::move(submapAfter)};
+        }
+        binding.repeat = repeatBind && !binding.modifierOnly && !binding.submapAfter.has_value();
         binding.allowWhenLocked = allowWhenLocked;
         if (!parseAction(actionStr, binding)) {
           warnAt(key.source(), "ignoring keybind '{}' (unknown action '{}')", chord, actionStr);

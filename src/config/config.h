@@ -49,8 +49,13 @@ namespace umbriel {
       std::optional<double> defaultWidthFraction;
       std::optional<bool> centerUnderfullStrip;
       std::optional<ScrollingDirection> direction;
+      std::optional<bool> expandSingleColumn;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
+    struct Dwindle {
+      std::optional<bool> preserveSplit;
+      bool operator==(const Dwindle&) const = default;
+    } dwindle;
     struct Master {
       std::optional<double> defaultWidthFraction;
       std::optional<MasterPosition> position;
@@ -79,8 +84,13 @@ namespace umbriel {
       bool centerUnderfullStrip = true;
       // Axis-agnostic layout state is preserved when config reload changes direction.
       ScrollingDirection direction = ScrollingDirection::Horizontal;
+      bool expandSingleColumn = false;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
+    struct Dwindle {
+      bool preserveSplit = false;
+      bool operator==(const Dwindle&) const = default;
+    } dwindle;
     struct Master {
       double defaultWidthFraction = 0.55;
       MasterPosition position = MasterPosition::Left;
@@ -157,6 +167,8 @@ namespace umbriel {
     // Global safety gate. Even a client async hint or a window-rule override
     // cannot request tearing unless the owning output enables it.
     bool allowTearing = false;
+    // Allow eligible fullscreen buffers to bypass composition on this output.
+    bool directScanout = true;
     HdrMode hdr = HdrMode::Off;
     float sdrWhite = 203.0F;
     // Explicit workspace inventory. Omitted means dynamic workspaces.
@@ -433,6 +445,13 @@ namespace umbriel {
       std::array<float, 4> backgroundTint{0.0627451F, 0.0627451F, 0.0784314F, 0.1882353F};
       // Rounded background behind each workspace; alpha controls opacity.
       std::array<float, 4> workspaceBackground{0.0F, 0.0F, 0.0F, 0.2666667F};
+      // Keyboard shortcut badges on overview cards. Pressing a badge key focuses
+      // that window and closes the overview.
+      bool shortcuts = true;
+      // Favorite badge keys in preference order, one ASCII character each.
+      std::string shortcutKeys = "1234567890";
+      // Badge accent override. Unset follows colors.accent_primary.
+      std::optional<std::array<float, 4>> badgeColor;
       bool operator==(const Overview&) const = default;
     } overview;
 
@@ -457,8 +476,13 @@ namespace umbriel {
         std::optional<double> defaultWidthFraction;
         bool centerUnderfullStrip = true;
         ScrollingDirection direction = ScrollingDirection::Horizontal;
+        bool expandSingleColumn = false;
         bool operator==(const Scrolling&) const = default;
       } scrolling;
+      struct Dwindle {
+        bool preserveSplit = false;
+        bool operator==(const Dwindle&) const = default;
+      } dwindle;
       struct Master {
         double defaultWidthFraction = 0.55;
         MasterPosition position = MasterPosition::Left;
@@ -475,6 +499,7 @@ namespace umbriel {
     struct Workspaces {
       // Re-selecting the active workspace jumps back to the previous one.
       bool backAndForth = false;
+      bool emptyAbove = false;
       bool operator==(const Workspaces&) const = default;
     } workspaces;
 
@@ -495,7 +520,7 @@ namespace umbriel {
     } general;
 
     struct Environment {
-      // Ordered list of NAME=value pairs exported to the compositor process.
+      // Ordered NAME=value pairs exported to the compositor and the native session's systemd user manager.
       std::vector<std::pair<std::string, std::string>> variables;
       bool operator==(const Environment&) const = default;
     } environment;
@@ -523,6 +548,8 @@ namespace umbriel {
         std::optional<bool> naturalScroll;
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
+        std::optional<double> scrollFactor;
+        std::optional<bool> disableWhileTyping;
         bool operator==(const Touchpad&) const = default;
       } touchpad;
 
@@ -538,6 +565,8 @@ namespace umbriel {
         std::string theme;
         int size = 24;
         bool hardwareCursor = true;
+        // Warp to the window selected by explicit focus-navigation actions.
+        bool followsFocus = false;
         bool hideWhenTyping = false;
         // Milliseconds without pointer activity before hiding the cursor. Zero disables it.
         int hideTimeoutMs = 0;
@@ -573,6 +602,7 @@ namespace umbriel {
         std::optional<bool> naturalScroll;
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
+        std::optional<bool> disableWhileTyping;
         bool operator==(const Device&) const = default;
       };
 
