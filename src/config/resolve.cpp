@@ -170,12 +170,12 @@ namespace umbriel {
 
     for (const auto& rule : config.windowRules) {
       if (!rule.appIdPattern.empty()) {
-        if (appIdView.empty() || !std::regex_search(appIdView.begin(), appIdView.end(), rule.appIdRegex)) {
+        if (appId == nullptr || !std::regex_search(appIdView.begin(), appIdView.end(), rule.appIdRegex)) {
           continue;
         }
       }
       if (!rule.titlePattern.empty()) {
-        if (titleView.empty() || !std::regex_search(titleView.begin(), titleView.end(), rule.titleRegex)) {
+        if (title == nullptr || !std::regex_search(titleView.begin(), titleView.end(), rule.titleRegex)) {
           continue;
         }
       }
