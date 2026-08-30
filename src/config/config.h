@@ -573,6 +573,12 @@ namespace umbriel {
       bool operator==(const Environment&) const = default;
     } environment;
 
+    struct Events {
+      std::string lidClose;
+      std::string lidOpen;
+      bool operator==(const Events&) const = default;
+    } events;
+
     struct Input {
       // Advertise and accept the primary-selection clipboard used for
       // middle-click paste.
