@@ -1258,12 +1258,12 @@ namespace umbriel {
     if (event->switch_state == WLR_SWITCH_STATE_ON) {
       kLog.info("lid closed");
       if (!config().events.lidClose.empty()) {
-        server->spawn(config().events.lidClose.c_str(), "events.lid-close");
+        server->spawn(config().events.lidClose.c_str(), "events.lid_close");
       }
     } else {
       kLog.info("lid opened");
       if (!config().events.lidOpen.empty()) {
-        server->spawn(config().events.lidOpen.c_str(), "events.lid-open");
+        server->spawn(config().events.lidOpen.c_str(), "events.lid_open");
       }
     }
   }

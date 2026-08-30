@@ -30,8 +30,8 @@ honor_restored_maximize = false # let apps restore their saved maximized state
 
 # Defines commands that are executed when the laptop lid is closed or opened.
 # [events]
-# lid-close = "notify-send 'The laptop lid is closed !'"
-# lid-open = "notify-send 'The laptop lid is open !'"
+# lid_close = "notify-send 'The laptop lid is closed!'"
+# lid_open = "notify-send 'The laptop lid is open!'"
 
 [workspaces]
 back_and_forth = false

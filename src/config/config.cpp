@@ -1017,7 +1017,7 @@ namespace umbriel {
 
     void readEvents(Section& root, Config& loaded) {
       root.sub("events", [&](Section& s) {
-        s.text("lid-close", loaded.events.lidClose).text("lid-open", loaded.events.lidOpen);
+        s.text("lid_close", loaded.events.lidClose).text("lid_open", loaded.events.lidOpen);
       });
     }
 

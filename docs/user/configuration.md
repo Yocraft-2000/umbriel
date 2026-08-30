@@ -109,8 +109,8 @@ applications such as Steam if they survived the session restart.
 
 ```toml
 [events]
-lid-close = "notify-send 'The laptop lid is closed !'"
-lid-open = "notify-send 'The laptop lid is open !'"
+lid_close = "notify-send 'The laptop lid is closed!'"
+lid_open = "notify-send 'The laptop lid is open!'"
 ```
 
 Defines commands that are executed when the laptop lid is closed or opened.
