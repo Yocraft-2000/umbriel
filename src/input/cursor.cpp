@@ -1774,6 +1774,9 @@ namespace umbriel {
       return;
     }
     m_server->hideInsertHint();
+    if (config().input.windowDragToggle == WindowDragToggle::None) {
+      return;
+    }
 
     if (auto* grab = std::get_if<TiledMoveGrab>(&m_grab)) {
       View* view = grab->view;
@@ -1787,7 +1790,11 @@ namespace umbriel {
         }
         view->enterDragPresentation();
       }
-      view->setFloating(true, false);
+      if (config().input.windowDragToggle == WindowDragToggle::Pinned) {
+        view->setPinned(true, false);
+      } else {
+        view->setFloating(true, false);
+      }
       // Preserve the cursor's relative position within the window across the size change
       const std::array<int, 2> floatSize = view->floatingSize();
       const wlr_box& geo = view->toplevel()->base->geometry;
@@ -1812,7 +1819,11 @@ namespace umbriel {
     }
 
     Workspace* workspace = view->workspace();
-    view->setFloating(false, false);
+    if (config().input.windowDragToggle == WindowDragToggle::Pinned) {
+      view->setPinned(false, false);
+    } else {
+      view->setFloating(false, false);
+    }
     int sourceColumn = -1;
     std::optional<DropColumnWidth> sourceWidth = std::nullopt;
     if (workspace != nullptr) {
