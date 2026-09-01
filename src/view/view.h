@@ -349,6 +349,7 @@ namespace umbriel {
     void resizeFloating(int width, int height);
     void finishFloatingResize();
     void syncFloatingResizePosition();
+    void presentFloatingResizeSize(int width, int height);
     void adoptFloatingClientSize();
     void placeInUsableArea(const std::optional<WindowPosition>& position = std::nullopt);
     void setPinned(bool pinned, bool focus);
