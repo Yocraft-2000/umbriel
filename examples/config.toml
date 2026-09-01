@@ -239,7 +239,8 @@ new_on_top = true             # place new windows at the top of the stack
 # Input ----------------------------------------------------------------------
 
 [input]
-middle_click_paste = true      # primary-selection clipboard, applies on reload
+middle_click_paste = true       # primary-selection clipboard, applies on reload
+window_drag_toggle = "floating" # "none", "floating" or "pinned"
 
 [input.keyboard]
 # ASCII keybind fallback uses only layouts listed for this keyboard; a single
