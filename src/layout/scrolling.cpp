@@ -103,6 +103,26 @@ namespace umbriel {
       return false;
     }
 
+    int primaryStrutBefore(const Layout& layout) {
+      const auto& struts = layout.layoutConfig()->struts;
+      const bool vertical = layout.layoutConfig()->scrolling.direction == ScrollingDirection::Vertical;
+      return vertical ? struts.top : struts.left;
+    }
+
+    int primaryStrutAfter(const Layout& layout) {
+      const auto& struts = layout.layoutConfig()->struts;
+      const bool vertical = layout.layoutConfig()->scrolling.direction == ScrollingDirection::Vertical;
+      return vertical ? struts.bottom : struts.right;
+    }
+
+    int columnBleedBefore(const Column& column, const Layout& layout) {
+      return columnFillsViewport(column, layout) ? primaryStrutBefore(layout) : 0;
+    }
+
+    int columnBleedAfter(const Column& column, const Layout& layout) {
+      return columnFillsViewport(column, layout) ? primaryStrutAfter(layout) : 0;
+    }
+
   } // namespace
 
   bool ScrollingLayout::vertical() const { return m_config->scrolling.direction == ScrollingDirection::Vertical; }
@@ -335,7 +355,11 @@ namespace umbriel {
     const int gap = m_config->totalGap;
     int x = centeringOffset(viewportPrimary);
     for (int i = 0; i < end; ++i) {
-      x += columnWidth(i, viewportPrimary) + gap;
+      const Column& column = m_columns[static_cast<size_t>(i)];
+      x += columnBleedBefore(column, *this) + columnWidth(i, viewportPrimary) + gap + columnBleedAfter(column, *this);
+    }
+    if (columnIndex >= 0 && columnIndex < static_cast<int>(m_columns.size())) {
+      x += columnBleedBefore(m_columns[static_cast<size_t>(columnIndex)], *this);
     }
     return x;
   }
@@ -347,7 +371,11 @@ namespace umbriel {
     const int gap = m_config->totalGap;
     int total = -gap;
     for (size_t i = 0; i < m_columns.size(); ++i) {
-      total += columnWidth(static_cast<int>(i), viewportPrimary) + gap;
+      const Column& column = m_columns[i];
+      total += columnBleedBefore(column, *this)
+          + columnWidth(static_cast<int>(i), viewportPrimary)
+          + gap
+          + columnBleedAfter(column, *this);
     }
     return std::max(0, total);
   }
@@ -628,10 +656,13 @@ namespace umbriel {
     }
     // A stack losing one row leaves the horizontal geometry alone; only the
     // last view out takes the column, and the space, with it.
-    if (m_columns[static_cast<size_t>(columnIndex)].views.size() != 1) {
+    const Column& column = m_columns[static_cast<size_t>(columnIndex)];
+    if (column.views.size() != 1) {
       return 0.0;
     }
-    const double span = static_cast<double>(columnWidth(columnIndex, viewportPrimary)) + m_config->totalGap;
+    const double span = static_cast<double>(columnWidth(columnIndex, viewportPrimary))
+        + m_config->totalGap
+        + columnBleedAfter(column, *this);
     const double hidden = m_scroll - static_cast<double>(columnX(columnIndex, viewportPrimary));
     return std::clamp(hidden, 0.0, span);
   }
@@ -667,15 +698,16 @@ namespace umbriel {
     int runningColumnX = centeringOffset(viewportPrimary);
     for (size_t columnIndex = 0; columnIndex < m_columns.size(); ++columnIndex) {
       Column& column = m_columns[columnIndex];
+      runningColumnX += columnBleedBefore(column, *this);
       const int primarySize = columnWidth(static_cast<int>(columnIndex), viewportPrimary);
       if (column.views.empty()) {
-        runningColumnX += primarySize + gap;
+        runningColumnX += primarySize + gap + columnBleedAfter(column, *this);
         continue;
       }
       ensureWeightCount(column);
       const int primary =
           (v ? usable.y : usable.x) + edgePad + runningColumnX - static_cast<int>(std::lround(m_scroll));
-      runningColumnX += primarySize + gap;
+      runningColumnX += primarySize + gap + columnBleedAfter(column, *this);
       const int rowCount = static_cast<int>(column.views.size());
       const int gapsTotal = std::max(0, rowCount - 1) * gap;
       const int stackCross = std::max(rowCount, availableCross - gapsTotal);
