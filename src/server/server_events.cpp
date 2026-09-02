@@ -1054,9 +1054,7 @@ namespace umbriel {
     m_sessionLocked = false;
     updateIdleInhibit();
     wlr_scene_node_set_enabled(&m_lockBlank->node, false);
-    if (View* recent = m_registry.mostRecent()) {
-      focusView(recent);
-    }
+    refocus();
   }
 
   void Server::removeSessionLock(SessionLock* lock) {
