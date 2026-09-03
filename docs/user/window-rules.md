@@ -69,7 +69,7 @@ opening settings do not overwrite user changes made in the meantime.
 | `default_maximize_to_edges` | bool | Explicitly open maximized to edges. The initial configure fills the usable area without layout struts, gaps, or borders, so the window does not open at its normal size first. Layer-shell exclusive zones stay visible. Takes precedence over `default_maximize`; when combined with `default_fullscreen` the window opens fullscreen and returns to maximized to edges once fullscreen is cleared. |
 | `default_focused` | bool | Take focus when opening, switching to the window's workspace when needed. Defaults to `true`; set to `false` to preserve the existing focus and workspace. |
 | `default_pinned` | bool | Open pinned above regular windows and keep the window visible across workspace changes. Pinning makes a tiled window floating. |
-| `default_size` | `[w,h]` | Initial size in pixels, clamped to the client's min/max hints. Floats use both, then own their size and honor client resizes; tiled windows ignore height. Takes precedence over `default_width`/`default_height` when set. |
+| `default_size` | `[w,h]` | Initial size in pixels, clamped to the client's min/max hints. Floats use both, then own their size and honor client resizes. A new tiled column in a horizontal scrolling layout uses the width and ignores the height; vertical scrolling, dwindle, and master use their layout geometry. Takes precedence over `default_width`/`default_height` when set. |
 | `default_width` | float | Initial extent as a fraction (0.1-1.0): usable-area width for floating windows, or scrolling-axis extent for tiled windows in the scrolling layout. Overrides `layout.scrolling.default_width_fraction`; ignored by tiled windows in dwindle and master. |
 | `default_height` | float | Floating windows only, on the same terms as `default_width`. Initial height as a fraction (0.1-1.0) of the usable area. Ignored for tiled windows. |
 | `default_position` | table | Floating windows only, initial position: `{ x = int, y = int, anchor = string }`. Ignored for tiled windows. |
@@ -84,8 +84,11 @@ honored.
 
 Scrolling extents are gap-aware, so lanes whose fractions sum to `1` exactly
 fill the viewport. A vertical scrolling workspace applies the fraction to lane
-height. Moving the lane within or between scrolling workspaces retains its
-current fraction.
+height. For a new horizontal column, a matching `default_size` width takes
+precedence over `default_width` and the configured scrolling default. Existing
+named columns keep their established width. The pixel width seeds a fraction of
+the opening viewport, and moving the lane within or between scrolling
+workspaces retains its current fraction.
 
 If neither `default_width` nor a matching
 `layout.scrolling.default_width_fraction` is set, a scrolling window chooses
@@ -199,7 +202,7 @@ sets the column width. `default_scrolling_column_order` has no effect without
 | `blur` | bool | Enable/disable blur for this window. |
 | `blur_popups` | bool | Enable/disable blur for its XDG popups. |
 | `blur_ignore_alpha` | float | Skip blur where surface alpha is below this threshold (0.0-1.0). Applies to the window and its popups. |
-| `blur_optimized` | bool | Override `appearance.blur.optimized` for this window. |
+| `blur_optimized` | bool | Override `appearance.blur.optimized` for this window. A `true` value keeps the cached background blur alive on every output even when the global switch is off. |
 | `focus_on_activate` | bool | Override `general.focus_on_activate` for activation requests targeting this window, including trusted launch tokens. `false` vetoes trusted activation focus and marks an otherwise unfocused target urgent. An untrusted request cannot suppress the window's normal `default_focused` map behavior. |
 | `vrr` | string | Override the focused window's output VRR policy: `"disabled"`, `"always"`, or `"fullscreen"`. Without this key, the output's configured `vrr` policy applies. |
 | `tearing` | bool | Override the client's tearing hint. Omit it to follow the hint, set `true` to request asynchronous presentation, or set `false` to veto it. The output must still opt in with `tearing = true`, and the window must be fullscreen. |

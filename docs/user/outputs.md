@@ -65,19 +65,44 @@ workspaces = 5
 
 ## Settings
 
-| Key              | Type                              | Default      | Description                                                                                                                                         |
-| ---------------- | --------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`        | bool                              | `true`       | Set to `false` to turn the monitor off and remove it from the desktop.                                                                              |
-| `mode`           | string                            | (native)     | Resolution and refresh rate: `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@HZ"`. Fractional Hz allowed. Ignored in nested sessions (the parent controls size). |
-| `position`       | `[x, y]`                          | (auto)       | Top-left corner in logical layout coordinates. Omit for automatic placement.                                                                        |
-| `scale`          | float                             | `1.0`        | Output scale (0.25-4.0).                                                                                                                            |
-| `vrr`            | string                            | `"disabled"` | Variable refresh rate policy: `"disabled"`, `"always"`, or `"fullscreen"`.                                                                          |
-| `tearing`        | bool                              | `false`      | Permit asynchronous page flips for eligible fullscreen windows on this output.                                                                      |
-| `direct_scanout` | bool                              | `true`       | Permit eligible client buffers to bypass composition on this output. Set to `false` to always composite.                                            |
-| `hdr`            | string                            | `"off"`      | HDR policy: `"off"`, `"on"`, `"auto"`, or `"fullscreen"`.                                                                                           |
-| `sdr_white`      | float                             | `203`        | SDR reference white in cd/m2 while the output is in HDR mode (80-1000).                                                                             |
-| `workspaces`     | int, string array, or `"dynamic"` | `"dynamic"`  | Dynamic numbered workspaces, a static count from 1 to 64, or a static ordered list of 1 to 64 names.                                                |
-| `transform`      | string                            | `"normal"`   | Output rotation/flip.                                                                                                                               |
+| Key                                          | Type                              | Default     | Description                                                                                                                                         |
+| -------------------------------------------- | --------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                                    | bool                              | `true`      | Set to `false` to turn the monitor off and remove it from the desktop.                                                                              |
+| `mode`                                       | string                            | (native)    | Resolution and refresh rate: `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@HZ"`. Fractional Hz allowed. Ignored in nested sessions (the parent controls size). |
+| `position`                                   | `[x, y]`                          | (auto)      | Top-left corner in logical layout coordinates. Omit for automatic placement.                                                                        |
+| `scale`                                      | float                             | `1.0`       | Output scale (0.25-4.0).                                                                                                                            |
+| `vrr`                                        | string                            | `"disabled"` | Variable refresh rate policy: `"disabled"`, `"always"`, or `"fullscreen"`.                                                                          |
+| `tearing`                                    | bool                              | `false`     | Permit asynchronous page flips for eligible fullscreen windows on this output.                                                                      |
+| `direct_scanout`                             | bool                              | `true`      | Permit eligible client buffers to bypass composition on this output. Set to `false` to always composite.                                            |
+| `hdr`                                        | string                            | `"off"`     | HDR policy: `"off"`, `"on"`, `"auto"`, or `"fullscreen"`.                                                                                           |
+| `sdr_white`                                  | float                             | `203`       | SDR reference white in cd/m2 while the output is in HDR mode (80-1000).                                                                             |
+| `workspaces`                                 | int, string array, or `"dynamic"` | `"dynamic"` | Dynamic numbered workspaces, a static count from 1 to 64, or a static ordered list of 1 to 64 names.                                                |
+| `transform`                                  | string                            | `"normal"`  | Output rotation/flip.                                                                                                                               |
+| `layout.scrolling.default_width_fraction`    | float                             | inherited   | Initial scrolling strip-axis extent for new columns on this output (0.1-1.0). Inherits the global value when omitted.                               |
+
+### Initial scrolling width
+
+Override the global initial scrolling width for every workspace on one output:
+
+```toml
+[output.DP-1.layout.scrolling]
+default_width_fraction = 0.4
+```
+
+The output name uses the same connector or monitor identity matching as the
+rest of its section. If connector and monitor sections both match, the monitor
+section wins, including for this value.
+
+A matching workspace rule can override the output value. Resolution proceeds
+from the global value, to the matching output value, to an unscoped workspace
+rule, and finally to an output-scoped workspace rule. See
+[Workspace rules](workspaces.md#workspace-rules).
+
+This setting controls initial width only. Reloading it leaves existing columns
+at their stored widths, while columns created afterward use the new value.
+Moving an existing column onto this output also preserves that column's width.
+See [Scrolling behavior](layout.md#scrolling-behavior) for window-rule and
+column-creation details.
 
 ### Position and scale
 
@@ -247,6 +272,9 @@ sdr_white = 203
 Switching between SDR and HDR changes the output format, color space, and HDR
 metadata. Many monitors briefly go black while their display link resynchronizes.
 This is expected for each automatic or fullscreen transition.
+PQ HDR output encoding requires fragment `highp` precision to preserve smooth
+gradients in the 10-bit output. OpenGL ES 2 implementations without fragment
+`highp` cannot initialize Umbriel's output shader.
 
 While an HDR output is active, screencopy clients such as `grim` and Noctalia
 receive an SDR Gamma 2.2 view instead of PQ-encoded output pixels. This keeps

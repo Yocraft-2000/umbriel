@@ -2,7 +2,7 @@
 # Horizontal overview cards may extend beyond the scaled workspace background while remaining inside the output.
 set -euo pipefail
 
-readonly CLIENT="${UMBRIEL_UNMAP_CLIENT:-./build-debug/unmap-client}"
+readonly CLIENT="${UMBRIEL_UNMAP_CLIENT:-./build-debug/tests/unmap-client}"
 readonly SCREENSHOT="$UMBRIEL_RUNTIME_DIR/horizontal-overview-overflow.png"
 
 spawn_client() {
@@ -24,16 +24,20 @@ cat >> "$UMBRIEL_CONFIG" <<'EOF'
 [animation.overview]
 duration_ms = 1000
 
+[colors]
+backdrop = "#000000FF"
+
+[colors.overview]
+background_tint = "#000000FF"
+workspace_background = "#000000FF"
+
 [appearance]
 border_width = 0
 outer_border_width = 0
 corner_radius = 0
-backdrop_color = "#000000FF"
 
 [overview]
 zoom = 0.5
-background_tint = "#000000FF"
-workspace_background = "#000000FF"
 EOF
 "$UMBRIEL" msg config-reload > /dev/null
 

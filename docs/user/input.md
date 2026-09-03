@@ -19,8 +19,9 @@ and Ctrl+V remains available.
 When disabled, Umbriel clears the current primary selection and rejects new
 primary selections from connected clients. Applications started while it is
 disabled are not offered the primary-selection protocol. The setting applies
-immediately on config reload. Applications started while it was disabled must
-be restarted after re-enabling it.
+immediately on config reload, but protocol visibility is fixed when an
+application connects. Applications started while it was disabled must be
+restarted after re-enabling it.
 
 ### Keyboard
 
@@ -34,6 +35,11 @@ repeat_delay = 600 # 0-10000 ms
 numlock_toggle = true # true enables NumLock when a keyboard connects; false leaves it off
 track_layout = "global" # "global", or "window" to track the layout per surface
 ```
+
+These settings apply to physical keyboards. Virtual keyboard clients provide
+their own XKB keymaps, and Umbriel attaches each device to the seat only after
+its first usable keymap is ready. Applications therefore never receive the
+temporary empty keymap from a virtual keyboard that is still initializing.
 
 `layout` takes a comma-separated list to load several layouts at once
 (`layout = "us,de"`, optionally with a matching `variant = ",nodeadkeys"`). The
@@ -64,6 +70,26 @@ options works (`grp:win_space_toggle`, `caps:escape`, `compose:ralt`, …). An
 `options` value XKB does not recognize is ignored silently, the same as with
 `setxkbmap`; a `layout` or `variant` that fails to compile is reported in the
 log and the whole keyboard block falls back to the system default.
+
+#### Layout switching
+
+`keyboard-layout-next` advances one physical keyboard to its next configured
+layout and synchronizes that named layout to physical keyboards that also
+provide it. The action wraps at the source keyboard's final layout, is inert
+when no physical keyboard provides multiple layouts, and never changes a
+virtual keyboard's client-owned keymap.
+
+```toml
+[input.keyboard]
+layout = "us,de"
+
+[keybinds]
+"Mod+Shift+K" = "keyboard-layout-next"
+```
+
+`umbriel msg keyboard-layout-next` does the same from a script or panel. An XKB
+toggle such as `options = "grp:alt_shift_toggle"` is an alternative that lives
+in the keymap itself, and the two can coexist.
 
 #### Tracking the layout per window
 
@@ -292,8 +318,14 @@ follows_mouse_max_scroll = 0.5  # optional, measured in viewport widths
 
 | Key                        | Type  | Default    | Description                                                                                                                                                                     |
 | -------------------------- | ----- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `follows_mouse`            | bool  | `false`    | Focus a window when the pointer enters it, then scroll it into view.                                                                                                            |
+| `follows_mouse`            | bool  | `false`    | Focus the pointer target on enter, after compositor focus changes reveal another target, and after client drag completion.                                                      |
 | `follows_mouse_max_scroll` | float | (no limit) | Do not change focus when revealing the window would scroll farther than this many viewport widths. `0.0` allows only windows that are already fully visible. Omit for no limit. |
+
+Mapping windows and switching workspaces can change which window is under a
+stationary pointer. The existing focus remains until the next pointer motion,
+which selects the window under the pointer without requiring a border crossing.
+Finishing a client data drag performs the same refresh at the unchanged cursor
+position, so dropping over another window selects it immediately.
 
 For example, a window three screens away requires a limit of at least `3.0`.
 Values outside `0.0` to `100.0` are clamped and reported.

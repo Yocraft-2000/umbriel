@@ -2,11 +2,13 @@
 #include "cli/outputs.h"
 #include "config/config.h"
 #include "config/config_diag.h"
+#include "core/build_info.h"
 #include "core/fdlimit.h"
 #include "core/log.h"
+#include "scene/cheatsheet_rows.h"
+#include "server/ipc.h"
 #include "server/ipc_commands.h"
 #include "server/server.h"
-#include "umbriel_git_revision.h"
 
 #include <algorithm>
 #include <csignal>
@@ -14,6 +16,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <print>
 #include <string>
 #include <string_view>
@@ -25,10 +28,6 @@
 #else
 #include <malloc.h>
 #endif
-#endif
-
-#ifndef UMBRIEL_VERSION
-#define UMBRIEL_VERSION "unknown"
 #endif
 
 namespace {
@@ -68,7 +67,7 @@ namespace {
     auto row = [stream](std::string_view lead, std::string_view cmd, std::string_view desc) {
       std::println(stream, "{}umbriel {:<30} {}", lead, cmd, desc);
     };
-    std::println(stream, "umbriel {}: a wayland compositor\n", UMBRIEL_VERSION);
+    std::println(stream, "umbriel {}: a wayland compositor\n", umbriel::build_info::version());
     row("Usage: ", "[-s <command>] [-c <config>]", "run the compositor");
     for (const auto& spec : umbriel::ipcCommands()) {
       std::string cmd{spec.name};
@@ -77,6 +76,17 @@ namespace {
         cmd += spec.argSpec;
       }
       row("       ", cmd, spec.description);
+    }
+    {
+      std::string names;
+      for (const auto& name : umbriel::Ipc::kEventNames) {
+        if (!names.empty()) {
+          names += ", ";
+        }
+        names += name;
+      }
+      row("       ", "subscribe <event>[,<event>…]", "stream events as JSON lines");
+      std::println(stream, "{:>15}{}", "", "events: " + names);
     }
     row("       ", "outputs", "list outputs and modes");
     row("       ", "validate [-c <config>]", "check the config file");
@@ -122,11 +132,11 @@ int main(int argc, char** argv) {
     }
     if (std::strcmp(argv[1], "--version") == 0 || std::strcmp(argv[1], "-v") == 0 || std::strcmp(argv[1], "-V") == 0) {
       constexpr std::string_view unknownRevision = "unknown";
-      const std::string_view revision = UMBRIEL_GIT_REVISION;
+      const std::string_view revision = umbriel::build_info::revision();
       if (!revision.empty() && revision != unknownRevision) {
-        std::println("umbriel {} ({})", UMBRIEL_VERSION, revision);
+        std::println("umbriel {} ({})", umbriel::build_info::version(), revision);
       } else {
-        std::println("umbriel {}", UMBRIEL_VERSION);
+        std::println("umbriel {}", umbriel::build_info::version());
       }
       return EXIT_SUCCESS;
     }
@@ -134,6 +144,37 @@ int main(int argc, char** argv) {
     // IPC subcommands
     auto isJsonFlag = [](const char* arg) { return std::strcmp(arg, "--json") == 0 || std::strcmp(arg, "-j") == 0; };
     auto isHelpFlag = [](const char* arg) { return std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0; };
+
+    // Not an IpcCommandSpec: the reply is a stream, not one response, so it has its own client path.
+    if (std::strcmp(argv[1], "subscribe") == 0) {
+      std::vector<std::string> events;
+      for (int i = 2; i < argc; ++i) {
+        if (isHelpFlag(argv[i])) {
+          printHelp(stdout);
+          return EXIT_SUCCESS;
+        }
+        // Comma-separated or repeated arguments, so `subscribe workspaces,windows` and `subscribe workspaces windows`
+        // both work.
+        std::string_view arg{argv[i]};
+        while (!arg.empty()) {
+          const size_t comma = arg.find(',');
+          std::string_view name = arg.substr(0, comma);
+          if (!name.empty()) {
+            events.emplace_back(name);
+          }
+          if (comma == std::string_view::npos) {
+            break;
+          }
+          arg.remove_prefix(comma + 1);
+        }
+      }
+      if (events.empty()) {
+        std::println(stderr, "error: subscribe requires at least one event");
+        printHelp(stderr);
+        return EXIT_FAILURE;
+      }
+      return umbriel::runIpcSubscribe(events);
+    }
 
     if (const auto* spec = umbriel::findIpcCommand(argv[1])) {
       if (!spec->takesArg) {
@@ -164,19 +205,33 @@ int main(int argc, char** argv) {
         std::println("");
         std::println("Send an action to the running compositor.");
         std::println("Use `msg spawn <cmd...>` as shorthand for `msg spawn:<cmd...>`.");
-        std::println("");
-        std::println("Available actions:");
-        std::vector<const umbriel::ActionSpec*> sortedActions;
-        sortedActions.reserve(umbriel::actionSpecs().size());
-        for (const auto& actionSpec : umbriel::actionSpecs()) {
-          sortedActions.push_back(&actionSpec);
-        }
-        std::ranges::sort(sortedActions, {}, [](const auto* actionSpec) { return actionSpec->name; });
-        for (const auto* actionSpec : sortedActions) {
-          if (actionSpec->param.empty()) {
-            std::println("  {}", actionSpec->name);
-          } else {
-            std::println("  {}:{}", actionSpec->name, actionSpec->param);
+        std::println("Available actions, grouped as the cheatsheet groups them:");
+        for (const umbriel::Group group : umbriel::fixedGroupOrder()) {
+          std::vector<std::string> names;
+          std::vector<std::string_view> summaries;
+          for (const auto& actionSpec : umbriel::actionSpecs()) {
+            if (umbriel::groupForAction(actionSpec.action) != group) {
+              continue;
+            }
+            names.emplace_back(
+                actionSpec.param.empty() ? std::string(actionSpec.name)
+                                         : std::format("{}:{}", actionSpec.name, actionSpec.param)
+            );
+            summaries.push_back(actionSpec.summary);
+          }
+          if (names.empty()) {
+            continue;
+          }
+          // Pad per group: a single global column would push every summary past the width of the widest name in the
+          // table, which only one group actually needs.
+          size_t width = 0;
+          for (const auto& name : names) {
+            width = std::max(width, name.size());
+          }
+          std::println("");
+          std::println("{}", umbriel::groupTitle(group));
+          for (size_t i = 0; i < names.size(); ++i) {
+            std::println("  {:<{}}  {}", names[i], width, summaries[i]);
           }
         }
         return EXIT_SUCCESS;
@@ -254,7 +309,7 @@ int main(int argc, char** argv) {
   }
 
   try {
-    kLog.info("starting umbriel version={} commit={}", UMBRIEL_VERSION, UMBRIEL_GIT_REVISION);
+    kLog.info("starting umbriel version={} commit={}", umbriel::build_info::version(), umbriel::build_info::revision());
     umbriel::loadConfig(configPath);
     umbriel::Server server;
 

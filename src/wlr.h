@@ -3,8 +3,8 @@
 extern "C" {
 // wlroots / SceneFX headers use C99 `float color[static N]`.
 #define static
-#include <scenefx/render/fx_renderer/fx_renderer.h>
-#include <scenefx/types/wlr_scene.h>
+#include <umbrielfx/render/fx_renderer/fx_renderer.h>
+#include <umbrielfx/types/wlr_scene.h>
 #include <wlr/backend.h>
 #include <wlr/backend/headless.h>
 #include <wlr/backend/libinput.h>
@@ -21,6 +21,7 @@ extern "C" {
 #include <wlr/types/wlr_content_type_v1.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
+#include <wlr/types/wlr_data_control_v1.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_drm.h>
 #include <wlr/types/wlr_export_dmabuf_v1.h>

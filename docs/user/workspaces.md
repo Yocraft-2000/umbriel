@@ -25,10 +25,8 @@ number beyond the current count, Umbriel uses the last workspace.
 Set `workspaces` to a number or an ordered list of names. Umbriel creates
 exactly those workspaces and keeps them when they are empty.
 
-Workspace actions first resolve exact names globally. When no exact numeric
-name exists, `workspace-switch:2` selects the second entry on the focused
-output, even when that workspace has a custom name. If an exact name exists on
-more than one output, the focused output wins.
+Actions that take a workspace argument resolve names and numbered positions the
+same way here as everywhere else; see [Workspace selectors](#workspace-selectors).
 
 ```toml
 [output.DP-1]
@@ -48,6 +46,30 @@ Switching to dynamic workspaces keeps populated and active workspaces,
 renumbers them, and adds an empty workspace at the end.
 
 Other output and layout settings are refreshed during a reload as well.
+
+## Workspace selectors
+
+Actions that take a workspace argument, such as `workspace-switch`,
+`window-move-to-workspace`, and `column-move-to-workspace`, resolve it with
+these rules:
+
+- Exact names resolve globally first, including numeric names.
+- A unique name selects its workspace on any output.
+- Duplicate names resolve on the preferred output.
+- When no exact numeric name exists, the number selects that 1-based position
+  on the preferred output.
+- On a dynamic output, a number beyond the current workspace list selects the
+  last workspace.
+- Add `/output` to target another output explicitly.
+
+For example, `workspace-switch:3` selects a workspace named `3` when one
+exists and otherwise the third workspace on the preferred output, while
+`workspace-switch:CHAT/HDMI-A-1` selects `CHAT` on `HDMI-A-1`.
+
+When `workspace-switch`, `window-move-to-workspace`, or
+`column-move-to-workspace` targets another monitor, the cursor warps to that
+monitor's center so subsequent actions continue there.
+
 ## Inspect workspace state
 
 Run `umbriel workspaces` to list every workspace with its output and effective
@@ -105,11 +127,15 @@ case-insensitive connector or monitor name from `umbriel outputs`.
 Workspace layout settings are applied in this order:
 
 1. The base `[layout]` settings.
-2. A matching `[[workspace]]` rule without an `output`.
-3. A matching `[[workspace]]` rule for the selected output.
+2. The matching output's
+   `layout.scrolling.default_width_fraction`, when configured.
+3. A matching `[[workspace]]` rule without an `output`.
+4. A matching `[[workspace]]` rule for the selected output.
 
 Later steps take precedence. On dynamic outputs, rules match workspace names
-and numbered positions as those workspaces are created or removed.
+and numbered positions as those workspaces are created or removed. The output
+step applies only to `default_width_fraction`; other layout fields pass directly
+from the global settings to workspace rules.
 
 Strut edges are resolved independently. A rule that sets only
 `layout.struts.top` inherits the other three edges from earlier steps.
@@ -125,7 +151,7 @@ Strut edges are resolved independently. A rule that sets only
 | `layout.gap` | int | Gap in pixels (0-500). |
 | `layout.struts.{left,right,top,bottom}` | int | Signed logical pixels reserved at each edge of the normal tiled layout (-65535 to 65535). Positive values shrink the area and negative values expand it. |
 | `layout.width_presets` | float array | Fractions used by the width-cycle and height-cycle actions in every layout. |
-| `layout.scrolling.default_width_fraction` | float | Optional initial scrolling lane extent (0.1-1.0). When omitted globally and for the workspace, the client chooses its initial logical extent. |
+| `layout.scrolling.default_width_fraction` | float | Optional initial scrolling lane extent (0.1-1.0). It overrides the global and matching output values. When omitted at every level, the client chooses its initial logical extent. Reloading a default does not resize existing columns. |
 | `layout.scrolling.center_underfull_strip` | bool | Center the complete strip whenever it is narrower than the viewport. Disable to left-align underfull strips. |
 | `layout.scrolling.center_focused` | bool | Always center the focused column, including when the setting changes on config reload. |
 | `layout.scrolling.direction` | string | `"horizontal"` or `"vertical"` scroll axis. |
@@ -157,6 +183,9 @@ name = "STATS"
 layout.mode = "dwindle"
 
 # Customize workspace position 4 on DP-1
+[output.DP-1.layout.scrolling]
+default_width_fraction = 0.5
+
 [[workspace]]
 index = 4
 output = "DP-1"
@@ -164,3 +193,6 @@ layout.gap = 0
 layout.struts.top = 24
 layout.scrolling.default_width_fraction = 0.667
 ```
+
+In the last example, new columns on DP-1 use `0.5` except on workspace position
+4, where the more specific workspace rule uses `0.667`.

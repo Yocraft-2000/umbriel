@@ -78,11 +78,11 @@ namespace umbriel {
     }
 
     wlr_xdg_toplevel_decoration_v1_mode resolvedDecorationMode(wlr_xdg_toplevel_decoration_v1* decoration) {
-      // Honor an explicit client request; otherwise prefer SSD when configured.
+      // Only clients whose connection prefers SSD can see the manager. Honor
+      // an explicit request, otherwise keep the server-side preference.
       wlr_xdg_toplevel_decoration_v1_mode mode = decoration->requested_mode;
       if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_NONE) {
-        mode = config().appearance.preferNoCsd ? WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
-                                               : WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+        mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
       }
       return mode;
     }
@@ -135,15 +135,6 @@ namespace umbriel {
       }
       watch->surfaceCommit.notify = onDecorationSurfaceCommit;
       wl_signal_add(&surface->surface->events.commit, &watch->surfaceCommit);
-    }
-
-    void applyKdeDecorationDefault(wlr_server_decoration_manager* manager) {
-      if (manager == nullptr) {
-        return;
-      }
-      const uint32_t mode = config().appearance.preferNoCsd ? WLR_SERVER_DECORATION_MANAGER_MODE_SERVER
-                                                            : WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT;
-      wlr_server_decoration_manager_set_default_mode(manager, mode);
     }
 
     void onDecorationRequestMode(wl_listener* listener, void* /*data*/) {
@@ -452,15 +443,6 @@ namespace umbriel {
           view->refreshConfigChrome();
         }
       }
-      applyKdeDecorationDefault(m_serverDecorationManager);
-      if (m_xdgDecorationManager != nullptr) {
-        wlr_xdg_toplevel_decoration_v1* decoration = nullptr;
-        wl_list_for_each(decoration, &m_xdgDecorationManager->decorations, link) {
-          if (auto* watch = static_cast<XdgDecorationWatch*>(decoration->data)) {
-            applyXdgDecorationMode(watch);
-          }
-        }
-      }
       // The view refresh cleared every focus ring; put the active one back.
       refocus();
       markDirty(Dirty::Backdrop);
@@ -690,8 +672,49 @@ namespace umbriel {
     Server* self;
     self = wl_container_of(listener, self, m_newVirtualKeyboard);
     auto* keyboard = static_cast<wlr_virtual_keyboard_v1*>(data);
-    self->addKeyboard(&keyboard->keyboard.base);
-    self->updateSeatCapabilities();
+    if (keyboard->keyboard.keymap != nullptr) {
+      self->addKeyboard(&keyboard->keyboard.base);
+      self->updateSeatCapabilities();
+      return;
+    }
+
+    // Virtual-keyboard creation and keymap upload are separate protocol
+    // requests. Do not expose the device until it has a usable map, otherwise
+    // wlroots broadcasts a transient no-keymap event to every keyboard client.
+    auto* pending = new PendingVirtualKeyboard{
+        .server = self,
+        .keyboard = &keyboard->keyboard,
+    };
+    pending->keymap.notify = onPendingVirtualKeyboardKeymap;
+    wl_signal_add(&keyboard->keyboard.events.keymap, &pending->keymap);
+    pending->destroy.notify = onPendingVirtualKeyboardDestroy;
+    wl_signal_add(&keyboard->keyboard.base.events.destroy, &pending->destroy);
+  }
+
+  void Server::onPendingVirtualKeyboardKeymap(wl_listener* listener, void* /*data*/) {
+    PendingVirtualKeyboard* pending;
+    pending = wl_container_of(listener, pending, keymap);
+    if (pending->keyboard->keymap == nullptr) {
+      return;
+    }
+
+    Server* server = pending->server;
+    wlr_input_device* device = &pending->keyboard->base;
+    destroyPendingVirtualKeyboard(pending);
+    server->addKeyboard(device);
+    server->updateSeatCapabilities();
+  }
+
+  void Server::onPendingVirtualKeyboardDestroy(wl_listener* listener, void* /*data*/) {
+    PendingVirtualKeyboard* pending;
+    pending = wl_container_of(listener, pending, destroy);
+    destroyPendingVirtualKeyboard(pending);
+  }
+
+  void Server::destroyPendingVirtualKeyboard(PendingVirtualKeyboard* pending) {
+    wl_list_remove(&pending->keymap.link);
+    wl_list_remove(&pending->destroy.link);
+    delete pending;
   }
 
   void Server::onNewVirtualPointer(wl_listener* listener, void* data) {
@@ -1062,7 +1085,7 @@ namespace umbriel {
     if (layoutBox.width <= 0 || layoutBox.height <= 0) {
       return;
     }
-    wlr_scene_rect_set_color(m_lockBlank, config().appearance.backdropColor.data());
+    wlr_scene_rect_set_color(m_lockBlank, config().colors.backdrop.data());
     wlr_scene_rect_set_size(m_lockBlank, layoutBox.width, layoutBox.height);
     wlr_scene_node_set_position(&m_lockBlank->node, layoutBox.x, layoutBox.y);
   }
@@ -1073,7 +1096,7 @@ namespace umbriel {
     if (layoutBox.width <= 0 || layoutBox.height <= 0) {
       return;
     }
-    wlr_scene_rect_set_color(m_backdrop, config().appearance.backdropColor.data());
+    wlr_scene_rect_set_color(m_backdrop, config().colors.backdrop.data());
     wlr_scene_rect_set_size(m_backdrop, layoutBox.width, layoutBox.height);
     wlr_scene_node_set_position(&m_backdrop->node, layoutBox.x, layoutBox.y);
     for (const auto& output : m_outputs) {
@@ -1115,10 +1138,10 @@ namespace umbriel {
       notifyKeyboardLayoutIpc();
     }
 
-    // A virtual keyboard may arrive before its client provides a keymap. Keep
-    // an existing seat keyboard until real input selects another device, but an
-    // empty seat needs one for focus enter and input-method keymap delivery.
-    if (!seatHasKeyboard) {
+    // Pending virtual keyboards are promoted only after their first keymap.
+    // Keep the same guard for physical-keymap setup failures so wlroots never
+    // broadcasts a transient no-keymap event from this path.
+    if (!seatHasKeyboard && keyboard->wlr()->keymap != nullptr) {
       wlr_seat_set_keyboard(seat, keyboard->wlr());
     }
   }
@@ -1194,6 +1217,12 @@ namespace umbriel {
     }
   }
 
+  void Server::notifySubmapChanged() {
+    if (m_ipc != nullptr) {
+      m_ipc->notifySubmapChanged();
+    }
+  }
+
   void Server::scheduleIpcWindowsEvent() {
     if (m_ipc == nullptr || m_ipcWindowsIdle != nullptr) {
       return;
@@ -1209,6 +1238,24 @@ namespace umbriel {
     server->m_ipcWindowsIdle = nullptr;
     if (server->m_ipc != nullptr) {
       server->m_ipc->notifyWindowsChanged();
+    }
+  }
+
+  void Server::scheduleIpcWorkspacesEvent() {
+    if (m_ipc == nullptr || m_ipcWorkspacesIdle != nullptr) {
+      return;
+    }
+    m_ipcWorkspacesIdle = wl_event_loop_add_idle(wl_display_get_event_loop(m_display), onIpcWorkspacesIdle, this);
+    if (m_ipcWorkspacesIdle == nullptr) {
+      kLog.error("failed to register IPC workspaces idle source");
+    }
+  }
+
+  void Server::onIpcWorkspacesIdle(void* data) {
+    auto* server = static_cast<Server*>(data);
+    server->m_ipcWorkspacesIdle = nullptr;
+    if (server->m_ipc != nullptr) {
+      server->m_ipc->notifyWorkspacesChanged();
     }
   }
 

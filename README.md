@@ -5,9 +5,11 @@ workspaces, window rules, blur, shadows, and fluid animations.
 
 It runs independently and can be paired with [Noctalia](https://github.com/noctalia-dev/noctalia), which provides a
 first-class desktop shell experience for Umbriel. Umbriel is built in C++23 on
-[wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) and [SceneFX](https://github.com/wlrfx/scenefx), with
-Xwayland support provided by [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) and portal screen
-capture and sharing by [xdg-desktop-portal-umbriel](https://github.com/noctalia-dev/xdg-desktop-portal-umbriel), an
+[wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) and `umbrielfx`, its own hard fork of
+[SceneFX](https://github.com/wlrfx/scenefx). Xwayland support comes from
+[xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite), which must be
+installed and on `PATH`. Portal screen capture and sharing is provided by
+[xdg-desktop-portal-umbriel](https://github.com/noctalia-dev/xdg-desktop-portal-umbriel), an
 xdg-desktop-portal backend for Umbriel.
 
 > [!IMPORTANT]
@@ -47,9 +49,10 @@ To understand the values and philosophy guiding the project, read our [ethos](ht
 - An animated overview, directional focus, configurable keybinds, submaps, and activation policy
 - Blur, shadows, rounded corners, double borders, opacity, and animated position, size, and fade transitions
 - Keyboard, pointer, touch, touchpad gestures, XKB configuration, and text-input-v3/input-method-v2 input method support
-- [Restricted Wayland connections](docs/user/security.md) for sandbox engines through security-context-v1
+- [Restricted Wayland connections](docs/user/security.md) for sandbox engines through security-context-v1, with
+  per-application protocol grants
 - Layer shell, session locking, clipboard management, screen capture, output control, and gamma control
-- X11 application support through xwayland-satellite
+- X11 application support through xwayland-satellite, when xwayland-satellite is installed and on `PATH`
 - Live-reloaded TOML configuration with diagnostics and includes, plus local IPC and runtime inspection commands
 - Runs as a nested Wayland compositor inside an existing Wayland or X11 desktop for development, or directly on DRM
   for daily use
@@ -57,18 +60,15 @@ To understand the values and philosophy guiding the project, read our [ethos](ht
 ## Building
 
 Distribution maintainers should also read [PACKAGING.md](PACKAGING.md) for the
-installed layout, dependency notes, SceneFX requirements, and config fallback.
+installed layout, dependency notes, and config fallback.
 
-After cloning, initialize the patched SceneFX fork tracked in `subprojects/scenefx`:
-
-```sh
-git submodule update --init
-```
+The scene graph and renderer live in [`umbrielfx/`](umbrielfx/) and build as part of the tree.
 
 ### System build
 
 Install a C++23 compiler, Meson, Ninja, pkg-config, wayland-scanner, and development packages for wlroots 0.20,
-Wayland, xkbcommon, libinput, pixman, libdrm, Cairo, Pango, tomlplusplus, and nlohmann-json. Then build Umbriel:
+Wayland, xkbcommon, libinput, pixman, libdrm, EGL, GLES2, GBM, lcms2, Cairo, Pango, tomlplusplus, and
+nlohmann-json. Then build Umbriel:
 
 ```sh
 just release
@@ -80,8 +80,7 @@ fragmentation in long-running sessions. Meson's `-Djemalloc=enabled` or `-Djemal
 default (`auto`) uses it when the development package is installed and skips it otherwise (non-glibc libc builds
 always skip it).
 
-The binaries are written to `build-debug/umbriel` and `build-release/umbriel`. Meson uses a system `scenefx-0.5`
-only when its headers provide the required APIs; otherwise it builds the initialized submodule.
+The binaries are written to `build-debug/umbriel` and `build-release/umbriel`.
 
 ### Nix
 
@@ -121,11 +120,11 @@ just check 310 -v         # keep the full output of passing checks
 ```
 
 Each check gets its own contained headless compositor, so a failure stays local
-and checks run in any order. A run reports one line per check with its duration;
-passing checks are summarized to a single dimmed line while failing ones print
-their whole output. A failing check keeps its runtime directory (compositor log,
-config, per-client logs) and prints the path. `just verify <mode> [fragment ...]`
-selects another build.
+and checks run in any order. Every passing check emits a concise completion
+message, summarized to a single dimmed line unless `-v` is enabled; failing
+checks print their whole output. A failing check keeps its runtime directory
+(compositor log, config, per-client logs) and prints the path. `just verify
+<mode> [fragment ...]` selects another build.
 
 ## Running
 
@@ -180,9 +179,13 @@ Stop with mod+Escape or `Ctrl+C` from the parent terminal.
 
 ## Configuration
 
-Umbriel first checks `$XDG_CONFIG_HOME/umbriel/config.toml`, then `$XDG_CONFIG_DIRS`, and finally its packaged
-`share/umbriel/config.toml`. Pass `-c path/to/config.toml` to use another file. Config files can include files with
-`[include] files = ["theme.toml", "keybinds.toml"]`; later files and the main file override earlier values.
+Umbriel first checks `$XDG_CONFIG_HOME/umbriel/config.toml`, then
+`$XDG_CONFIG_DIRS`, and finally its packaged `share/umbriel/config.toml`.
+These paths remain watched, so creating a higher-priority config switches to it
+without a session restart. Pass `-c path/to/config.toml` to pin another file.
+Config files can include files with
+`[include] files = ["theme.toml", "keybinds.toml"]`; later files and the main
+file override earlier values.
 
 See [`examples/config.toml`](examples/config.toml) for the packaged starting configuration and
 [`our online documentation`](https://docs.noctalia.dev/umbriel/) for the full reference.
@@ -228,8 +231,12 @@ packaged configuration. Home Manager also accepts a raw TOML string or a path. T
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for code style, naming conventions, the dependency stack, and debugging
-helpers. Umbriel shares its conventions with [noctalia](https://github.com/noctalia-dev/noctalia). For general help
-and design discussion, join the community on [Discord](https://discord.noctalia.dev).
+helpers, and [SCOPE.md](SCOPE.md) for what the project takes on and what it declines. Umbriel shares its conventions
+with [noctalia](https://github.com/noctalia-dev/noctalia). For general help and design discussion, join the community
+on [Discord](https://discord.noctalia.dev).
+
+Bug reports are always welcome. Feature requests are read against [SCOPE.md](SCOPE.md), so please skim it before
+opening one, and ask on Discord if you are unsure whether an idea fits.
 
 ## License
 

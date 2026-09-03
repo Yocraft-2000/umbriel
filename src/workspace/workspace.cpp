@@ -178,6 +178,7 @@ namespace umbriel {
       m_group->output()->updateVrr();
       m_group->output()->updateHdr();
     }
+    m_group->server()->scheduleIpcWorkspacesEvent();
   }
 
   void Workspace::updateUrgent() {
@@ -288,7 +289,7 @@ namespace umbriel {
     return focusedColumn >= 0 ? focusedColumn + 1 : static_cast<int>(m_layout->columns().size());
   }
 
-  void Workspace::layoutAttach(View* view, std::optional<double> initialWidth) {
+  void Workspace::layoutAttach(View* view, std::optional<double> initialWidth, std::optional<int> initialPixelWidth) {
     if (view == nullptr || !view->mapped() || !view->tiled() || m_layout->columnOf(view) >= 0) {
       return;
     }
@@ -306,11 +307,15 @@ namespace umbriel {
 
     if (scrolling != nullptr && !placement) {
       const int column = scrolling->columnOf(view);
-      const std::optional<double> configuredWidth =
-          initialWidth ? initialWidth : m_layoutConfig.scrolling.defaultWidthFraction;
-      if (configuredWidth) {
+      if (initialPixelWidth && !scrollingVertical()) {
+        // default_size is expressed in physical axes, so its width only seeds
+        // the primary extent of a horizontal scrolling column.
+        scrolling->setWidthFromPixels(column, scrollViewportExtent(), *initialPixelWidth);
+      } else if (initialWidth) {
         // default_width is a viewport fraction: scrolling only. Dwindle ignores it.
-        scrolling->setWidthFraction(column, *configuredWidth);
+        scrolling->setWidthFraction(column, *initialWidth);
+      } else if (m_layoutConfig.scrolling.defaultWidthFraction) {
+        scrolling->setWidthFraction(column, *m_layoutConfig.scrolling.defaultWidthFraction);
       } else {
         const wlr_box& geometry = view->toplevel()->base->geometry;
         const int primary = scrollingVertical() ? geometry.height : geometry.width;
@@ -1015,7 +1020,7 @@ namespace umbriel {
     return true;
   }
 
-  std::optional<double> Workspace::focusedFloatingFraction(bool width) const {
+  std::optional<std::array<int, 2>> Workspace::focusedFloatingAxis(bool width) const {
     View* view = m_focusedView;
     if (view == nullptr || !view->mapped() || !view->floating()) {
       return std::nullopt;
@@ -1027,7 +1032,15 @@ namespace umbriel {
     if (extent <= 0 || basis <= 0) {
       return std::nullopt;
     }
-    return floatingSizeFraction(basis, extent);
+    return std::array{basis, extent};
+  }
+
+  std::optional<double> Workspace::focusedFloatingFraction(bool width) const {
+    const auto axis = focusedFloatingAxis(width);
+    if (!axis) {
+      return std::nullopt;
+    }
+    return floatingSizeFraction((*axis)[0], (*axis)[1]);
   }
 
   bool
@@ -1065,12 +1078,12 @@ namespace umbriel {
 
   bool Workspace::cycleFocusedWidth(int direction) {
     if (m_focusedView != nullptr && m_focusedView->floating()) {
-      if (const auto current = focusedFloatingFraction(true)) {
-        return resizeFocusedFloating(
-            nextFractionPreset(m_layoutConfig.widthPresets, *current, direction), std::nullopt
-        );
+      const auto axis = focusedFloatingAxis(true);
+      if (!axis) {
+        return false;
       }
-      return false;
+      const double current = presetSnappedFraction(m_layoutConfig.widthPresets, (*axis)[0], (*axis)[1]);
+      return resizeFocusedFloating(nextFractionPreset(m_layoutConfig.widthPresets, current, direction), std::nullopt);
     }
     if (m_focusedView != nullptr && m_focusedView->maximizedToEdges()) {
       m_focusedView->setMaximizedToEdges(false);
@@ -1087,12 +1100,12 @@ namespace umbriel {
 
   bool Workspace::cycleFocusedHeight(int direction) {
     if (m_focusedView != nullptr && m_focusedView->floating()) {
-      if (const auto current = focusedFloatingFraction(false)) {
-        return resizeFocusedFloating(
-            std::nullopt, nextFractionPreset(m_layoutConfig.widthPresets, *current, direction)
-        );
+      const auto axis = focusedFloatingAxis(false);
+      if (!axis) {
+        return false;
       }
-      return false;
+      const double current = presetSnappedFraction(m_layoutConfig.widthPresets, (*axis)[0], (*axis)[1]);
+      return resizeFocusedFloating(std::nullopt, nextFractionPreset(m_layoutConfig.widthPresets, current, direction));
     }
     if (m_focusedView != nullptr && m_focusedView->maximizedToEdges()) {
       m_focusedView->setMaximizedToEdges(false);
@@ -1356,14 +1369,20 @@ namespace umbriel {
   }
 
   void Workspace::rename(std::string name, size_t index) {
+    bool changed = false;
     if (m_name != name) {
       m_name = std::move(name);
       wlr_ext_workspace_handle_v1_set_name(m_handle, m_name.c_str());
+      changed = true;
     }
     if (m_index != index) {
       m_index = index;
       const uint32_t coords[1] = {static_cast<uint32_t>(m_index)};
       wlr_ext_workspace_handle_v1_set_coordinates(m_handle, coords, 1);
+      changed = true;
+    }
+    if (changed) {
+      m_group->server()->scheduleIpcWorkspacesEvent();
     }
   }
 
@@ -1371,6 +1390,9 @@ namespace umbriel {
     const bool centerFocusedChanged = m_layoutConfig.scrolling.centerFocused != layoutConfig.scrolling.centerFocused;
     const bool strutsChanged = m_layoutConfig.struts != layoutConfig.struts;
     m_layoutConfig = std::move(layoutConfig);
+    // The event payload is built when the idle runs, so scheduling here reports the mode this call installs, whether
+    // it reconfigures the existing layout or replaces it below.
+    m_group->server()->scheduleIpcWorkspacesEvent();
     if (m_layout != nullptr && m_layout->mode() == m_layoutConfig.mode) {
       m_layout->setConfig(&m_layoutConfig);
       m_layout->setConstraints(&viewLayoutConstraints);
@@ -1440,6 +1462,7 @@ namespace umbriel {
       wlr_ext_workspace_group_handle_v1_destroy(m_handle);
       m_handle = nullptr;
     }
+    m_server->scheduleIpcWorkspacesEvent();
   }
   std::string WorkspaceGroup::nextWorkspaceId() {
     const std::string_view connector = m_output->identity().connector;
@@ -1450,6 +1473,9 @@ namespace umbriel {
     wlr_ext_workspace_manager_v1* manager = m_server->workspaceManager();
     std::string id = nextWorkspaceId();
     wlr_ext_workspace_handle_v1* handle = wlr_ext_workspace_handle_v1_create(manager, id.c_str(), kWorkspaceCaps);
+    // Group construction and the dynamic append/prepend/insert paths all funnel through here, and the payload is read
+    // at idle time, after the caller has pushed the workspace into the list.
+    m_server->scheduleIpcWorkspacesEvent();
     return std::make_unique<Workspace>(
         *this, handle, std::move(id), std::move(workspace.name), index, std::move(workspace.layout)
     );
@@ -1700,6 +1726,7 @@ namespace umbriel {
           m_previous = nullptr;
         }
         m_workspaces.erase(m_workspaces.begin() + static_cast<std::ptrdiff_t>(index));
+        m_server->scheduleIpcWorkspacesEvent();
       }
     }
     if (backKeeper == nullptr) {
@@ -1979,12 +2006,12 @@ namespace umbriel {
     const size_t index = m_workspaces.size();
     std::string id = nextWorkspaceId();
     std::string wsName = (name != nullptr && name[0] != '\0') ? name : std::to_string(index + 1);
+    ResolvedLayoutConfig layout = resolveWorkspaceLayout(config(), m_output->identity(), wsName, index);
     wlr_ext_workspace_handle_v1* handle = wlr_ext_workspace_handle_v1_create(manager, id.c_str(), kWorkspaceCaps);
     m_workspaces.push_back(
-        std::make_unique<Workspace>(
-            *this, handle, std::move(id), std::move(wsName), index, resolveGlobalLayout(config())
-        )
+        std::make_unique<Workspace>(*this, handle, std::move(id), std::move(wsName), index, std::move(layout))
     );
+    m_server->scheduleIpcWorkspacesEvent();
     return m_workspaces.back().get();
   }
 

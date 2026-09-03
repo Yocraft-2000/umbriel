@@ -81,7 +81,11 @@ namespace umbriel {
     // Config reload may replace the keybind storage while its action runs, so
     // retain the transition before dispatching the primary action.
     const std::optional<SubmapArg> submapAfter = bind.submapAfter;
-    const bool handled = handler(*this, bind, error);
+    Overview* overview = this->overview();
+    bool handled = overview != nullptr && overview->handleKeybindAction(bind.action);
+    if (!handled) {
+      handled = handler(*this, bind, error);
+    }
     if (!submapAfter.has_value()) {
       return handled;
     }
@@ -245,12 +249,14 @@ namespace umbriel {
   void Server::pushSubmap(const std::string& name) {
     cancelModifierTap();
     m_activeSubmaps.push_back(name);
+    notifySubmapChanged();
   }
 
   void Server::popSubmap() {
     cancelModifierTap();
     if (!m_activeSubmaps.empty()) {
       m_activeSubmaps.pop_back();
+      notifySubmapChanged();
     }
   }
 

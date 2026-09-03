@@ -2,7 +2,7 @@
 # A tall vertical strip is presented as one live viewport during workspace slides and inside each overview row.
 set -euo pipefail
 
-readonly CLIENT="${UMBRIEL_UNMAP_CLIENT:-./build-debug/unmap-client}"
+readonly CLIENT="${UMBRIEL_UNMAP_CLIENT:-./build-debug/tests/unmap-client}"
 readonly OVERVIEW_SHOT="$UMBRIEL_RUNTIME_DIR/vertical-overview-clip.png"
 readonly TRANSITION_SHOT="$UMBRIEL_RUNTIME_DIR/vertical-transition-clip.png"
 
@@ -30,16 +30,20 @@ cat >> "$UMBRIEL_CONFIG" <<'EOF'
 [animation]
 duration_ms = 1000
 
+[colors]
+backdrop = "#000000FF"
+
+[colors.overview]
+background_tint = "#000000FF"
+workspace_background = "#000000FF"
+
 [appearance]
 border_width = 0
 outer_border_width = 0
 corner_radius = 0
-backdrop_color = "#000000FF"
 
 [overview]
 zoom = 0.5
-background_tint = "#000000FF"
-workspace_background = "#000000FF"
 
 [layout.scrolling]
 direction = "vertical"

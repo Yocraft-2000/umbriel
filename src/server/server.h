@@ -35,6 +35,7 @@ struct wlr_foreign_toplevel_manager_v1;
 struct wlr_idle_inhibit_manager_v1;
 struct wlr_idle_notifier_v1;
 struct wlr_input_device;
+struct wlr_keyboard;
 struct wlr_layer_shell_v1;
 struct wlr_output;
 struct wlr_output_layout;
@@ -48,6 +49,7 @@ struct wlr_scene_output_layout;
 struct wlr_scene_rect;
 struct wlr_scene_tree;
 struct wlr_security_context_manager_v1;
+struct wlr_security_context_v1_state;
 struct wlr_session;
 struct wlr_session_lock_manager_v1;
 struct wlr_session_lock_v1;
@@ -134,7 +136,9 @@ namespace umbriel {
     [[nodiscard]] wlr_allocator* allocator() const { return m_allocator; }
     [[nodiscard]] wlr_scene* scene() const { return m_scene; }
     [[nodiscard]] ContentType surfaceContentType(wlr_surface* surface) const;
-    [[nodiscard]] bool clientHasSecurityContext(const wl_client* client) const;
+    // The security-context metadata for a restricted client, or null for a
+    // client on the ordinary socket.
+    [[nodiscard]] const wlr_security_context_v1_state* clientSecurityContext(const wl_client* client) const;
     [[nodiscard]] wlr_color_manager_v1* colorManager() const { return m_colorManager; }
     [[nodiscard]] wlr_export_dmabuf_manager_v1* exportDmabufManager() const { return m_exportDmabufManager; }
     [[nodiscard]] wlr_tearing_control_manager_v1* tearingControlManager() const { return m_tearingControlManager; }
@@ -147,7 +151,7 @@ namespace umbriel {
     [[nodiscard]] wlr_scene_tree* scratchpadShadowTree() const { return m_scratchpadShadowTree; }
     [[nodiscard]] ScratchpadManager* scratchpadManager() const { return m_scratchpadManager.get(); }
     // Between layer-shell background and bottom: overview wallpaper blur renders
-    // before bottom-layer widgets so they remain sharp.
+    // before bottom-layer surfaces so they remain sharp.
     [[nodiscard]] wlr_scene_tree* overviewBlurTree() const { return m_overviewBlurTree; }
     // Between windows and the drag/insert-hint tree: overview cards render here
     // while the real window trees are disabled.
@@ -259,9 +263,13 @@ namespace umbriel {
     [[nodiscard]] std::optional<KeyboardLayoutState> keyboardLayoutState() const;
     void notifyKeyboardLayoutIpc();
     void notifyOverviewChanged();
+    void notifySubmapChanged();
     // Coalesced windows-event notification: at most one idle callback per frame
     // regardless of how many window-list-relevant changes happened.
     void scheduleIpcWindowsEvent();
+    // Same coalescing for the workspace list: layout mode, activation, names and membership all land in one payload,
+    // so a switch that renames, reindexes and reactivates emits once.
+    void scheduleIpcWorkspacesEvent();
 
     // Focus lives in FocusManager; these forward so call sites that already
     // hold a Server do not need a second reference.
@@ -352,6 +360,8 @@ namespace umbriel {
     static void onNewSessionLock(wl_listener* listener, void* data);
     static void onNewPointerConstraint(wl_listener* listener, void* data);
     static void onNewVirtualKeyboard(wl_listener* listener, void* data);
+    static void onPendingVirtualKeyboardKeymap(wl_listener* listener, void* data);
+    static void onPendingVirtualKeyboardDestroy(wl_listener* listener, void* data);
     static void onNewVirtualPointer(wl_listener* listener, void* data);
     static void onVirtualPointerDestroy(wl_listener* listener, void* data);
     static void onNewIdleInhibitor(wl_listener* listener, void* data);
@@ -379,12 +389,20 @@ namespace umbriel {
     static int onBackgroundFrameTimer(void* data);
     static int onTerminateSignal(int signal, void* data);
     static void onIpcWindowsIdle(void* data);
+    static void onIpcWorkspacesIdle(void* data);
     static void onDisplacedRestoreIdle(void* data);
 
     void trackActivationToken(wlr_xdg_activation_token_v1* token, bool compositorIssued);
 
     void addOutput(wlr_output* output);
     void addKeyboard(wlr_input_device* device);
+    struct PendingVirtualKeyboard {
+      Server* server = nullptr;
+      wlr_keyboard* keyboard = nullptr;
+      wl_listener keymap{};
+      wl_listener destroy{};
+    };
+    static void destroyPendingVirtualKeyboard(PendingVirtualKeyboard* pending);
     void syncKeyboardLayout(Keyboard* source);
     // Restore a remembered named layout through a compatible physical keyboard.
     bool setKeyboardLayout(std::string_view layout);
@@ -579,6 +597,7 @@ namespace umbriel {
     // Non-null while a windows-event idle callback is pending. The idle source
     // removes itself when it runs, so a non-null pointer means "already queued".
     wl_event_source* m_ipcWindowsIdle = nullptr;
+    wl_event_source* m_ipcWorkspacesIdle = nullptr;
     wl_event_source* m_displacedRestoreIdle = nullptr;
     struct DisplacedWorkspaceSelection {
       std::string outputName;
@@ -594,6 +613,7 @@ namespace umbriel {
     // handler, so shutdown runs ordinary code instead of async-signal-safe code.
     wl_event_source* m_signalSources[2]{};
 
+    wl_listener m_clientCreated{};
     wl_listener m_newOutput{};
     wl_listener m_newInput{};
     wl_listener m_newXdgToplevel{};

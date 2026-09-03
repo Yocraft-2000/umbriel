@@ -2,8 +2,8 @@
 # A hidden scratchpad view remains rendered while its opacity falls, then leaves the scene when the fade completes.
 set -euo pipefail
 
-readonly CLIENT="${UMBRIEL_POPUP_CLIENT:-./build-debug/popup-client}"
-readonly POINTER="${UMBRIEL_POINTER_CLIENT:-./build-debug/pointer-client}"
+readonly CLIENT="${UMBRIEL_POPUP_CLIENT:-./build-debug/tests/popup-client}"
+readonly POINTER="${UMBRIEL_POINTER_CLIENT:-./build-debug/tests/pointer-client}"
 readonly CLIENT_LOG="$UMBRIEL_RUNTIME_DIR/scratchpad-hide-fade-client.log"
 readonly BEFORE="$UMBRIEL_RUNTIME_DIR/scratchpad-hide-before.png"
 readonly DURING="$UMBRIEL_RUNTIME_DIR/scratchpad-hide-during.png"
@@ -32,11 +32,13 @@ curve = "linear"
 dim = 0.0
 blur = false
 
+[colors]
+backdrop = "#000000FF"
+
 [appearance]
 border_width = 0
 outer_border_width = 0
 corner_radius = 0
-backdrop_color = "#000000FF"
 EOF
 "$UMBRIEL" msg config-reload > /dev/null
 

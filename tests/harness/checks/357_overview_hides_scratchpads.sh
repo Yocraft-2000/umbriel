@@ -5,8 +5,8 @@
 # backgrounds make the scene transition observable instead of merely covering an incorrectly visible scratchpad.
 set -euo pipefail
 
-readonly CLIENT="${UMBRIEL_UNMAP_CLIENT:-./build-debug/unmap-client}"
-readonly POINTER="${UMBRIEL_POINTER_CLIENT:-./build-debug/pointer-client}"
+readonly CLIENT="${UMBRIEL_UNMAP_CLIENT:-./build-debug/tests/unmap-client}"
+readonly POINTER="${UMBRIEL_POINTER_CLIENT:-./build-debug/tests/pointer-client}"
 readonly OUTPUT_LAYOUT_W=2560
 readonly OUTPUT_LAYOUT_H=720
 readonly FIRST_TITLE=overview-scratch-first
@@ -129,19 +129,23 @@ dim = 0.0
 blur = false
 scale = 0.0
 
+[colors]
+backdrop = "#000000FF"
+
+[colors.overview]
+background_tint = "#00000000"
+workspace_background = "#00000000"
+
 [appearance]
 border_width = 0
 outer_border_width = 0
 corner_radius = 0
-backdrop_color = "#000000FF"
 
 [appearance.blur]
 enabled = false
 
 [overview]
 background_blur = false
-background_tint = "#00000000"
-workspace_background = "#00000000"
 shortcuts = false
 
 [[window_rule]]

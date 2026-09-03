@@ -8,6 +8,7 @@
 #include "server/server.h"
 
 #include <algorithm>
+#include <bit>
 #include <cerrno>
 #include <cstdlib>
 #include <nlohmann/json.hpp>
@@ -42,6 +43,23 @@ namespace umbriel {
                {"accent_secondary", rgbaHex(colors.accentSecondary)},
                {"warning", rgbaHex(colors.warning)},
                {"error", rgbaHex(colors.error)},
+               {"insert_hint", rgbaHex(colors.insertHint)},
+               {"backdrop", rgbaHex(colors.backdrop)},
+               {"shadow", rgbaHex(colors.shadow)},
+               {"border",
+                {
+                    {"focused", rgbaHex(colors.border.focused)},
+                    {"unfocused", rgbaHex(colors.border.unfocused)},
+                    {"scratchpad_focused", rgbaHex(colors.border.scratchpadFocused)},
+                    {"scratchpad_unfocused", rgbaHex(colors.border.scratchpadUnfocused)},
+                    {"outer", rgbaHex(colors.border.outer)},
+                }},
+               {"overview",
+                {
+                    {"background_tint", rgbaHex(colors.overview.backgroundTint)},
+                    {"workspace_background", rgbaHex(colors.overview.workspaceBackground)},
+                    {"badge", rgbaHex(colors.overview.badge)},
+                }},
                {"corner_radius", current.appearance.cornerRadius},
            }},
       };
@@ -72,6 +90,16 @@ namespace umbriel {
       // Reuses the command handler so the event payload can never diverge from
       // what `umbriel windows` reports.
       return nlohmann::json{{"event", "windows"}, {"data", IpcCommands::windows(server, {}).at("ok")}};
+    }
+
+    nlohmann::json workspacesEvent(Server& server) {
+      // Same reuse as windowsEvent: the event and `umbriel workspaces` are the one payload, including the effective
+      // layout mode of every workspace, which no Wayland protocol carries.
+      return nlohmann::json{{"event", "workspaces"}, {"data", IpcCommands::workspaces(server, {}).at("ok")}};
+    }
+
+    nlohmann::json submapEvent(Server& server) {
+      return nlohmann::json{{"event", "submap"}, {"data", IpcCommands::submap(server, {}).at("ok")}};
     }
   } // namespace
 
@@ -325,15 +353,15 @@ namespace umbriel {
           return R"({"err":"malformed request"})";
         }
         const auto& name = event.get_ref<const std::string&>();
-        if (name == "theme") {
-          requested |= Ipc::kEventTheme;
-        } else if (name == "overview") {
-          requested |= Ipc::kEventOverview;
-        } else if (name == "keyboard_layout") {
-          requested |= Ipc::kEventKeyboardLayout;
-        } else if (name == "windows") {
-          requested |= Ipc::kEventWindows;
-        } else {
+        bool matched = false;
+        for (size_t bit = 0; bit < Ipc::kEventCount; ++bit) {
+          if (name == Ipc::kEventNames[bit]) {
+            requested |= static_cast<uint8_t>(1U << bit);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
           return nlohmann::json{{"err", "unknown subscription event: " + name}}.dump();
         }
       }
@@ -365,6 +393,12 @@ namespace umbriel {
       if ((requested & Ipc::kEventWindows) != 0) {
         append(windowsEvent(*m_server));
       }
+      if ((requested & Ipc::kEventWorkspaces) != 0) {
+        append(workspacesEvent(*m_server));
+      }
+      if ((requested & Ipc::kEventSubmap) != 0) {
+        append(submapEvent(*m_server));
+      }
       return response;
     }
     const IpcCommandSpec* spec = findIpcCommand(cmd);
@@ -382,7 +416,15 @@ namespace umbriel {
   }
 
   void Ipc::broadcastEvent(uint8_t event, const nlohmann::json& payload) {
-    const std::string update = payload.dump() + '\n';
+    std::string update = payload.dump() + '\n';
+    // Coalescing bounds how often a family is rebuilt; this bounds what leaves the compositor. An arrange that ends
+    // where it started, or a window field the payload does not carry, produces the same bytes as last time and is
+    // dropped here instead of waking every subscriber's JSON parser.
+    std::string& last = m_lastBroadcast.at(static_cast<size_t>(std::countr_zero(event)));
+    if (last == update) {
+      return;
+    }
+    last = update;
     std::vector<Connection*> evicted;
     for (const auto& connection : m_connections) {
       if ((connection->subscribedEvents & event) == 0) {
@@ -420,5 +462,9 @@ namespace umbriel {
   }
 
   void Ipc::notifyWindowsChanged() { broadcastEvent(kEventWindows, windowsEvent(*m_server)); }
+
+  void Ipc::notifyWorkspacesChanged() { broadcastEvent(kEventWorkspaces, workspacesEvent(*m_server)); }
+
+  void Ipc::notifySubmapChanged() { broadcastEvent(kEventSubmap, submapEvent(*m_server)); }
 
 } // namespace umbriel

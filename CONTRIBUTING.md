@@ -5,13 +5,15 @@ This file collects contributor-facing details for Umbriel: design goals, stack n
 and debugging helpers. Umbriel shares its conventions with [noctalia](https://github.com/noctalia-dev/noctalia):
 same team, same style. If in doubt, match what noctalia does.
 
-For dependencies and normal build commands, start with [README.md](README.md).
+For dependencies and normal build commands, start with [README.md](README.md). For what the project accepts and
+declines, read [SCOPE.md](SCOPE.md): it is the reference used when triaging feature requests and unsolicited pull
+requests.
 
 ## Design Principles
 
-- Thin layer over wlroots 0.20 + SceneFX: lean on the libraries, do not reimplement them.
+- Thin layer over wlroots 0.20 + `umbrielfx`: lean on the libraries, do not reimplement them.
 - Domain-oriented C++23: one domain per directory, headers beside their sources, and `src/` as the include root.
-- Effects (blur, shadows, rounded corners, animations) go through SceneFX; patched APIs live in the fork rather than
+- Effects (blur, shadows, rounded corners, animations) go through `umbrielfx`; new visuals land there rather than as
   ad-hoc scene hacks.
 - Mechanism and policy stay separate. Example: `View::applySeatFocus` is mechanism; focus policy lives in
   `Server::focusView`.
@@ -26,7 +28,7 @@ Direct project dependencies. Transitive dependencies are owned by their providin
 | Layer | Library |
 |-------|---------|
 | Compositor framework | `wlroots-0.20` |
-| Scene graph and effects | `SceneFX` (blur, shadows, rounded corners; patched fork, submodule) |
+| Scene graph and effects | `umbrielfx` (blur, shadows, rounded corners; maintained in-tree) |
 | Wayland core | `wayland-server`, `wayland-client`, `wayland-protocols`, `wayland-scanner` |
 | Input | `libinput`, `xkbcommon` |
 | Graphics | `pixman`, `libdrm`, OpenGL via wlroots |
@@ -57,6 +59,7 @@ Tests live in three places, and which one a change belongs in follows from what 
 
 ```
 tests/unit/            C++ unit tests, one binary per test, run by `just test`
+tests/meson.build      the unit test table and the harness client targets
 tests/harness/verify.sh the headless compositor harness, run by `just verify`
 tests/harness/checks/   one script per behaviour it asserts
 tests/harness/clients/  Wayland helper clients the checks drive
@@ -65,8 +68,13 @@ tests/harness/clients/  Wayland helper clients the checks drive
 A unit test covers math and pure decisions (layout geometry, config classification, keybind parsing) and never needs a
 compositor. A harness check covers anything that only exists in a running compositor: real clients, real framebuffers,
 seat grabs, live reloads. Every unit test gets `umbriel_pure_dep`, and one that needs compositor code adds
-`umbriel_core_dep` in the third field of the `unit_tests` table in `meson.build`. A test that is not in that table is
-not built and will rot unnoticed.
+`umbriel_core_dep` in the third field of the `unit_tests` table in `tests/meson.build`. A test that is not in that
+table is not built and will rot unnoticed.
+
+Test targets exist only where the `tests` feature option resolves to enabled. `just configure` passes
+`-Dtests=enabled` for every mode, so `just test` and `just verify` work in debug, asan, and release build directories.
+A build directory configured by hand without that option follows `auto`: unsanitized debug builds get the targets, a
+release build gets none. Test binaries land in the build directory's `tests` subdir.
 
 `verify.sh` runs every script in `tests/harness/checks/` against its own dedicated compositor: one contained headless
 instance is booted per check, the check runs in its own process group with `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`
@@ -146,6 +154,18 @@ Getters are the noun, without a `get` prefix, and `[[nodiscard]]`: `toplevel()`,
   `m_event{}` member.
 - Include ordering follows clang-format regrouping: project `"..."` headers first, then system `<...>` headers.
 
+## Pull Request Template
+
+Pull request descriptions are checked automatically when they are opened, edited, reopened, or marked ready for
+review. Keep the `## Summary`, `## Motivation`, `## Type of Change`, `## Testing`, and `## Checklist` headings and the
+Checklist wording from [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). The remaining sections
+are context only: fill them in, leave them empty, or delete them. In Type of Change, keep only the lines that apply.
+
+Draft pull requests may leave checkboxes incomplete. Before marking a pull request ready for review, select at least one
+change type and check every item in the Checklist section. A pull request that is missing required template structure
+is commented on and converted back to a draft; add the missing content and mark it ready for review to run the check
+again. The check never closes a pull request.
+
 ## Project Layout
 
 ```text
@@ -166,6 +186,7 @@ src/
   config/     TOML parsing, resolution, reloads, and diagnostics
   core/       animation, logging, process, and resource helpers
   cli/        runtime inspection and command-line entry points
+umbrielfx/    in-tree scene graph and GLES2 renderer (C, hard fork of SceneFX)
 protocols/    vendored Wayland protocol XML
 data/         session desktop entry
 nix/          package and system integration modules
@@ -180,10 +201,28 @@ Conventions:
   config options. The reference pages are linked from [`examples/config.toml`](examples/config.toml) and the
   [README](README.md#configuration). Maintainer design notes live in [`docs/design/`](docs/design/).
 
-## SceneFX submodule
+## umbrielfx
 
-SceneFX is a git submodule tracking the `umbriel` branch of `noctalia-dev/scenefx`. Edit its sources in place, commit
-in the submodule, and push to the fork.
+`umbrielfx/` is a hard fork of [SceneFX](https://github.com/wlrfx/scenefx), built by `subdir('umbrielfx')` from the
+root `meson.build`. Edit it like any other directory and commit alongside the compositor change that needs it. Never
+rebase it onto upstream SceneFX.
+
+It is C compiled against wlroots' private struct layouts (`-DWLR_PRIVATE=`), so its compiler flags stay on its own
+target and never reach the compositor's C++23 units. Public headers are `umbrielfx/include/umbrielfx/`; private ones
+live in `umbrielfx/internal/` and stay off the compositor's include path. See
+[`umbrielfx/README.md`](umbrielfx/README.md).
+
+It replaces wlroots' scene graph but reuses the scene helpers it does not reimplement, such as
+`wlr_scene_xdg_surface_create` and `wlr_scene_attach_output_layout`. Those resolve to `libwlroots` and read
+umbrielfx's structs at wlroots' field offsets, so a struct in `types/wlr_scene.h` that wlroots also declares must stay
+a strict prefix extension: new fields go after every wlroots field. `umbrielfx/tests/abi.c` fails the build's test
+suite if that slips.
+
+Its regressions run in their own suite:
+
+```sh
+meson test -C build-release --suite umbrielfx
+```
 
 ## Debugging
 
@@ -201,13 +240,16 @@ umbriel -v | --version            # print the release version and commit revisio
 umbriel validate [-c <config>]   # check a config file without starting
 umbriel outputs                  # list connectors and modes
 umbriel windows                  # list windows (focused *, urgent !)
+umbriel workspaces               # list workspaces and their layouts
+umbriel subscribe <events>       # stream events as JSON lines until closed
 umbriel layers                   # list layer-shell surfaces
 umbriel keyboard-layouts         # list configured keyboard layouts
 umbriel msg --help              # list actions available to `msg` and keybinds
 umbriel msg <action> [args...]   # send an action to the running compositor
 ```
 
-`windows`, `layers`, `keyboard-layouts`, and `msg` accept `--json` / `-j` for machine-readable output.
+`windows`, `workspaces`, `layers`, `keyboard-layouts`, and `msg` accept `--json` / `-j` for machine-readable output.
+`subscribe` is always JSON; see [docs/user/ipc.md](docs/user/ipc.md) for the families and payloads.
 
 ## Commits
 

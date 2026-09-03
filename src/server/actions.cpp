@@ -464,7 +464,8 @@ namespace umbriel {
     }
 
     void maybeWarpCursorToWindow(Server& server, View* view) {
-      if (config().input.cursor.followsFocus && view != nullptr) {
+      Overview* overview = server.overview();
+      if (config().input.cursor.followsFocus && view != nullptr && (overview == nullptr || !overview->active())) {
         warpCursorToWindow(server, *view);
       }
     }
@@ -536,10 +537,6 @@ namespace umbriel {
     }
 
     template <int Direction> bool actionFocusAdjacent(Server& server, const Keybind& bind, std::string* /*error*/) {
-      if (Overview* overview = server.overview(); overview != nullptr && overview->interactive()) {
-        overview->focusAdjacent(Direction);
-        return true;
-      }
       if (bind.wheel != WheelDirection::None && tiledDragActive(server)) {
         scrollActiveLayout<Direction>(server, 2);
         return true;
@@ -554,10 +551,6 @@ namespace umbriel {
 
     template <int Direction, wlr_direction WlrDir>
     bool actionFocusHorizontalOrOutput(Server& server, const Keybind& bind, std::string* error) {
-      if (Overview* overview = server.overview(); overview != nullptr && overview->interactive()) {
-        overview->focusAdjacent(Direction);
-        return true;
-      }
       if (Workspace* workspace = activeWorkspace(server)) {
         if (View* target = workspace->focusAdjacent(Direction)) {
           focusWindowFromNavigation(server, target);
@@ -854,14 +847,14 @@ namespace umbriel {
       return true;
     }
 
-    bool actionMasterCountIncrease(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+    bool actionLayoutMasterCountIncrease(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       if (Workspace* workspace = activeWorkspace(server)) {
         workspace->increaseMasterCount();
       }
       return true;
     }
 
-    bool actionMasterCountDecrease(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
+    bool actionLayoutMasterCountDecrease(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       if (Workspace* workspace = activeWorkspace(server)) {
         workspace->decreaseMasterCount();
       }
@@ -1411,8 +1404,8 @@ namespace umbriel {
         &actionFocusCycle<-1>,
         &actionSwapCycle<1>,
         &actionSwapCycle<-1>,
-        &actionMasterCountIncrease,
-        &actionMasterCountDecrease,
+        &actionLayoutMasterCountIncrease,
+        &actionLayoutMasterCountDecrease,
         &actionSetHeight,
         &actionModifyHeight,
         &actionCycleHeight<1>,

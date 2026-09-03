@@ -10,6 +10,7 @@ using umbriel::Keybind;
 using umbriel::LayerRule;
 using umbriel::ModifierKey;
 using umbriel::OutputRule;
+using umbriel::SecurityContextRule;
 using umbriel::WindowRule;
 
 UMBRIEL_TEST(anIdenticalConfigChangesNothing) {
@@ -184,13 +185,20 @@ UMBRIEL_TEST(nestedAppearanceChangesAreCaught) {
   CHECK(ConfigChange::between(before, focused).input);
 }
 
-UMBRIEL_TEST(featureSpecificColorChangesRemainAppearanceChanges) {
+UMBRIEL_TEST(borderColorChangesAreColorChangesThatRefreshChrome) {
   const Config before;
   Config after;
-  after.appearance.borderFocused[0] += 0.1F;
+  after.colors.border.focused[0] += 0.1F;
   const ConfigChange change = ConfigChange::between(before, after);
-  CHECK(change.appearance);
-  CHECK(!change.colors);
+  CHECK(change.colors);
+  CHECK(!change.appearance);
+
+  const ConfigEffects effects = ConfigEffects::between(before, after);
+  CHECK(effects.viewChrome);
+  CHECK(effects.internalUi);
+  CHECK(effects.overviewPresentation);
+  CHECK(!effects.workspaceLayout);
+  CHECK(!effects.sceneBlur);
 }
 
 UMBRIEL_TEST(listSectionsAreCompared) {
@@ -217,6 +225,11 @@ UMBRIEL_TEST(listSectionsAreCompared) {
     Config after;
     after.layerRules.push_back(LayerRule{});
     CHECK(ConfigChange::between(before, after).layerRules);
+  }
+  {
+    Config after;
+    after.securityContextRules.push_back(SecurityContextRule{});
+    CHECK(ConfigChange::between(before, after).securityContextRules);
   }
 }
 
@@ -307,18 +320,17 @@ UMBRIEL_TEST(firstLoadInvalidatesEveryRuntimeConsumer) {
   CHECK(effects.internalUi);
 }
 
-UMBRIEL_TEST(semanticColorsRefreshOnlyInternalUi) {
+UMBRIEL_TEST(anyColorChangeRefreshesEveryColorConsumer) {
   const Config before;
   Config after;
   after.colors.textPrimary[0] -= 0.1F;
 
   const ConfigEffects effects = ConfigEffects::between(before, after);
-  CHECK(effects.internalUi);
-  CHECK_EQ(effects.summary(), std::string("internal UI"));
+  CHECK_EQ(effects.summary(), std::string("view chrome, internal UI, overview presentation"));
   CHECK(!effects.outputState);
   CHECK(!effects.workspaceLayout);
-  CHECK(!effects.viewChrome);
-  CHECK(!effects.overviewPresentation);
+  CHECK(!effects.sceneBlur);
+  CHECK(!effects.input);
 }
 
 UMBRIEL_TEST(borderWidthRefreshesChromeAndWorkspaceLayout) {
@@ -427,6 +439,37 @@ UMBRIEL_TEST(outputStateAndWorkspaceInventoryAreIndependent) {
   CHECK(reenableEffects.outputState);
   CHECK(!reenableEffects.workspaceInventory);
 }
+
+UMBRIEL_TEST(outputScrollingDefaultOnlyRefreshesWorkspaceLayout) {
+  Config before;
+  OutputRule output;
+  output.name = "HEADLESS-1";
+  before.outputs.push_back(output);
+
+  Config after = before;
+  after.outputs[0].layout.scrolling.defaultWidthFraction = 0.75;
+
+  const ConfigChange change = ConfigChange::between(before, after);
+  CHECK(change.outputs);
+  CHECK(!change.layout);
+
+  const ConfigEffects effects = ConfigEffects::between(before, after);
+  CHECK(effects.workspaceLayout);
+  CHECK(!effects.outputState);
+  CHECK(!effects.tearingPolicy);
+  CHECK(!effects.directScanoutPolicy);
+  CHECK(!effects.workspaceInventory);
+  CHECK(!effects.sceneBlur);
+  CHECK(!effects.viewChrome);
+  CHECK(!effects.layerEffects);
+  CHECK(!effects.animation);
+  CHECK(!effects.input);
+  CHECK(!effects.overviewPresentation);
+  CHECK(!effects.internalUi);
+  CHECK(effects.invalidatesOverview());
+  CHECK_EQ(effects.summary(), std::string("workspace layout"));
+}
+
 UMBRIEL_TEST(outputRuleNameSetChangesRefreshIdentityDependentEffects) {
   Config before;
   OutputRule connector;
@@ -597,6 +640,35 @@ UMBRIEL_TEST(blurRulesAndInputReachOnlyTheirConsumers) {
   Config cursorChanged;
   cursorChanged.input.cursor.hardwareCursor = false;
   CHECK(ConfigEffects::between(before, cursorChanged).input);
+}
+
+UMBRIEL_TEST(ruleRequestingOptimizedBlurReachesTheOutputs) {
+  Config before;
+  before.appearance.blur.optimized = false;
+  CHECK(!before.optimizedBlurNeeded());
+
+  // Adding a window rule normally only touches view chrome, but a rule that
+  // asks for the cached background blur has to create it on every output.
+  Config windowed = before;
+  WindowRule rule;
+  rule.blurOptimized = true;
+  windowed.windowRules.push_back(rule);
+  CHECK(windowed.optimizedBlurNeeded());
+  CHECK(ConfigEffects::between(before, windowed).sceneBlur);
+
+  Config layered = before;
+  LayerRule layerRule;
+  layerRule.optimized = true;
+  layered.layerRules.push_back(layerRule);
+  CHECK(layered.optimizedBlurNeeded());
+  CHECK(ConfigEffects::between(before, layered).sceneBlur);
+
+  Config optedOut = before;
+  WindowRule plain;
+  plain.blurOptimized = false;
+  optedOut.windowRules.push_back(plain);
+  CHECK(!optedOut.optimizedBlurNeeded());
+  CHECK(!ConfigEffects::between(before, optedOut).sceneBlur);
 }
 
 UMBRIEL_TEST(overviewInvalidationExcludesIrrelevantRuntimeEffects) {

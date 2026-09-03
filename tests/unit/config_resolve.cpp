@@ -1,9 +1,11 @@
 #include "check.h"
 #include "config/resolve.h"
 
+#include <algorithm>
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -13,6 +15,7 @@ using umbriel::LayerRule;
 using umbriel::LayoutMode;
 using umbriel::OutputIdentity;
 using umbriel::OutputRule;
+using umbriel::SecurityContextRule;
 using umbriel::VrrMode;
 using umbriel::WindowRule;
 using umbriel::WorkspaceConfig;
@@ -132,6 +135,40 @@ UMBRIEL_TEST(workspaceOverridesApplyGlobalThenOutputSpecificRules) {
   CHECK(elsewhere.master.newOnTop);
   CHECK(!elsewhere.dwindle.preserveSplit);
 }
+
+UMBRIEL_TEST(outputScrollingDefaultPrecedesWorkspaceRulesAndFollowsGlobalLayout) {
+  Config config;
+  config.layout.scrolling.defaultWidthFraction = 0.2;
+
+  OutputRule output;
+  output.name = "DP-1";
+  output.layout.scrolling.defaultWidthFraction = 0.3;
+  config.outputs.push_back(std::move(output));
+
+  WorkspaceConfig globalWorkspace;
+  globalWorkspace.name = "dev";
+  globalWorkspace.layout.scrolling.defaultWidthFraction = 0.4;
+  config.workspaceRules.push_back(std::move(globalWorkspace));
+
+  WorkspaceConfig outputWorkspace;
+  outputWorkspace.name = "dev";
+  outputWorkspace.output = "DP-1";
+  outputWorkspace.layout.scrolling.defaultWidthFraction = 0.5;
+  config.workspaceRules.push_back(std::move(outputWorkspace));
+
+  const auto outputSpecific = umbriel::resolveWorkspaceLayout(config, identity("DP-1"), "dev", 0);
+  CHECK_EQ(*outputSpecific.scrolling.defaultWidthFraction, 0.5);
+
+  const auto outputDefault = umbriel::resolveWorkspaceLayout(config, identity("DP-1"), "chat", 1);
+  CHECK_EQ(*outputDefault.scrolling.defaultWidthFraction, 0.3);
+
+  const auto workspaceDefault = umbriel::resolveWorkspaceLayout(config, identity("DP-2"), "dev", 0);
+  CHECK_EQ(*workspaceDefault.scrolling.defaultWidthFraction, 0.4);
+
+  const auto globalDefault = umbriel::resolveWorkspaceLayout(config, identity("DP-2"), "chat", 1);
+  CHECK_EQ(*globalDefault.scrolling.defaultWidthFraction, 0.2);
+}
+
 UMBRIEL_TEST(outputSpecificWorkspaceRulesBeatLaterGlobalRules) {
   Config config;
 
@@ -221,15 +258,18 @@ UMBRIEL_TEST(workspaceRulesMatchConnectorAndDescriptorWithoutOutputSection) {
 
 UMBRIEL_TEST(descriptorOutputRuleOverridesConnectorFallback) {
   Config config;
+  config.layout.scrolling.defaultWidthFraction = 0.5;
 
   OutputRule connector;
   connector.name = "HDMI-A-1";
   connector.workspaces = std::vector<std::string>{"fallback"};
+  connector.layout.scrolling.defaultWidthFraction = 0.25;
   config.outputs.push_back(std::move(connector));
 
   OutputRule descriptor;
   descriptor.name = "Microstep MSI G2712F CD6T084401192";
   descriptor.workspaces = std::vector<std::string>{"specific"};
+  descriptor.layout.scrolling.defaultWidthFraction = 0.75;
   config.outputs.push_back(std::move(descriptor));
 
   constexpr OutputIdentity monitor = identity("HDMI-A-1", "Microstep", "MSI G2712F", "CD6T084401192");
@@ -237,6 +277,7 @@ UMBRIEL_TEST(descriptorOutputRuleOverridesConnectorFallback) {
   CHECK(selected != nullptr);
   if (selected != nullptr) {
     CHECK_EQ(selected->name, std::string{"Microstep MSI G2712F CD6T084401192"});
+    CHECK_EQ(*selected->layout.scrolling.defaultWidthFraction, 0.75);
   }
 
   const auto resolved = umbriel::resolveWorkspacesForOutput(config, monitor);
@@ -244,6 +285,7 @@ UMBRIEL_TEST(descriptorOutputRuleOverridesConnectorFallback) {
   CHECK_EQ(resolved.workspaces.size(), size_t{1});
   if (resolved.workspaces.size() == 1) {
     CHECK_EQ(resolved.workspaces[0].name, std::string{"specific"});
+    CHECK_EQ(*resolved.workspaces[0].layout.scrolling.defaultWidthFraction, 0.75);
   }
 }
 
@@ -578,6 +620,48 @@ UMBRIEL_TEST(layerRulesMergeMatchingFieldsInOrder) {
   const auto blankNamespace = umbriel::resolveLayerRules(config, "");
   CHECK(blankNamespace.blur && *blankNamespace.blur);
   CHECK(!umbriel::resolveLayerRules(config, std::nullopt).blur);
+}
+
+UMBRIEL_TEST(securityContextRulesGrantGlobalsByMetadata) {
+  Config config;
+
+  SecurityContextRule scoped;
+  scoped.sandboxEnginePattern = "^org\\.flatpak$";
+  scoped.sandboxEngineRegex = std::regex(scoped.sandboxEnginePattern);
+  scoped.appIdPattern = "^org\\.example\\.Bar$";
+  scoped.appIdRegex = std::regex(scoped.appIdPattern);
+  scoped.allowGlobals = {"zwlr_layer_shell_v1"};
+  config.securityContextRules.push_back(std::move(scoped));
+
+  SecurityContextRule wildcard;
+  wildcard.allowGlobals = {"ext_idle_notifier_v1"};
+  config.securityContextRules.push_back(std::move(wildcard));
+
+  SecurityContextRule partial;
+  partial.appIdPattern = "example";
+  partial.appIdRegex = std::regex(partial.appIdPattern);
+  partial.allowGlobals = {"zwlr_screencopy_manager_v1"};
+  config.securityContextRules.push_back(std::move(partial));
+
+  const auto grants = [&](const char* engine, const char* appId, std::string_view global) {
+    const std::vector<std::string> globals = umbriel::securityContextRuleGlobals(config, engine, appId);
+    return std::ranges::find(globals, global) != globals.end();
+  };
+
+  CHECK(grants("org.flatpak", "org.example.Bar", "zwlr_layer_shell_v1"));
+  // Every specified match key must hold.
+  CHECK(!grants("org.flatpak", "org.example.Other", "zwlr_layer_shell_v1"));
+  CHECK(!grants("waypak", "org.example.Bar", "zwlr_layer_shell_v1"));
+  // Absent metadata never satisfies a pattern.
+  CHECK(!grants(nullptr, "org.example.Bar", "zwlr_layer_shell_v1"));
+  // A rule without match keys applies to every client, but only for its own globals.
+  CHECK(grants(nullptr, nullptr, "ext_idle_notifier_v1"));
+  CHECK_EQ(umbriel::securityContextRuleGlobals(config, nullptr, nullptr).size(), size_t{1});
+  // The whole value must match; a substring is not enough.
+  CHECK(!grants("org.flatpak", "org.example.Bar", "zwlr_screencopy_manager_v1"));
+  CHECK(grants(nullptr, "example", "zwlr_screencopy_manager_v1"));
+  // Matching rules pool their globals.
+  CHECK_EQ(umbriel::securityContextRuleGlobals(config, "org.flatpak", "org.example.Bar").size(), size_t{2});
 }
 
 int main() { return RUN_TESTS(); }

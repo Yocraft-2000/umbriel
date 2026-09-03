@@ -3,6 +3,7 @@
 #include "config/config.h"
 #include "config/config_diag.h"
 #include "config/config_watcher.h"
+#include "config/resolve.h"
 #include "core/fdlimit.h"
 #include "core/log.h"
 #include "core/process.h"
@@ -32,11 +33,13 @@
 #include <array>
 #include <csignal>
 #include <cstdlib>
+#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
+#include <vector>
 
 namespace umbriel {
 
@@ -46,6 +49,7 @@ namespace umbriel {
     constexpr size_t kWaylandClientBufferSize = 1024 * 1024;
     // Security-context clients only receive reviewed, ordinary application
     // protocols. New globals stay unavailable until they are classified here.
+    // [[security_context_rule]] widens the set for matching clients.
     constexpr std::array<std::string_view, 28> kAllowedSecurityContextGlobals{
         "wl_shm",
         "wl_drm",
@@ -81,6 +85,45 @@ namespace umbriel {
       return std::ranges::find(kAllowedSecurityContextGlobals, interface) != kAllowedSecurityContextGlobals.end();
     }
 
+    struct ClientGlobalPolicy {
+      wl_listener destroy{};
+      bool advertiseDecorationManagers = true;
+      bool advertisePrimarySelection = true;
+      // Resolved on first use: security-context metadata is attached after the client-created signal.
+      std::optional<std::vector<std::string>> securityContextGlobals;
+    };
+
+    void onClientGlobalPolicyDestroy(wl_listener* listener, void* /*data*/) {
+      ClientGlobalPolicy* policy;
+      policy = wl_container_of(listener, policy, destroy);
+      wl_list_remove(&policy->destroy.link);
+      delete policy;
+    }
+
+    ClientGlobalPolicy* attachClientGlobalPolicy(wl_client* client) {
+      auto* policy = new ClientGlobalPolicy{};
+      policy->advertiseDecorationManagers = config().appearance.preferNoCsd;
+      policy->advertisePrimarySelection = config().input.middleClickPaste;
+      policy->destroy.notify = onClientGlobalPolicyDestroy;
+      wl_client_add_destroy_listener(client, &policy->destroy);
+      return policy;
+    }
+
+    ClientGlobalPolicy* clientGlobalPolicy(const wl_client* client) {
+      wl_listener* listener =
+          wl_client_get_destroy_listener(const_cast<wl_client*>(client), onClientGlobalPolicyDestroy);
+      if (listener == nullptr) {
+        return attachClientGlobalPolicy(const_cast<wl_client*>(client));
+      }
+      ClientGlobalPolicy* policy;
+      policy = wl_container_of(listener, policy, destroy);
+      return policy;
+    }
+
+    void onClientCreated(wl_listener* /*listener*/, void* data) {
+      attachClientGlobalPolicy(static_cast<wl_client*>(data));
+    }
+
     bool filterGlobal(const wl_client* client, const wl_global* global, void* data) {
       auto* server = static_cast<Server*>(data);
       const wl_interface* interface = wl_global_get_interface(global);
@@ -88,11 +131,31 @@ namespace umbriel {
         return true;
       }
       const std::string_view interfaceName(interface->name);
-      if (server->clientHasSecurityContext(client) && !isAllowedSecurityContextGlobal(interfaceName)) {
-        return false;
+      // A global filter is consulted both when a global is advertised and when
+      // it is bound, so each client's decisions must remain stable for its
+      // entire connection.
+      ClientGlobalPolicy* policy = clientGlobalPolicy(client);
+      if (const wlr_security_context_v1_state* context = server->clientSecurityContext(client);
+          context != nullptr && !isAllowedSecurityContextGlobal(interfaceName)) {
+        // Nested contexts stay blocked unconditionally: per-app grants are only
+        // trustworthy while labels originate from unrestricted clients.
+        if (interfaceName == "wp_security_context_manager_v1") {
+          return false;
+        }
+        if (!policy->securityContextGlobals) {
+          policy->securityContextGlobals =
+              securityContextRuleGlobals(config(), context->sandbox_engine, context->app_id);
+        }
+        if (std::ranges::find(*policy->securityContextGlobals, interfaceName)
+            == policy->securityContextGlobals->end()) {
+          return false;
+        }
       }
       if (interfaceName == "zwp_primary_selection_device_manager_v1") {
-        return config().input.middleClickPaste;
+        return policy->advertisePrimarySelection;
+      }
+      if (interfaceName == "zxdg_decoration_manager_v1" || interfaceName == "org_kde_kwin_server_decoration_manager") {
+        return policy->advertiseDecorationManagers;
       }
       if (interfaceName == "wp_color_manager_v1") {
         const bool wine = WineColorManager::clientNeedsCompatibility(client);
@@ -152,9 +215,11 @@ namespace umbriel {
 
   } // namespace
 
-  bool Server::clientHasSecurityContext(const wl_client* client) const {
-    return m_securityContextManager != nullptr
-        && wlr_security_context_manager_v1_lookup_client(m_securityContextManager, client) != nullptr;
+  const wlr_security_context_v1_state* Server::clientSecurityContext(const wl_client* client) const {
+    if (m_securityContextManager == nullptr) {
+      return nullptr;
+    }
+    return wlr_security_context_manager_v1_lookup_client(m_securityContextManager, client);
   }
 
   ContentType Server::surfaceContentType(wlr_surface* surface) const {
@@ -196,6 +261,8 @@ namespace umbriel {
       throw std::runtime_error("failed to create wl_display");
     }
     wl_display_set_default_max_buffer_size(m_display, kWaylandClientBufferSize);
+    m_clientCreated.notify = onClientCreated;
+    wl_display_add_client_created_listener(m_display, &m_clientCreated);
 
     m_backend = wlr_backend_autocreate(wl_display_get_event_loop(m_display), &m_session);
     if (m_backend == nullptr) {
@@ -259,10 +326,21 @@ namespace umbriel {
     if (m_contentTypeManager == nullptr) {
       throw std::runtime_error("failed to create content-type manager");
     }
-    wlr_ext_data_control_manager_v1_create(m_display, 1);
+    if (wlr_ext_data_control_manager_v1_create(m_display, 1) == nullptr) {
+      throw std::runtime_error("failed to create ext-data-control manager");
+    }
+    if (wlr_data_control_manager_v1_create(m_display) == nullptr) {
+      throw std::runtime_error("failed to create legacy data-control manager");
+    }
 
     m_outputLayout = wlr_output_layout_create(m_display);
     wlr_xdg_output_manager_v1_create(m_display, m_outputLayout);
+    // A scene helper served by libwlroots allocates nodes too small for
+    // umbrielfx's trailing fields, which renders every surface black instead of
+    // failing. Refuse to build a scene on top of that.
+    if (const char* mismatch = umbrielfx_scene_check_helpers(); mismatch != nullptr) {
+      throw std::runtime_error(std::string("umbrielfx scene helpers are not linked correctly: ") + mismatch);
+    }
     m_scene = wlr_scene_create();
     if (linuxDmabuf != nullptr) {
       wlr_scene_set_linux_dmabuf_v1(m_scene, linuxDmabuf);
@@ -317,7 +395,7 @@ namespace umbriel {
 
     // Global stacking keeps scratchpads above normal windows and below drag, panels, fullscreen, overlays, and lock.
     // Per-output layer trees keep normal windows below panels.
-    m_backdrop = wlr_scene_rect_create(&m_scene->tree, 0, 0, config().appearance.backdropColor.data());
+    m_backdrop = wlr_scene_rect_create(&m_scene->tree, 0, 0, config().colors.backdrop.data());
     wlr_scene_rect_set_corner_radius(m_backdrop, 0);
     m_shellLayerTrees[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = wlr_scene_tree_create(&m_scene->tree);
     m_overviewBlurTree = wlr_scene_tree_create(&m_scene->tree);
@@ -343,7 +421,7 @@ namespace umbriel {
     m_bannerTree = wlr_scene_tree_create(&m_scene->tree);
     m_quitConfirmTree = wlr_scene_tree_create(&m_scene->tree);
     m_lockTree = wlr_scene_tree_create(&m_scene->tree);
-    m_lockBlank = wlr_scene_rect_create(m_lockTree, 0, 0, config().appearance.backdropColor.data());
+    m_lockBlank = wlr_scene_rect_create(m_lockTree, 0, 0, config().colors.backdrop.data());
     wlr_scene_rect_set_corner_radius(m_lockBlank, 0);
     wlr_scene_node_set_enabled(&m_lockBlank->node, false);
     wlr_scene_node_set_enabled(&m_lockTree->node, false);
@@ -372,9 +450,7 @@ namespace umbriel {
 
     m_serverDecorationManager = wlr_server_decoration_manager_create(m_display);
     wlr_server_decoration_manager_set_default_mode(
-        m_serverDecorationManager,
-        config().appearance.preferNoCsd ? WLR_SERVER_DECORATION_MANAGER_MODE_SERVER
-                                        : WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT
+        m_serverDecorationManager, WLR_SERVER_DECORATION_MANAGER_MODE_SERVER
     );
 
     m_layerShell = wlr_layer_shell_v1_create(m_display, 4);
@@ -454,6 +530,7 @@ namespace umbriel {
 
   Server::~Server() {
     m_stopping = true;
+    wl_list_remove(&m_clientCreated.link);
     wl_list_remove(&m_newOutput.link);
     wl_list_remove(&m_newInput.link);
     wl_list_remove(&m_newXdgToplevel.link);
@@ -658,7 +735,17 @@ namespace umbriel {
     return true;
   }
 
-  void Server::showConfigDiagnostics() { m_configBanner->show(configDiagnostics()); }
+  void Server::showConfigDiagnostics() {
+    std::vector<ConfigDiagnostic> diagnostics = configDiagnostics();
+    if (m_xwayland != nullptr && !m_xwayland->executableAvailable()) {
+      ConfigDiagnostic diagnostic;
+      diagnostic.severity = ConfigDiagnostic::Severity::Warning;
+      diagnostic.message =
+          "general.xwayland is enabled, but xwayland-satellite was not found on PATH; X11 applications will not work";
+      diagnostics.push_back(std::move(diagnostic));
+    }
+    m_configBanner->show(diagnostics);
+  }
 
   void Server::markDirty(Dirty what) {
     m_dirty |= what;
