@@ -1812,7 +1812,7 @@ namespace umbriel {
   }
 
   void Overview::onWorkspaceActivated(WorkspaceGroup* group) {
-    if (!m_active || m_closing || group == nullptr || group->active() == nullptr) {
+    if (!m_active || group == nullptr || group->active() == nullptr) {
       return;
     }
     OutputState* target = stateFor(group->output());
@@ -1828,7 +1828,7 @@ namespace umbriel {
       state->rowTo = state->rowScroll;
     }
     target->rowTo = row;
-    startAnimation(m_targetProgress, false);
+    startAnimation(m_targetProgress, m_closing);
     assignShortcuts();
   }
 
@@ -2326,13 +2326,6 @@ namespace umbriel {
         || action == KeybindAction::WindowFocusOrOutputDown;
     if (!directional || !active()) {
       return false;
-    }
-
-    // Once closing starts the filmstrip is no longer interactive. Consume a
-    // held or newly pressed navigation bind so it cannot mutate the hidden
-    // desktop during the zoom, while Server still applies its submapAfter.
-    if (!interactive()) {
-      return true;
     }
 
     if (!m_shortcutInput.empty()) {
