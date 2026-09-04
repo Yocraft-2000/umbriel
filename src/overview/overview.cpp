@@ -2324,17 +2324,12 @@ namespace umbriel {
         || action == KeybindAction::WindowFocusOrWorkspaceDown
         || action == KeybindAction::WindowFocusOrOutputUp
         || action == KeybindAction::WindowFocusOrOutputDown;
-    if (!directional || !active()) {
-      return false;
-    }
 
-    if (!m_shortcutInput.empty()) {
-      clearShortcutInput();
+    // Directional actions always keep their normal handler: onWorkspaceActivated redirects the row
+    // target instead of ignoring activation while closing, so nothing needs to be blocked here.
+    if (directional && interactive() && !m_shortcutInput.empty()) {
+        clearShortcutInput();
     }
-    // Directional actions retain their normal handlers while the overview is
-    // interactive. In particular, direct vertical focus keeps its layout
-    // semantics, while OrWorkspace and OrOutput actions keep their documented
-    // fallbacks.
     return false;
   }
 
