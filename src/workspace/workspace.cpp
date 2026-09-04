@@ -1068,8 +1068,9 @@ namespace umbriel {
     view->dropMaximizedForResize();
     view->requestFloatingSize(width, height);
     view->beginResizeAnimation(width, height);
-    // Resize in place: the keep-visible clamp runs at commit, once the
-    // geometry is no longer stale (adoptFloatingClientSize).
+    // Resize in place. The clamp runs on the requested size: the origin has to travel with the presented size, and a
+    // client that commits exactly what was requested never re-enters the clamp at commit.
+    view->clampFloatingPositionForSize(width, height);
     return true;
   }
 
