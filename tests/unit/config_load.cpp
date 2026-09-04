@@ -696,15 +696,16 @@ UMBRIEL_TEST(colorKeysOutsideTheColorsSectionAreUnknown) {
   ConfigStore& store = umbriel::configStore();
   store.setRootPath(file.path(), true);
 
+  const umbriel::Config defaults;
   file.write("[appearance]\nborder_focused = \"#FFFFFFFF\"\nbackdrop_color = \"#000000FF\"\n");
   CHECK(store.reload().success);
-  CHECK_EQ(store.config().colors.border.focused[0], umbriel::Config{}.colors.border.focused[0]);
+  CHECK_EQ(store.config().colors.border.focused[0], defaults.colors.border.focused[0]);
   CHECK(containsDiagnostic(store, "appearance.border_focused"));
   CHECK(containsDiagnostic(store, "appearance.backdrop_color"));
 
   file.write("[overview]\nbadge_color = \"#FFFFFFFF\"\nworkspace_background = \"#FFFFFFFF\"\n");
   CHECK(store.reload().success);
-  CHECK_EQ(store.config().colors.overview.badge[0], umbriel::Config{}.colors.overview.badge[0]);
+  CHECK_EQ(store.config().colors.overview.badge[0], defaults.colors.overview.badge[0]);
   CHECK(containsDiagnostic(store, "overview.badge_color"));
   CHECK(containsDiagnostic(store, "overview.workspace_background"));
 }
@@ -713,10 +714,11 @@ UMBRIEL_TEST(colorsRejectInvalidValues) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
   store.setRootPath(file.path(), true);
+  const umbriel::Config defaults;
 
   file.write("[colors.overview]\nbadge = \"not-a-color\"\n");
   CHECK(store.reload().success);
-  CHECK_EQ(store.config().colors.overview.badge[0], umbriel::Config{}.colors.overview.badge[0]);
+  CHECK_EQ(store.config().colors.overview.badge[0], defaults.colors.overview.badge[0]);
   CHECK(containsDiagnostic(store, "colors.overview.badge (invalid color"));
 }
 
@@ -1121,6 +1123,35 @@ UMBRIEL_TEST(outputEnabledFlagParsesAndDefaultsTrue) {
   CHECK(store.reload().success);
   CHECK(store.config().outputs[0].enabled);
   CHECK(containsDiagnostic(store, "ignoring output.DP-1.enabled"));
+}
+
+UMBRIEL_TEST(outputMinWorkspacesLoadsAndRequiresDynamicWorkspaces) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[output.DP-1]\nmin_workspaces = 4\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().outputs.size(), size_t{1});
+  CHECK_EQ(store.config().outputs[0].minWorkspaces, 4);
+
+  file.write("[output.DP-1]\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().outputs[0].minWorkspaces, 1);
+
+  file.write("[output.DP-1]\nworkspaces = \"dynamic\"\nmin_workspaces = 3\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().outputs[0].minWorkspaces, 3);
+
+  file.write("[output.DP-1]\nmin_workspaces = 99\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().outputs[0].minWorkspaces, 64);
+  CHECK(containsDiagnostic(store, "output.DP-1.min_workspaces = 99 out of range, clamped to 64"));
+
+  file.write("[output.DP-1]\nworkspaces = [\"dev\", \"web\"]\nmin_workspaces = 3\n");
+  CHECK(!store.reload().success);
+  CHECK(containsDiagnostic(store, "output.DP-1.min_workspaces requires dynamic workspaces"));
+  CHECK(!containsDiagnostic(store, "unknown key output.DP-1.min_workspaces"));
 }
 
 UMBRIEL_TEST(semanticColorsLoadFromTheirOwnSection) {

@@ -255,6 +255,13 @@ namespace umbriel {
       }
     }
 
+    // Every surface of the card rounds against the card's content box, the same rule the live window uses, so a
+    // client that draws its corners from a subsurface keeps them rounded in the thumbnail.
+    const auto roundToCardBox = [surfaceRadius, contentW, contentH](wlr_scene_buffer* buffer) {
+      const wlr_box cornerBox{-buffer->node.x, -buffer->node.y, contentW, contentH};
+      wlr_scene_buffer_set_corner_radii(buffer, corner_radii_all(surfaceRadius));
+      wlr_scene_buffer_set_corner_box(buffer, surfaceRadius > 0 ? &cornerBox : nullptr);
+    };
     const double fx = static_cast<double>(contentW) / geometry.width;
     const double fy = static_cast<double>(contentH) / geometry.height;
     bool blurUpdated = false;
@@ -276,6 +283,7 @@ namespace umbriel {
         wlr_scene_node_set_enabled(&entry->buffer->node, true);
         wlr_scene_node_set_position(&entry->buffer->node, sub.x - card.box.x, sub.y - card.box.y);
         wlr_scene_buffer_set_dest_size(entry->buffer, sub.width, sub.height);
+        roundToCardBox(entry->buffer);
         continue;
       }
       // Root surface: crop to the committed window geometry so CSD shadow padding never leaks into the thumbnail, then
@@ -303,7 +311,7 @@ namespace umbriel {
       wlr_scene_node_set_position(&entry->buffer->node, 0, 0);
       wlr_scene_buffer_set_source_box(entry->buffer, &src);
       wlr_scene_buffer_set_dest_size(entry->buffer, contentW, contentH);
-      wlr_scene_buffer_set_corner_radii(entry->buffer, corner_radii_all(surfaceRadius));
+      roundToCardBox(entry->buffer);
       const wlr_box blurBox{0, 0, contentW, contentH};
       card.blur.setAlpha(1.0F);
       card.blur.update(
@@ -904,6 +912,7 @@ namespace umbriel {
       }
       wlr_scene_buffer_set_transform(copy, source->transform);
       wlr_scene_buffer_set_corner_radii(copy, source->corners);
+      wlr_scene_buffer_set_corner_box(copy, &source->corner_box);
       wlr_scene_buffer_set_opacity(copy, source->opacity);
       wlr_scene_buffer_set_transfer_function(copy, source->transfer_function);
       wlr_scene_buffer_set_primaries(copy, source->primaries);
@@ -2400,13 +2409,9 @@ namespace umbriel {
     case XKB_KEY_Right:
       return dispatch(KeybindAction::WindowFocusRight);
     case XKB_KEY_Up:
-      clearShortcutInput();
-      selectRelativeWorkspace(-1, nullptr);
-      return true;
+      return dispatch(KeybindAction::WindowFocusOrWorkspaceUp);
     case XKB_KEY_Down:
-      clearShortcutInput();
-      selectRelativeWorkspace(1, nullptr);
-      return true;
+      return dispatch(KeybindAction::WindowFocusOrWorkspaceDown);
     default:
       return false;
     }

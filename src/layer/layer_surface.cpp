@@ -52,7 +52,7 @@ namespace umbriel {
       m_layerSurface = nullptr;
       return;
     }
-    m_rule = resolveLayerRules(config(), m_layerSurface->namespace_);
+    m_rule = resolveLayerRules(config(), ruleText(m_layerSurface->namespace_));
     m_scene->tree->node.data = sceneNodeData(this);
     m_layerSurface->data = this;
 
@@ -148,6 +148,7 @@ namespace umbriel {
           }
           wlr_scene_buffer_set_transform(copy, src->transform);
           wlr_scene_buffer_set_corner_radii(copy, src->corners);
+          wlr_scene_buffer_set_corner_box(copy, &src->corner_box);
           wlr_scene_buffer_set_opacity(copy, src->opacity);
           wlr_scene_buffer_set_transfer_function(copy, src->transfer_function);
           wlr_scene_buffer_set_primaries(copy, src->primaries);
@@ -282,7 +283,7 @@ namespace umbriel {
   }
 
   void LayerSurface::applyConfig() {
-    m_rule = resolveLayerRules(config(), m_layerSurface->namespace_);
+    m_rule = resolveLayerRules(config(), ruleText(m_layerSurface->namespace_));
     updateBlur();
   }
 

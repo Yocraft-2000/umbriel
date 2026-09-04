@@ -198,10 +198,18 @@ chord 37 # K
 wait_for_focus "$top_title"
 wait_for_workspace 1
 
-# Unbound vertical arrows remain dedicated workspace-row navigation.
+# Unbound vertical arrows follow the same local-first rule as the composite actions: a stacked card first, a
+# workspace row only once the column has no card in that direction.
+pointer tap 108 # Down
+wait_for_focus "$bottom_title"
+wait_for_workspace 1
 pointer tap 108 # Down
 wait_for_workspace 2
+wait_for_focus overview-vim-row
 pointer tap 103 # Up
+wait_for_workspace 1
+pointer tap 103 # Up
+wait_for_focus "$top_title"
 wait_for_workspace 1
 
 # Enter closes toward the selected card. Configured binds remain effective
@@ -222,4 +230,4 @@ fi
 wait_for_focus overview-vim-row
 wait_for_workspace 2
 
-echo "overview keeps configured card navigation active through the closing zoom"
+echo "overview arrows navigate cards and rows while configured binds remain active through the closing zoom"
