@@ -91,9 +91,9 @@ with the table form:
 "XF86MonBrightnessDown" = { action = "spawn:noctalia msg brightness-down 10", allow_when_locked = true }
 ```
 
-## Cooldown ms
+## Cooldown
 
-Add a cooldown to the binds, in milliseconds.
+Set `cooldown_ms` to suppress repeated bind actions for the configured duration. Matching input remains consumed while the cooldown is active, and suppressed events do not extend it.
 
 ```toml
 "Mod+WheelUp" = { action = "workspace-previous", cooldown_ms = 150 }

@@ -13,31 +13,12 @@
 #include "workspace/scratchpad.h"
 #include "workspace/workspace.h"
 
+#include <algorithm>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace umbriel {
   namespace {
-    std::string cooldownKeyFor(const Keybind& bind) {
-      std::string key;
-      key.reserve(64);
-      key += "[";
-      key += bind.submap;
-      key += "]";
-      key += std::to_string(bind.modifiers);
-      key += ",";
-      key += bind.useMod ? "1" : "0";
-      key += ",";
-      key += bind.modifierOnly ? "1" : "0";
-      key += ",";
-      key += std::to_string(bind.keysym);
-      key += ",";
-      key += std::to_string(static_cast<int>(bind.wheel));
-      key += ",";
-      key += std::to_string(bind.mouseButton);
-      return key;
-    }
     uint32_t modifierMaskForKeysym(uint32_t keysym) {
       switch (keysym) {
       case XKB_KEY_Shift_L:
@@ -89,27 +70,51 @@ namespace umbriel {
       return true;
     }
     using Clock = std::chrono::steady_clock;
-    const std::string key = cooldownKeyFor(bind);
     const Clock::time_point now = Clock::now();
-    const auto it = m_bindCooldowns.find(key);
+    const auto it = std::ranges::find_if(m_bindCooldowns, [&bind](const BindCooldown& cooldown) {
+      return cooldown.submap == bind.submap
+          && cooldown.modifiers == bind.modifiers
+          && cooldown.useMod == bind.useMod
+          && cooldown.modifierOnly == bind.modifierOnly
+          && cooldown.keysym == bind.keysym
+          && cooldown.wheel == bind.wheel
+          && cooldown.mouseButton == bind.mouseButton;
+    });
     if (it != m_bindCooldowns.end()) {
-      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second).count();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->lastTriggered).count();
       if (elapsed < bind.cooldownMs) {
         return false;
       }
+      it->lastTriggered = now;
+      return true;
     }
-    m_bindCooldowns[key] = now;
+    m_bindCooldowns.push_back({
+        .submap = bind.submap,
+        .modifiers = bind.modifiers,
+        .useMod = bind.useMod,
+        .modifierOnly = bind.modifierOnly,
+        .keysym = bind.keysym,
+        .wheel = bind.wheel,
+        .mouseButton = bind.mouseButton,
+        .lastTriggered = now,
+    });
     return true;
   }
 
-  bool Server::executeKeybindAction(const Keybind& bind, std::string* error) {
+  bool Server::executeKeybindAction(const Keybind& bind, std::string* error, bool* cooldownBlocked) {
     if (error != nullptr) {
       error->clear();
+    }
+    if (cooldownBlocked != nullptr) {
+      *cooldownBlocked = false;
     }
     if (bind.action == KeybindAction::None) {
       return false;
     }
     if (bind.cooldownMs > 0 && !cooldownAllows(bind)) {
+      if (cooldownBlocked != nullptr) {
+        *cooldownBlocked = true;
+      }
       return false;
     }
     const ActionHandlerFn handler = actionHandlerFor(bind.action);
@@ -233,7 +238,9 @@ namespace umbriel {
       return std::nullopt;
     }
     const Keybind matched = *bind;
-    return executeKeybindAction(matched) ? std::optional<Keybind>{matched} : std::nullopt;
+    bool cooldownBlocked = false;
+    const bool handled = executeKeybindAction(matched, nullptr, &cooldownBlocked);
+    return handled || cooldownBlocked ? std::optional<Keybind>{matched} : std::nullopt;
   }
 
   bool Server::handleWheelBind(WheelDirection direction, uint32_t modifiers) {
@@ -260,7 +267,10 @@ namespace umbriel {
     return false;
   }
 
-  std::optional<Keybind> Server::handleMouseBind(uint32_t button, uint32_t modifiers) {
+  std::optional<Keybind> Server::handleMouseBind(uint32_t button, uint32_t modifiers, bool* actionExecuted) {
+    if (actionExecuted != nullptr) {
+      *actionExecuted = false;
+    }
     const uint32_t effective = modifiers & ~(WLR_MODIFIER_CAPS | WLR_MODIFIER_MOD2);
     const std::string_view currentSubmap = m_activeSubmaps.empty() ? std::string_view{} : m_activeSubmaps.back();
 
@@ -279,9 +289,15 @@ namespace umbriel {
       if (effective != expected) {
         continue;
       }
-      std::optional<Keybind> matched{bind};
-      const bool handled = executeKeybindAction(*matched);
-      return handled ? std::move(matched) : std::nullopt;
+      bool cooldownBlocked = false;
+      const bool handled = executeKeybindAction(bind, nullptr, &cooldownBlocked);
+      if (!handled && !cooldownBlocked) {
+        return std::nullopt;
+      }
+      if (actionExecuted != nullptr) {
+        *actionExecuted = handled;
+      }
+      return bind;
     }
 
     return std::nullopt;
