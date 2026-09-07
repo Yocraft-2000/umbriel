@@ -103,9 +103,6 @@ namespace umbriel {
       if (overrides.scrolling.direction) {
         resolved.scrolling.direction = *overrides.scrolling.direction;
       }
-      if (overrides.scrolling.expandSingleColumn) {
-        resolved.scrolling.expandSingleColumn = *overrides.scrolling.expandSingleColumn;
-      }
       if (overrides.master.defaultWidthFraction) {
         resolved.master.defaultWidthFraction = *overrides.master.defaultWidthFraction;
       }
@@ -328,7 +325,6 @@ namespace umbriel {
     resolved.scrolling.centerUnderfullStrip = config.layout.scrolling.centerUnderfullStrip;
     resolved.scrolling.centerFocused = config.layout.scrolling.centerFocused;
     resolved.scrolling.direction = config.layout.scrolling.direction;
-    resolved.scrolling.expandSingleColumn = config.layout.scrolling.expandSingleColumn;
     resolved.dwindle.preserveSplit = config.layout.dwindle.preserveSplit;
     resolved.master.defaultWidthFraction = config.layout.master.defaultWidthFraction;
     resolved.master.newOnTop = config.layout.master.newOnTop;
