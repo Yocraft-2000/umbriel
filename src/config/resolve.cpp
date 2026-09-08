@@ -142,6 +142,21 @@ namespace umbriel {
     }
     return owner;
   }
+
+  const OutputRule* uniqueFixedWorkspaceOwner(const Config& config, std::string_view name) {
+    const OutputRule* owner = nullptr;
+    for (const OutputRule& output : config.outputs) {
+      if (!output.workspaces || std::ranges::find(*output.workspaces, name) == output.workspaces->end()) {
+        continue;
+      }
+      if (owner != nullptr) {
+        return nullptr;
+      }
+      owner = &output;
+    }
+    return owner;
+  }
+
   const OutputRule* findOutputRule(const Config& config, const OutputIdentity& identity) {
     return matchingOutputRule(config, identity);
   }
@@ -171,7 +186,7 @@ namespace umbriel {
 
   ResolvedWindowRule resolveWindowRules(
       const Config& config, std::optional<std::string_view> appId, std::optional<std::string_view> title,
-      std::optional<std::string_view> xdgTag, ContentType contentType, bool focused, bool alone, uint64_t uptimeMs
+      std::optional<std::string_view> xdgTag, ContentType contentType, const WindowRuleState& state, uint64_t uptimeMs
   ) {
     ResolvedWindowRule resolved;
 
@@ -184,10 +199,19 @@ namespace umbriel {
       if (rule.matchContentType && *rule.matchContentType != contentType) {
         continue;
       }
-      if (rule.matchFocused && *rule.matchFocused != focused) {
+      if (rule.matchFocused && *rule.matchFocused != state.focused) {
         continue;
       }
-      if (rule.matchIsAlone && *rule.matchIsAlone != alone) {
+      if (rule.matchFloating && *rule.matchFloating != state.floating) {
+        continue;
+      }
+      if (rule.matchPinned && *rule.matchPinned != state.pinned) {
+        continue;
+      }
+      if (rule.matchScratchpad && *rule.matchScratchpad != state.scratchpad) {
+        continue;
+      }
+      if (rule.matchAlone && *rule.matchAlone != state.alone) {
         continue;
       }
       if (rule.matchAtStartup && *rule.matchAtStartup != (uptimeMs < kStartupWindowRuleDurationMs)) {

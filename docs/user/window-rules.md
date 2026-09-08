@@ -2,10 +2,10 @@
 
 Window rules can match `app_id`, title, and a client-defined XDG toplevel tag
 using ECMAScript regular expressions. They can also match a standardized
-content type, focus state or whether the window is the only tiled one in its
-workspace. Every matching rule contributes its settings. If two rules set
-the same field, the rule that appears later takes precedence. Rules from
-included files come before the rules in the file that includes them.
+content type or the window's current state. Every matching rule contributes its
+settings. If two rules set the same field, the rule that appears later takes
+precedence. Rules from included files come before the rules in the file that
+includes them.
 
 ```toml
 [[window_rule]]
@@ -23,7 +23,10 @@ default_floating = true
 | `match.xdg_tag` | regex | Match the client-defined XDG toplevel tag. |
 | `match.content_type` | string | Match `"none"`, `"photo"`, `"video"`, or `"game"`. |
 | `match.is_focused` | bool | Match the window's focused state dynamically. |
-| `match.is_alone` | bool | Match whether the window is the only tiled one in its workspace. Evaluated dynamically while the window is open. |
+| `match.is_floating` | bool | Match the window's floating state dynamically. |
+| `match.is_pinned` | bool | Match the window's pinned state dynamically. |
+| `match.is_scratchpad` | bool | Match the window's scratchpad state dynamically. |
+| `match.is_alone` | bool | Match whether the window is the only tiled one in its workspace. |
 | `match.at_startup` | bool | Match `true` during the first 60 seconds after starting umbriel and `false` afterward. |
 
 Every selector is optional. A rule without selectors matches every window.
@@ -56,6 +59,15 @@ games that publish the hint on a child surface. `none` includes windows that do
 not publish a content hint. Client changes refresh settings from the dynamic
 table below, but never replay the opening settings.
 
+`is_focused`, `is_floating`, `is_pinned`, `is_scratchpad`, and `is_alone` match
+the window's current state, and every one of those transitions refreshes the
+settings from the dynamic table below. Pinned and scratchpad windows are
+floating, so `is_floating = true` also matches them. Opening settings resolve
+against the state the window opens with, before `default_floating` and
+`default_pinned` apply, so a rule that sets one of those cannot also select on
+the state it produces. `is_alone` never selects opening settings; its size
+effects are described in [The only window in the workspace](#the-only-window-in-the-workspace).
+
 ## Settings applied when a window opens
 
 These settings are applied once when the window opens. Some applications set
@@ -66,7 +78,7 @@ opening settings do not overwrite user changes made in the meantime.
 | Key | Type | Description |
 |-----|------|-------------|
 | `default_output` | string | Open on a specific output (e.g. `"DP-1"`). |
-| `default_workspace` | int | Place on workspace N from 1 to 64. On dynamic outputs, values beyond the current count clamp to the last workspace. |
+| `default_workspace` | int or string | Place on an existing workspace by 1-based position (1 to 64) or exact, case-sensitive name. On dynamic outputs, integer positions beyond the current count clamp to the last workspace; names never clamp. |
 | `default_fullscreen` | bool | Open fullscreen across the entire output, ignoring layout struts and layer-shell exclusive zones. |
 | `default_floating` | bool | Force floating (`true`) or force tiling (`false`). |
 | `default_maximize` | bool | Open maximized. A tiled column still respects layout struts and gaps. Parented transient dialogs keep their natural size. |
@@ -98,12 +110,34 @@ If neither `default_width` nor a matching
 `layout.scrolling.default_width_fraction` is set, a scrolling window chooses
 its initial logical extent.
 
-Without `default_output`, a numbered workspace owned by exactly one fixed output
-inventory also selects that output. For example, if only `DP-1` has a fourth
-configured workspace, `default_workspace = 4` opens there even when the window
-was launched from another output. If several fixed outputs contain that
-position, Umbriel keeps the launch output. An explicit `default_output` always
-scopes the workspace lookup to that output.
+### Workspace placement
+
+`default_workspace` selects an existing workspace and never creates one. An
+integer selects a 1-based position, while a string selects an exact,
+case-sensitive name. These forms are intentionally distinct:
+
+```toml
+# Choose one form.
+default_workspace = 2       # Position 2
+# default_workspace = "2"   # Workspace named "2"
+# default_workspace = "CHAT" # Workspace named "CHAT"
+```
+
+On a dynamic output, an integer beyond the current workspace count selects the
+last workspace. A string never clamps to another name. A name such as `"CHAT"`
+therefore needs to exist already, normally in a static output inventory such as
+`workspaces = ["WEB", "CHAT"]`. The setting does not add named workspaces to a
+dynamic output.
+
+An explicit `default_output` selects the output first and scopes either form of
+`default_workspace` to it. Without `default_output`, a target owned by exactly
+one static output inventory also selects that output. For example, if only
+`DP-1` has a fourth configured workspace, `default_workspace = 4` opens there
+even when the window was launched from another output. The same applies to an
+exact name such as `"CHAT"` when only one static inventory contains it. If
+several static outputs contain the position or name, Umbriel keeps the launch
+output and resolves the target there. If the target does not exist there,
+Umbriel keeps the normal workspace placement.
 
 ## Floating position
 
@@ -215,12 +249,11 @@ sets the column width. `default_scrolling_column_order` has no effect without
 ## The only window in the workspace
 
 `match.is_alone` matches when the window is the only tiled window on its
-workspace. Floating windows, empty columns, and windows on others workspaces
-do not count. Like focus, alone is evaluated while the window is open: opening
-one more window or closing the companion flips the rules right away.
+workspace. Floating windows, empty columns, and windows on other workspaces do
+not count. Like focus, alone is evaluated while the window is open: opening one
+more window or closing the companion flips the rules right away.
 
-This is the equivalent of the `expand_single_column`, the window fills the
-viewport when it's the only tiled one on the workspace.
+A lone window that should fill the viewport:
 
 ```toml
 [[window_rule]]
@@ -376,4 +409,17 @@ opacity = 0.85
 [[window_rule]]
 match.is_focused = true
 opacity = 1.0
+
+# Disable blur for floating windows, but not scratchpad windows
+[[window_rule]]
+match.is_floating = true
+match.is_scratchpad = false
+blur = false
+
+# Dim them even further
+[[window_rule]]
+match.is_focused = false
+match.is_floating = true
+match.is_scratchpad = false
+opacity = 0.4
 ```

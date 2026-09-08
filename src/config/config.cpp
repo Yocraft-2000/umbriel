@@ -1904,19 +1904,43 @@ namespace umbriel {
                 valid = false;
               }
             }
+            if (const toml::node* floatingNode = matchKeys.take("is_floating")) {
+              if (floatingNode->is_boolean()) {
+                rule.matchFloating = floatingNode->value<bool>();
+              } else {
+                warnAt(floatingNode->source(), "ignoring window_rule.match.is_floating (expected boolean)");
+                valid = false;
+              }
+            }
+            if (const toml::node* pinnedNode = matchKeys.take("is_pinned")) {
+              if (pinnedNode->is_boolean()) {
+                rule.matchPinned = pinnedNode->value<bool>();
+              } else {
+                warnAt(pinnedNode->source(), "ignoring window_rule.match.is_pinned (expected boolean)");
+                valid = false;
+              }
+            }
+            if (const toml::node* scratchpadNode = matchKeys.take("is_scratchpad")) {
+              if (scratchpadNode->is_boolean()) {
+                rule.matchScratchpad = scratchpadNode->value<bool>();
+              } else {
+                warnAt(scratchpadNode->source(), "ignoring window_rule.match.is_scratchpad (expected boolean)");
+                valid = false;
+              }
+            }
+            if (const toml::node* aloneNode = matchKeys.take("is_alone")) {
+              if (aloneNode->is_boolean()) {
+                rule.matchAlone = aloneNode->value<bool>();
+              } else {
+                warnAt(aloneNode->source(), "ignoring window_rule.match.is_alone (expected boolean)");
+                valid = false;
+              }
+            }
             if (const toml::node* atStartupNode = matchKeys.take("at_startup")) {
               if (atStartupNode->is_boolean()) {
                 rule.matchAtStartup = atStartupNode->value<bool>();
               } else {
                 warnAt(atStartupNode->source(), "ignoring window_rule.match.at_startup (expected boolean)");
-                valid = false;
-              }
-            }
-            if (const toml::node* isAloneNode = matchKeys.take("is_alone")) {
-              if (isAloneNode->is_boolean()) {
-                rule.matchIsAlone = isAloneNode->value<bool>();
-              } else {
-                warnAt(isAloneNode->source(), "ignoring window_rule.match.is_alone (expected boolean)");
                 valid = false;
               }
             }
@@ -2065,11 +2089,22 @@ namespace umbriel {
         }
 
         if (const toml::node* n = keys.take("default_workspace")) {
-          const auto value = n->value<std::int64_t>();
-          if (!value || *value < 1 || *value > static_cast<std::int64_t>(kMaxWorkspaces)) {
-            warnAt(n->source(), "ignoring window_rule.default_workspace (expected integer 1-{})", kMaxWorkspaces);
+          if (const auto value = n->value<std::int64_t>()) {
+            if (*value < 1 || *value > static_cast<std::int64_t>(kMaxWorkspaces)) {
+              warnAt(
+                  n->source(), "ignoring window_rule.default_workspace (expected integer 1-{} or non-empty string)",
+                  kMaxWorkspaces
+              );
+            } else {
+              rule.defaultWorkspace = WorkspaceTarget{static_cast<int>(*value)};
+            }
+          } else if (const auto value = n->value<std::string>(); value && !value->empty()) {
+            rule.defaultWorkspace = WorkspaceTarget{*value};
           } else {
-            rule.defaultWorkspace = static_cast<int>(*value);
+            warnAt(
+                n->source(), "ignoring window_rule.default_workspace (expected integer 1-{} or non-empty string)",
+                kMaxWorkspaces
+            );
           }
         }
 

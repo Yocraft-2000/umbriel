@@ -21,6 +21,7 @@ extern "C" {
 #include <cmath>
 #include <ranges>
 #include <utility>
+#include <variant>
 #include "wlr.h"
 // clang-format on
 #include "workspace/scratchpad.h"
@@ -108,8 +109,13 @@ namespace umbriel {
       if (rule.defaultOutput) {
         targetOutput = server.outputFromName(*rule.defaultOutput);
       } else if (rule.defaultWorkspace) {
-        const auto index = static_cast<size_t>(*rule.defaultWorkspace - 1);
-        if (const OutputRule* owner = uniqueFixedWorkspaceOwner(config(), index)) {
+        const OutputRule* owner = nullptr;
+        if (const auto* position = std::get_if<int>(&*rule.defaultWorkspace)) {
+          owner = uniqueFixedWorkspaceOwner(config(), static_cast<size_t>(*position - 1));
+        } else if (const auto* name = std::get_if<std::string>(&*rule.defaultWorkspace)) {
+          owner = uniqueFixedWorkspaceOwner(config(), *name);
+        }
+        if (owner != nullptr) {
           targetOutput = server.outputFromName(owner->name);
         }
       }
@@ -123,7 +129,13 @@ namespace umbriel {
       }
       Workspace* target = group->active();
       if (rule.defaultWorkspace) {
-        if (Workspace* ruleTarget = group->workspaceAtClamped(static_cast<size_t>(*rule.defaultWorkspace - 1))) {
+        Workspace* ruleTarget = nullptr;
+        if (const auto* position = std::get_if<int>(&*rule.defaultWorkspace)) {
+          ruleTarget = group->workspaceAtClamped(static_cast<size_t>(*position - 1));
+        } else if (const auto* name = std::get_if<std::string>(&*rule.defaultWorkspace)) {
+          ruleTarget = group->workspaceNamed(*name);
+        }
+        if (ruleTarget != nullptr) {
           target = ruleTarget;
         }
       }
@@ -445,12 +457,13 @@ namespace umbriel {
     }
   }
 
-  void View::setScratchpadBorder(bool scratchpad) {
-    if (m_scratchpadBorder == scratchpad) {
+  void View::setInScratchpad(bool scratchpad) {
+    if (m_inScratchpad == scratchpad) {
       return;
     }
-    m_scratchpadBorder = scratchpad;
+    m_inScratchpad = scratchpad;
     setBorderFocused(m_borderFocusedState);
+    refreshStateRuleEffects();
   }
 
   void View::reparentShadow(wlr_scene_tree* shadowLayer) {
@@ -836,7 +849,7 @@ namespace umbriel {
   void View::snapPosition(int x, int y) { setPosition(x, y); }
 
   void View::animateFadeTo(float toAlpha, int durationMs, const AnimationCurve& curve) {
-    m_customFade = m_scratchpadBorder && animationShader(m_server->renderer(), AnimationEvent::Scratchpad) != nullptr;
+    m_customFade = m_inScratchpad && animationShader(m_server->renderer(), AnimationEvent::Scratchpad) != nullptr;
     m_fade.snap(m_fadeAlpha);
     m_fade.retarget(toAlpha, durationMs, curve);
     scheduleFrame();
@@ -899,12 +912,11 @@ namespace umbriel {
     updateAnimationShader(&target->node, renderer, AnimationEvent::WindowsMove, movement);
     updateAnimationShader(&target->node, renderer, AnimationEvent::DimUnfocused, m_focusDim);
     updateAnimationShader(
-        &target->node, renderer, m_scratchpadBorder ? AnimationEvent::Scratchpad : AnimationEvent::WindowsIn, m_fade
+        &target->node, renderer, m_inScratchpad ? AnimationEvent::Scratchpad : AnimationEvent::WindowsIn, m_fade
     );
     wlr_scene_node_set_animation(
-        &target->node,
-        static_cast<unsigned>(m_scratchpadBorder ? AnimationEvent::WindowsIn : AnimationEvent::Scratchpad), nullptr,
-        nullptr
+        &target->node, static_cast<unsigned>(m_inScratchpad ? AnimationEvent::WindowsIn : AnimationEvent::Scratchpad),
+        nullptr, nullptr
     );
     updateAnimationShader(
         border, renderer, AnimationEvent::Border, m_borderColorAnim, m_borderFocusedState ? 1.0F : -1.0F
@@ -955,7 +967,7 @@ namespace umbriel {
       m_customFade = m_customFade
           && m_fade.animating()
           && animationShader(
-                 m_server->renderer(), m_scratchpadBorder ? AnimationEvent::Scratchpad : AnimationEvent::WindowsIn
+                 m_server->renderer(), m_inScratchpad ? AnimationEvent::Scratchpad : AnimationEvent::WindowsIn
              ) != nullptr;
       setFadeAlpha(static_cast<float>(m_fade.current()));
       if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
@@ -1017,9 +1029,11 @@ namespace umbriel {
 
   // Reads the rules as if the window were not alone, so the alone effect knows what it should change.
   ResolvedWindowRule View::resolveAloneRules() const {
+    WindowRuleState notAlone = ruleState();
+    notAlone.alone = false;
     return resolveWindowRules(
-        config(), ruleText(m_toplevel->app_id), ruleText(m_toplevel->title), m_xdgTag, m_contentType,
-        m_borderFocusedState, false, m_server->uptimeMs()
+        config(), ruleText(m_toplevel->app_id), ruleText(m_toplevel->title), m_xdgTag, m_contentType, notAlone,
+        m_server->uptimeMs()
     );
   }
 
@@ -1142,11 +1156,8 @@ namespace umbriel {
     if (!m_mapped || m_workspace == nullptr) {
       return false;
     }
+    refreshStateRuleEffects();
     const bool alone = isAloneInLayout();
-    if (alone != m_lastAlone) {
-      applyDynamicRules();
-      m_lastAlone = alone;
-    }
     if (!alone) {
       if (!m_aloneEffectsActive) {
         return false;
@@ -1458,7 +1469,7 @@ namespace umbriel {
       setFadeAlpha(m_fadeAlpha);
     }
 
-    const auto& targetBase = m_scratchpadBorder
+    const auto& targetBase = m_inScratchpad
         ? (focused ? config().colors.border.scratchpadFocused : config().colors.border.scratchpadUnfocused)
         : (focused ? config().colors.border.focused : config().colors.border.unfocused);
 
@@ -1468,7 +1479,7 @@ namespace umbriel {
       scheduleFrame();
     } else {
       m_borderColorAnim.snap(targetBase);
-      m_decoration.setBorderColor(focused, m_scratchpadBorder, effectiveOpacity());
+      m_decoration.setBorderColor(focused, m_inScratchpad, effectiveOpacity());
     }
 
     if (focusChanged && m_mapped) {
@@ -2223,6 +2234,9 @@ namespace umbriel {
       // Replay their shared structure now that this member is visible again.
       m_server->scheduleDisplacedViewRestore();
     }
+    // Opening rules resolve before default_floating and default_pinned move the window, so the state selectors may
+    // pick a different set of dynamic effects than the ones applied above.
+    applyDynamicRules();
   }
 
   void View::handleUnmap() {
@@ -2302,6 +2316,12 @@ namespace umbriel {
     m_namedScrollingColumnOrder.reset();
     m_ownsNamedScrollingColumnWidth = false;
     m_ruleOpacity = 1.0F;
+    m_appliedRuleState = {};
+    // An unmapped window keeps no layout state, so the alone effect it owned is gone with it.
+    m_aloneEffectsActive = false;
+    m_aloneAction = AloneAction::None;
+    m_lastAloneDelta = {};
+    m_aloneSavedWidthFrac.reset();
     m_hasMaximizeRestoreBox = false;
     m_floating.clearSizeRequest();
     if (m_displacedHome) {
@@ -2892,6 +2912,7 @@ namespace umbriel {
       if (focus) {
         m_server->focusView(this);
       }
+      refreshStateRuleEffects();
       return;
     }
 
@@ -2916,6 +2937,7 @@ namespace umbriel {
     if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
       overview->onViewPinnedChanged(this);
     }
+    refreshStateRuleEffects();
   }
 
   void View::setFloating(bool floating, bool focus, TilePlacement placement) {
@@ -3018,6 +3040,7 @@ namespace umbriel {
         m_server->focusView(this);
       }
       updateForeignState();
+      refreshStateRuleEffects();
       return;
     }
 
@@ -3068,6 +3091,7 @@ namespace umbriel {
         overview->onViewPinnedChanged(this);
       }
     }
+    refreshStateRuleEffects();
   }
 
   void View::setFullscreen(bool fullscreen, FullscreenExitLayout exitLayout) {
@@ -3183,6 +3207,7 @@ namespace umbriel {
         overview->onViewPinnedChanged(this);
       }
     }
+    refreshStateRuleEffects();
   }
 
   void View::applyWindowRules(const ResolvedWindowRule& initiallyApplied) {
@@ -3190,11 +3215,13 @@ namespace umbriel {
       return;
     }
     // Late app ID or title settlement may select opening rules, but identity
-    // hints changed after map must not select new one-shot behavior.
-    // alone is always false here: is_alone is only checked after the window is mapped, not at map time.
+    // hints changed after map must not select new one-shot behavior. is_alone never selects opening settings: the
+    // alone effects are applied and undone separately, on every change to the workspace's tiled set.
+    WindowRuleState openingState = ruleState();
+    openingState.alone = false;
     const ResolvedWindowRule rule = resolveWindowRules(
         config(), ruleText(m_toplevel->app_id), ruleText(m_toplevel->title), m_initialRulesXdgTag,
-        m_initialRulesContentType, m_borderFocusedState, false, m_server->uptimeMs()
+        m_initialRulesContentType, openingState, m_server->uptimeMs()
     );
 
     const bool namedScrollingColumnNameChanged = rule.defaultScrollingColumn.has_value()
@@ -3331,18 +3358,32 @@ namespace umbriel {
     }
   }
 
+  void View::refreshStateRuleEffects() {
+    if (m_mapped && m_appliedRuleState != ruleState()) {
+      applyDynamicRules();
+    }
+  }
+
+  WindowRuleState View::ruleState() const {
+    return {
+        .focused = m_borderFocusedState,
+        .floating = !m_tiled,
+        .pinned = m_pinned,
+        .scratchpad = m_inScratchpad,
+        .alone = isAloneInLayout(),
+    };
+  }
+
   const ResolvedWindowRule& View::resolvedRules() {
     const std::optional<std::string_view> appId = ruleText(m_toplevel->app_id);
     const std::optional<std::string_view> title = ruleText(m_toplevel->title);
     const uint64_t generation = configStore().generation();
-    const bool alone = isAloneInLayout();
+    const WindowRuleState state = ruleState();
 
-    // alone changes over time, so it must be part of the cache key.
     // An unset identity string is a distinct key from an empty one: only the latter matches a pattern accepting the
     // empty string, so a client that replaces a missing title with an empty one must re-resolve.
     if (m_rulesGeneration == generation
-        && m_rulesFocused == m_borderFocusedState
-        && m_rulesAlone == alone
+        && m_rulesState == state
         && m_rulesAppId == appId
         && m_rulesTitle == title
         && m_rulesXdgTag == m_xdgTag
@@ -3350,12 +3391,9 @@ namespace umbriel {
       return m_rules;
     }
 
-    m_rules = resolveWindowRules(
-        config(), appId, title, m_xdgTag, m_contentType, m_borderFocusedState, alone, m_server->uptimeMs()
-    );
+    m_rules = resolveWindowRules(config(), appId, title, m_xdgTag, m_contentType, state, m_server->uptimeMs());
     m_rulesGeneration = generation;
-    m_rulesFocused = m_borderFocusedState;
-    m_rulesAlone = alone;
+    m_rulesState = state;
     m_rulesAppId = appId;
     m_rulesTitle = title;
     m_rulesXdgTag = m_xdgTag;
@@ -3365,6 +3403,7 @@ namespace umbriel {
 
   void View::applyDynamicRules(const ResolvedWindowRule* resolved) {
     const ResolvedWindowRule& rule = resolved != nullptr ? *resolved : resolvedRules();
+    m_appliedRuleState = ruleState();
     m_decoration.applyRule(rule);
     const float newOpacity = rule.opacity ? static_cast<float>(*rule.opacity) : 1.0F;
     if (newOpacity != m_ruleOpacity) {

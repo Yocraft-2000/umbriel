@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace umbriel {
@@ -88,6 +89,10 @@ namespace umbriel {
     std::string name;
     bool operator==(const ScratchpadConfig&) const = default;
   };
+
+  // A workspace position or an exact workspace name. TOML integers select by
+  // position, while TOML strings select by name even when they contain digits.
+  using WorkspaceTarget = std::variant<int, std::string>;
 
   // Fully resolved layout config. Owned by each Workspace.
   struct ResolvedLayoutConfig {
@@ -268,6 +273,18 @@ namespace umbriel {
     return "none";
   }
 
+  // Window state the `match.is_*` selectors test. Every field is a live
+  // property, so a change to any of them re-selects a window's rules.
+  struct WindowRuleState {
+    bool focused = false;
+    bool floating = false;
+    bool pinned = false;
+    bool scratchpad = false;
+    bool alone = false;
+
+    [[nodiscard]] bool operator==(const WindowRuleState& other) const = default;
+  };
+
   struct WindowRule {
     std::string appIdPattern;
     std::string titlePattern;
@@ -277,15 +294,18 @@ namespace umbriel {
     std::regex xdgTagRegex;
     std::optional<ContentType> matchContentType;
     std::optional<bool> matchFocused;
+    std::optional<bool> matchFloating;
+    std::optional<bool> matchPinned;
+    std::optional<bool> matchScratchpad;
+    std::optional<bool> matchAlone;
     std::optional<bool> matchAtStartup;
-    std::optional<bool> matchIsAlone;
     std::optional<std::string> defaultOutput;
     std::optional<bool> defaultFloating;
     std::optional<std::array<int, 2>> defaultSize; // [width, height]
     std::optional<WindowPosition> defaultPosition;
     std::optional<double> defaultWidth;  // column width fraction override
     std::optional<double> defaultHeight; // floating height fraction of the usable area
-    std::optional<int> defaultWorkspace; // 1-64
+    std::optional<WorkspaceTarget> defaultWorkspace;
     std::optional<std::string> defaultScrollingColumn;
     std::optional<int> defaultScrollingColumnOrder;
     std::optional<bool> defaultFullscreen;
@@ -313,8 +333,11 @@ namespace umbriel {
           && xdgTagPattern == other.xdgTagPattern
           && matchContentType == other.matchContentType
           && matchFocused == other.matchFocused
+          && matchFloating == other.matchFloating
+          && matchPinned == other.matchPinned
+          && matchScratchpad == other.matchScratchpad
+          && matchAlone == other.matchAlone
           && matchAtStartup == other.matchAtStartup
-          && matchIsAlone == other.matchIsAlone
           && defaultOutput == other.defaultOutput
           && defaultFloating == other.defaultFloating
           && defaultSize == other.defaultSize
@@ -349,7 +372,7 @@ namespace umbriel {
     std::optional<WindowPosition> defaultPosition;
     std::optional<double> defaultWidth;
     std::optional<double> defaultHeight;
-    std::optional<int> defaultWorkspace;
+    std::optional<WorkspaceTarget> defaultWorkspace;
     std::optional<std::string> defaultScrollingColumn;
     std::optional<int> defaultScrollingColumnOrder;
     std::optional<bool> defaultFullscreen;
