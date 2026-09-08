@@ -1083,9 +1083,13 @@ namespace umbriel {
           if (target != current) {
             m_aloneSavedWidthFrac = current;
             scrolling->setWidthFraction(column, target);
+            m_workspace->markArrange();
             m_aloneAction = AloneAction::Width;
             return true;
           }
+          m_aloneSavedWidthFrac = scrolling->widthFraction(-1);
+          m_aloneAction = AloneAction::Width;
+          return true;
         }
       }
     }
@@ -1112,12 +1116,15 @@ namespace umbriel {
       }
       break;
     case AloneAction::Width:
-      if (m_aloneSavedWidthFrac && m_workspace != nullptr) {
+      if (m_workspace != nullptr) {
         ScrollingLayout* scrolling = m_workspace->scrollingLayout();
         if (scrolling != nullptr) {
           const int column = scrolling->columnOf(this);
           if (column >= 0) {
-            scrolling->setWidthFraction(column, *m_aloneSavedWidthFrac);
+            const std::optional<double> notAloneWidth = resolveAloneRules().defaultWidth;
+            const double restore = notAloneWidth.value_or(m_aloneSavedWidthFrac.value_or(scrolling->widthFraction(-1)));
+            scrolling->setWidthFraction(column, restore);
+            m_workspace->markArrange();
           }
         }
         m_aloneSavedWidthFrac.reset();
@@ -1131,9 +1138,9 @@ namespace umbriel {
 
   // Called by the workspace whenever the tiled windows change or the config reloads. If the window is no longer
   // alone, the applied effect is undone. While alone, the four settings are only re-applied when they changed.
-  void View::notifyAloneStateChanged() {
+  bool View::notifyAloneStateChanged() {
     if (!m_mapped || m_workspace == nullptr) {
-      return;
+      return false;
     }
     const bool alone = isAloneInLayout();
     if (alone != m_lastAlone) {
@@ -1142,23 +1149,27 @@ namespace umbriel {
     }
     if (!alone) {
       if (!m_aloneEffectsActive) {
-        return;
+        return false;
       }
       revertAloneRuleEffects();
       m_lastAloneDelta = ResolvedWindowRule{};
       m_aloneEffectsActive = false;
       m_workspace->ensureFocusedVisible();
-      return;
+      return true;
     }
     const ResolvedWindowRule delta = aloneRuleDiff(resolvedRules(), resolveAloneRules());
     if (delta == m_lastAloneDelta) {
-      return;
+      return false;
     }
+    bool changed = false;
     if (m_aloneEffectsActive) {
       revertAloneRuleEffects();
+      changed = true;
     }
-    m_aloneEffectsActive = applyAloneRuleEffects(delta);
+    const bool applied = applyAloneRuleEffects(delta);
     m_lastAloneDelta = delta;
+    m_aloneEffectsActive = applied;
+    return changed || applied;
   }
 
   void View::onMap(wl_listener* listener, void* /*data*/) {
@@ -1592,6 +1603,9 @@ namespace umbriel {
     updateBorderGeometry();
     applyCornerRadius();
     applyDynamicRules();
+    if (notifyAloneStateChanged() && m_workspace != nullptr) {
+      m_workspace->markArrange();
+    }
     updateShadow();
     reloadBackdropColor();
   }

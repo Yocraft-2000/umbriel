@@ -416,7 +416,7 @@ namespace umbriel {
     // is work a terminal that retitles per command pays repeatedly.
     void applyDynamicRules(const ResolvedWindowRule* resolved = nullptr);
     void refreshStartupRuleEffects();
-    void notifyAloneStateChanged();
+    bool notifyAloneStateChanged();
     [[nodiscard]] ResolvedWindowRule resolveAloneRules() const;
     [[nodiscard]] ResolvedWindowRule
     aloneRuleDiff(const ResolvedWindowRule& alone, const ResolvedWindowRule& other) const;
