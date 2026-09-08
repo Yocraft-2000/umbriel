@@ -563,6 +563,16 @@ default_pinned = true
 # match.is_focused = true
 # opacity = 1.0
 
+# Fill the viewport for a workspace’s lone tiled column.
+# [[window_rule]]
+# match.is_alone = true
+# default_maximize = true
+
+# 75% width when the window is alone, default width (0.5) when another window is opened.
+# [[window_rule]]
+# match.is_alone = true
+# default_width = 0.75
+
 # ────────────────────────────── Layer Rules ─────────────────────────────────
 # Match layer-shell surfaces such as panels, launchers, notifications, and
 # desktop widgets by namespace. Run `umbriel layers` to inspect live names.
