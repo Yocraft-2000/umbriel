@@ -4,7 +4,8 @@ Window rules can match `app_id`, title, and a client-defined XDG toplevel tag
 using ECMAScript regular expressions. They can also match a standardized
 content type, focus state or whether the window is the only tiled one in its
 workspace. Every matching rule contributes its settings. If two rules set
-the same field, the rule that appears later in the file takes precedence.
+the same field, the rule that appears later takes precedence. Rules from
+included files come before the rules in the file that includes them.
 
 ```toml
 [[window_rule]]
