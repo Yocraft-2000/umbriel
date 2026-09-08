@@ -695,13 +695,13 @@ namespace umbriel {
           return;
         }
         // Fullscreen covers the output and draws no decorations.
-        target = {node.x, node.y + m_slideOffsetY, outputBox.width, outputBox.height};
+        target = {node.x + m_slideOffsetX, node.y + m_slideOffsetY, outputBox.width, outputBox.height};
       } else {
         // Floating views follow committed geometry; tiled ones follow the box
         // the layout assigned them.
         const wlr_box sized =
             m_layout->columnOf(view) < 0 ? view->toplevel()->base->geometry : tiledTargetBox(view, usable);
-        target = {node.x, node.y + m_slideOffsetY, sized.width, sized.height};
+        target = {node.x + m_slideOffsetX, node.y + m_slideOffsetY, sized.width, sized.height};
       }
     }
 
@@ -1264,7 +1264,7 @@ namespace umbriel {
           }
           const wlr_scene_node& node = candidate->sceneTree()->node;
           const wlr_box fullscreenBox{
-              .x = node.x,
+              .x = node.x + m_slideOffsetX,
               .y = node.y + m_slideOffsetY,
               .width = outputBox.width,
               .height = outputBox.height,
@@ -1367,13 +1367,14 @@ namespace umbriel {
     }
   }
 
-  void Workspace::setSlideOffset(double y) {
+  void Workspace::setSlideOffset(double x, double y) {
+    m_slideOffsetX = static_cast<int>(std::lround(x));
     m_slideOffsetY = static_cast<int>(std::lround(y));
     if (m_tree != nullptr) {
-      wlr_scene_node_set_position(&m_tree->node, 0, m_slideOffsetY);
+      wlr_scene_node_set_position(&m_tree->node, m_slideOffsetX, m_slideOffsetY);
     }
     if (m_fullscreenTree != nullptr) {
-      wlr_scene_node_set_position(&m_fullscreenTree->node, 0, m_slideOffsetY);
+      wlr_scene_node_set_position(&m_fullscreenTree->node, m_slideOffsetX, m_slideOffsetY);
     }
     for (View* view : m_views) {
       if (!view->pinned() && view->mapped()) {
@@ -1385,7 +1386,7 @@ namespace umbriel {
   void Workspace::endSwitchTransition() {
     // Put every view back at its resting position while transition visibility is still active: an inactive workspace
     // deliberately skips presentation sync once m_inSwitchTransition is cleared.
-    setSlideOffset(0);
+    setSlideOffset(0, 0);
     if (m_tree != nullptr) {
       wlr_scene_tree_set_clip(m_tree, nullptr);
     }
@@ -1436,6 +1437,7 @@ namespace umbriel {
   void Workspace::applyLayoutConfig(ResolvedLayoutConfig layoutConfig) {
     const bool centerFocusedChanged = m_layoutConfig.scrolling.centerFocused != layoutConfig.scrolling.centerFocused;
     const bool strutsChanged = m_layoutConfig.struts != layoutConfig.struts;
+    const bool directionChanged = m_layoutConfig.scrolling.direction != layoutConfig.scrolling.direction;
     m_layoutConfig = std::move(layoutConfig);
     // The event payload is built when the idle runs, so scheduling here reports the mode this call installs, whether
     // it reconfigures the existing layout or replaces it below.
@@ -1445,9 +1447,10 @@ namespace umbriel {
       m_layout->setConstraints(&viewLayoutConstraints);
       if (ScrollingLayout* scrolling = scrollingLayout(); scrolling != nullptr) {
         const int focusedColumn = m_focusedView != nullptr ? scrolling->columnOf(m_focusedView) : -1;
-        if ((centerFocusedChanged || strutsChanged) && focusedColumn >= 0) {
+        const bool reconcile = centerFocusedChanged || strutsChanged || directionChanged;
+        if (reconcile && focusedColumn >= 0) {
           scrolling->reconcileFocusedColumn(focusedColumn, scrollViewportExtent());
-        } else if (centerFocusedChanged || strutsChanged) {
+        } else if (reconcile) {
           clampScrollToRange();
         }
       }
@@ -1479,6 +1482,7 @@ namespace umbriel {
     wlr_ext_workspace_group_handle_v1_output_enter(m_handle, m_output->wlr());
 
     const OutputIdentity identity = m_output->identity();
+    m_workspaceAxis = resolveWorkspaceAxis(config(), identity);
     auto resolved = resolveWorkspacesForOutput(config(), identity);
     m_dynamic = resolved.dynamic;
     const size_t count = resolved.workspaces.size();
@@ -1710,7 +1714,7 @@ namespace umbriel {
 
     if (relocatedViews > 0 || !activeSurvives) {
       m_server->cursor()->clearConstraint();
-      m_server->refocus(m_output);
+      m_server->refocus();
     }
     kLog.info(
         "reconciled {} to {} workspaces ({} windows relocated)",
@@ -1718,7 +1722,18 @@ namespace umbriel {
     );
   }
 
+  void WorkspaceGroup::refreshWorkspaceAxis() {
+    const WorkspaceAxis axis = resolveWorkspaceAxis(config(), m_output->identity());
+    if (axis == m_workspaceAxis) {
+      return;
+    }
+    // Settle any live slide while the old axis still describes the offsets it installed.
+    slideFinish();
+    m_workspaceAxis = axis;
+  }
+
   void WorkspaceGroup::refreshLayouts() {
+    refreshWorkspaceAxis();
     const OutputIdentity identity = m_output->identity();
     for (const auto& workspace : m_workspaces) {
       // A config reload reasserts the configured mode, dropping any runtime
@@ -1855,11 +1870,11 @@ namespace umbriel {
     if (m_slide.base != nullptr) {
       m_slide.base->endSwitchTransition();
     }
-    if (m_slide.up != nullptr) {
-      m_slide.up->endSwitchTransition();
+    if (m_slide.previous != nullptr) {
+      m_slide.previous->endSwitchTransition();
     }
-    if (m_slide.down != nullptr) {
-      m_slide.down->endSwitchTransition();
+    if (m_slide.next != nullptr) {
+      m_slide.next->endSwitchTransition();
     }
     if (m_active != nullptr && m_active->switchTransitionActive()) {
       m_active->endSwitchTransition();
@@ -1873,26 +1888,27 @@ namespace umbriel {
     }
     wlr_box box{};
     wlr_output_layout_get_box(m_server->outputLayout(), m_output->wlr(), &box);
-    if (box.height <= 0) {
+    const double extent = m_workspaceAxis == WorkspaceAxis::Horizontal ? box.width : box.height;
+    if (extent <= 0) {
       return false;
     }
     slideFinish();
     m_slide.base = m_active;
-    m_slide.height = box.height;
+    m_slide.extent = extent;
     m_slide.progress = 0;
     const size_t idx = m_active->index();
-    m_slide.up = (includePrev && idx > 0) ? workspaceAt(idx - 1) : nullptr;
-    m_slide.down = includeNext ? workspaceAt(idx + 1) : nullptr;
+    m_slide.previous = (includePrev && idx > 0) ? workspaceAt(idx - 1) : nullptr;
+    m_slide.next = includeNext ? workspaceAt(idx + 1) : nullptr;
     m_slide.base->beginSwitchTransition();
-    if (m_slide.up != nullptr) {
-      m_slide.up->beginSwitchTransition();
-      m_slide.up->showSwitchViews();
-      m_slide.up->arrange(false);
+    if (m_slide.previous != nullptr) {
+      m_slide.previous->beginSwitchTransition();
+      m_slide.previous->showSwitchViews();
+      m_slide.previous->arrange(false);
     }
-    if (m_slide.down != nullptr) {
-      m_slide.down->beginSwitchTransition();
-      m_slide.down->showSwitchViews();
-      m_slide.down->arrange(false);
+    if (m_slide.next != nullptr) {
+      m_slide.next->beginSwitchTransition();
+      m_slide.next->showSwitchViews();
+      m_slide.next->arrange(false);
     }
     slideApply(0.0);
     return true;
@@ -1900,13 +1916,19 @@ namespace umbriel {
 
   void WorkspaceGroup::slideApply(double progress) {
     m_slide.progress = progress;
-    const double h = m_slide.height;
-    m_slide.base->setSlideOffset(-progress * h);
-    if (m_slide.down != nullptr) {
-      m_slide.down->setSlideOffset((1.0 - progress) * h);
+    const double extent = m_slide.extent;
+    // Increasing workspace index moves outgoing content toward negative coordinates
+    // on the group's axis; the other coordinate stays at rest.
+    const bool horizontal = m_workspaceAxis == WorkspaceAxis::Horizontal;
+    const auto offset = [&](Workspace* workspace, double displacement) {
+      workspace->setSlideOffset(horizontal ? displacement : 0.0, horizontal ? 0.0 : displacement);
+    };
+    offset(m_slide.base, -progress * extent);
+    if (m_slide.next != nullptr) {
+      offset(m_slide.next, (1.0 - progress) * extent);
     }
-    if (m_slide.up != nullptr) {
-      m_slide.up->setSlideOffset((-1.0 - progress) * h);
+    if (m_slide.previous != nullptr) {
+      offset(m_slide.previous, (-1.0 - progress) * extent);
     }
     wlr_output_schedule_frame(m_output->wlr());
   }
@@ -1914,9 +1936,9 @@ namespace umbriel {
   void WorkspaceGroup::slideSettle(int delta) {
     Workspace* target = nullptr;
     if (delta < 0) {
-      target = m_slide.up;
+      target = m_slide.previous;
     } else if (delta > 0) {
-      target = m_slide.down;
+      target = m_slide.next;
     }
     if (target == nullptr) {
       delta = 0;
@@ -1930,7 +1952,7 @@ namespace umbriel {
       if (m_previous != nullptr) {
         m_previous->showSwitchViews();
       }
-      Workspace* unused = (delta > 0) ? m_slide.up : m_slide.down;
+      Workspace* unused = (delta > 0) ? m_slide.previous : m_slide.next;
       if (unused != nullptr) {
         unused->endSwitchTransition();
       }
@@ -1999,7 +2021,8 @@ namespace umbriel {
     }
     wlr_box box{};
     wlr_output_layout_get_box(m_server->outputLayout(), m_output->wlr(), &box);
-    if (box.height <= 0) {
+    const double extent = m_workspaceAxis == WorkspaceAxis::Horizontal ? box.width : box.height;
+    if (extent <= 0) {
       m_previous = m_active;
       m_active->setActive(false);
       m_active = workspace;
@@ -2009,12 +2032,12 @@ namespace umbriel {
     }
     const int sign = workspace->index() > m_active->index() ? 1 : -1;
     m_slide.base = m_active;
-    m_slide.height = box.height;
+    m_slide.extent = extent;
     m_slide.progress = 0;
     if (sign > 0) {
-      m_slide.down = workspace;
+      m_slide.next = workspace;
     } else {
-      m_slide.up = workspace;
+      m_slide.previous = workspace;
     }
     m_slide.base->beginSwitchTransition();
     workspace->beginSwitchTransition();

@@ -353,27 +353,6 @@ namespace umbriel {
       return std::nullopt;
     }
 
-    std::optional<ScrollingDirection> readScrollingDirection(Section& section, std::string_view context) {
-      const toml::node* node = section.take("direction");
-      if (node == nullptr) {
-        return std::nullopt;
-      }
-      const auto* value = node->as_string();
-      if (value == nullptr) {
-        warnAt(node->source(), R"({}.direction must be a string ("horizontal" or "vertical"))", context);
-        return std::nullopt;
-      }
-      const std::string_view direction = value->get();
-      if (direction == "horizontal") {
-        return ScrollingDirection::Horizontal;
-      }
-      if (direction == "vertical") {
-        return ScrollingDirection::Vertical;
-      }
-      warnAt(node->source(), R"(unknown {}.direction "{}" (expected "horizontal" or "vertical"))", context, direction);
-      return std::nullopt;
-    }
-
     std::optional<MasterPosition> readMasterPosition(Section& section, std::string_view context) {
       const toml::node* node = section.take("position");
       if (node == nullptr) {
@@ -590,9 +569,6 @@ namespace umbriel {
               overrides.widthPresets = std::move(*presets);
             }
             s.sub("scrolling", [&](Section& sc) {
-              if (const auto direction = readScrollingDirection(sc, layoutContext + ".scrolling")) {
-                overrides.scrolling.direction = direction;
-              }
               sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
                   .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip)
                   .boolean("center_focused", overrides.scrolling.centerFocused);
@@ -617,6 +593,88 @@ namespace umbriel {
         names.push_back(std::to_string(i + 1));
       }
       return names;
+    }
+
+    void readScratchpads(Section& root, Config& loaded) {
+      const toml::node* node = root.take("scratchpad");
+      if (node == nullptr) {
+        return;
+      }
+      const auto* scratchpads = node->as_array();
+      if (scratchpads == nullptr) {
+        errorAt(node->source(), "scratchpad must be a [[scratchpad]] array of tables");
+        return;
+      }
+
+      int entryIndex = 0;
+      for (const auto& entry : *scratchpads) {
+        const auto* table = entry.as_table();
+        if (table == nullptr) {
+          errorAt(entry.source(), "scratchpad[{}] must be a table", entryIndex);
+          ++entryIndex;
+          continue;
+        }
+
+        const std::string context = std::format("scratchpad[{}]", entryIndex);
+        Section keys(*table, context, configStore().mutableDiagnostics());
+        const toml::node* nameNode = keys.take("name");
+        if (nameNode == nullptr) {
+          errorAt(entry.source(), "{} must set name", context);
+          ++entryIndex;
+          continue;
+        }
+        const auto name = nameNode->value<std::string>();
+        if (!name) {
+          errorAt(nameNode->source(), "{}.name must be a string", context);
+          ++entryIndex;
+          continue;
+        }
+        if (name->empty()) {
+          errorAt(nameNode->source(), "{}.name must not be empty", context);
+          ++entryIndex;
+          continue;
+        }
+        if (*name == "default") {
+          errorAt(nameNode->source(), "{}.name 'default' is reserved for the implicit scratchpad", context);
+          ++entryIndex;
+          continue;
+        }
+
+        const auto duplicate = std::ranges::find_if(loaded.scratchpads, [&](const ScratchpadConfig& scratchpad) {
+          return scratchpad.name == *name;
+        });
+        if (duplicate != loaded.scratchpads.end()) {
+          errorAt(nameNode->source(), "{}.name duplicates scratchpad name '{}'", context, *name);
+          ++entryIndex;
+          continue;
+        }
+
+        loaded.scratchpads.push_back({.name = *name});
+        ++entryIndex;
+      }
+    }
+
+    std::optional<std::string> scratchpadSelectorError(const Config& loaded, const Keybind& binding) {
+      const auto* scratchpad = payloadIf<ScratchpadArg>(binding);
+      if (scratchpad == nullptr) {
+        return std::nullopt;
+      }
+      if (loaded.scratchpads.empty()) {
+        if (!scratchpad->name.empty() && scratchpad->name != "default") {
+          return std::format("unknown scratchpad '{}'", scratchpad->name);
+        }
+        return std::nullopt;
+      }
+      if (scratchpad->name.empty()) {
+        return std::string{"scratchpad name required"};
+      }
+      const bool configured = std::ranges::any_of(loaded.scratchpads, [&](const ScratchpadConfig& candidate) {
+        return candidate.name == scratchpad->name;
+      });
+      if (configured) {
+        return std::nullopt;
+      }
+      return std::format("unknown scratchpad '{}'", scratchpad->name);
     }
 
     WorkspaceConfig parseWorkspaceEntry(const toml::table& section, std::string_view context) {
@@ -1111,6 +1169,10 @@ namespace umbriel {
             warnAt(node->source(), R"(invalid hot_corners.{}.action "{}")", name, *value);
             return;
           }
+          if (const auto invalid = scratchpadSelectorError(loaded, bind)) {
+            warnAt(node->source(), "ignoring hot_corners.{}.action ({})", name, *invalid);
+            return;
+          }
           corner.action = std::move(bind);
         };
 
@@ -1134,9 +1196,6 @@ namespace umbriel {
           loaded.layout.widthPresets = std::move(*presets);
         }
         s.sub("scrolling", [&](Section& sc) {
-          if (const auto direction = readScrollingDirection(sc, "layout.scrolling")) {
-            loaded.layout.scrolling.direction = *direction;
-          }
           sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
               .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip)
               .boolean("center_focused", loaded.layout.scrolling.centerFocused);
@@ -1490,6 +1549,16 @@ namespace umbriel {
           });
         });
         keys.integer("min_workspaces", 1, static_cast<int>(kMaxWorkspaces), rule.minWorkspaces);
+        if (const toml::node* axisNode = keys.take("workspace_axis")) {
+          const auto value = axisNode->value<std::string>();
+          if (value == "vertical") {
+            rule.workspaceAxis = WorkspaceAxis::Vertical;
+          } else if (value == "horizontal") {
+            rule.workspaceAxis = WorkspaceAxis::Horizontal;
+          } else {
+            warnAt(axisNode->source(), "ignoring output.{}.workspace_axis (expected vertical|horizontal)", name);
+          }
+        }
         if (const toml::node* workspacesNode = keys.take("workspaces")) {
           if (const auto count = workspacesNode->value<std::int64_t>()) {
             if (*count < 1 || *count > static_cast<std::int64_t>(kMaxWorkspaces)) {
@@ -1709,6 +1778,11 @@ namespace umbriel {
         binding.cooldownMs = cooldownMs;
         if (!parseAction(actionStr, binding)) {
           warnAt(key.source(), "ignoring keybind '{}' (unknown action '{}')", chord, actionStr);
+          continue;
+        }
+
+        if (const auto invalid = scratchpadSelectorError(loaded, binding)) {
+          warnAt(key.source(), "ignoring keybind '{}' ({})", chord, *invalid);
           continue;
         }
 
@@ -2218,6 +2292,7 @@ namespace umbriel {
           readAnimation(root, loaded);
           readAppearance(root, loaded);
           readOverview(root, loaded);
+          readScratchpads(root, loaded);
           readHotCorners(root, loaded);
           readLayout(root, loaded);
           readGeneral(root, loaded);

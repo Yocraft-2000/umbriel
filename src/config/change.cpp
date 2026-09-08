@@ -70,7 +70,7 @@ namespace umbriel {
       static const OutputRule defaults;
       const OutputRule& lhs = before != nullptr ? *before : defaults;
       const OutputRule& rhs = after != nullptr ? *after : defaults;
-      return lhs.layout == rhs.layout;
+      return lhs.layout == rhs.layout && lhs.workspaceAxis == rhs.workspaceAxis;
     }
 
     bool sameWindowTearingPolicy(const Config& before, const Config& after) {
@@ -192,6 +192,7 @@ namespace umbriel {
         .windowRules = true,
         .layerRules = true,
         .securityContextRules = true,
+        .scratchpads = true,
         .workspaceRules = true,
     };
   }
@@ -215,6 +216,7 @@ namespace umbriel {
         .windowRules = before.windowRules != after.windowRules,
         .layerRules = before.layerRules != after.layerRules,
         .securityContextRules = before.securityContextRules != after.securityContextRules,
+        .scratchpads = before.scratchpads != after.scratchpads,
         .workspaceRules = before.workspaceRules != after.workspaceRules,
     };
   }
@@ -247,6 +249,7 @@ namespace umbriel {
     add(windowRules, "window rules");
     add(layerRules, "layer rules");
     add(securityContextRules, "security context rules");
+    add(scratchpads, "scratchpads");
     add(workspaceRules, "workspace rules");
     return out;
   }

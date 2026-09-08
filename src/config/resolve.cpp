@@ -100,8 +100,6 @@ namespace umbriel {
       if (overrides.dwindle.preserveSplit) {
         resolved.dwindle.preserveSplit = *overrides.dwindle.preserveSplit;
       }
-      if (overrides.scrolling.direction) {
-        resolved.scrolling.direction = *overrides.scrolling.direction;
       }
       if (overrides.master.defaultWidthFraction) {
         resolved.master.defaultWidthFraction = *overrides.master.defaultWidthFraction;
@@ -147,6 +145,11 @@ namespace umbriel {
   }
   const OutputRule* findOutputRule(const Config& config, const OutputIdentity& identity) {
     return matchingOutputRule(config, identity);
+  }
+
+  WorkspaceAxis resolveWorkspaceAxis(const Config& config, const OutputIdentity& identity) {
+    const OutputRule* rule = matchingOutputRule(config, identity);
+    return rule != nullptr ? rule->workspaceAxis : WorkspaceAxis::Vertical;
   }
 
   bool workspaceRuleTargetExists(const Config& config, const WorkspaceConfig& rule) {
@@ -327,7 +330,6 @@ namespace umbriel {
     resolved.scrolling.defaultWidthFraction = config.layout.scrolling.defaultWidthFraction;
     resolved.scrolling.centerUnderfullStrip = config.layout.scrolling.centerUnderfullStrip;
     resolved.scrolling.centerFocused = config.layout.scrolling.centerFocused;
-    resolved.scrolling.direction = config.layout.scrolling.direction;
     resolved.dwindle.preserveSplit = config.layout.dwindle.preserveSplit;
     resolved.master.defaultWidthFraction = config.layout.master.defaultWidthFraction;
     resolved.master.newOnTop = config.layout.master.newOnTop;
@@ -341,9 +343,14 @@ namespace umbriel {
   ResolvedLayoutConfig
   resolveWorkspaceLayout(const Config& config, const OutputIdentity& identity, std::string_view name, size_t index) {
     ResolvedLayoutConfig resolved = resolveGlobalLayout(config);
-    if (const OutputRule* output = matchingOutputRule(config, identity);
-        output != nullptr && output->layout.scrolling.defaultWidthFraction) {
-      resolved.scrolling.defaultWidthFraction = output->layout.scrolling.defaultWidthFraction;
+    const OutputRule* output = matchingOutputRule(config, identity);
+    if (output != nullptr) {
+      if (output->layout.scrolling.defaultWidthFraction) {
+        resolved.scrolling.defaultWidthFraction = output->layout.scrolling.defaultWidthFraction;
+      }
+      resolved.scrolling.direction = output->workspaceAxis == WorkspaceAxis::Horizontal
+          ? ScrollingDirection::Vertical
+          : ScrollingDirection::Horizontal;
     }
     const auto applyMatchingRules = [&](bool outputScoped) {
       for (const auto& rule : config.workspaceRules) {

@@ -464,6 +464,17 @@ namespace umbriel {
     if (!effects.any()) {
       return;
     }
+    // Settle every interaction whose meaning depends on the workspace axis or the
+    // layout objects about to be replaced, while those still exist.
+    if (effects.workspaceLayout || effects.workspaceInventory || effects.outputState) {
+      m_cursor->cancelLayoutInteraction();
+      m_gestures->cancelForLayoutChange();
+      for (const auto& output : m_outputs) {
+        if (WorkspaceGroup* group = output->workspaceGroup()) {
+          group->slideFinish();
+        }
+      }
+    }
     if (effects.animation) {
       prepareAnimationShaders(m_renderer);
     }
@@ -590,7 +601,12 @@ namespace umbriel {
       if (result.change.keybinds) {
         m_bindCooldowns.clear();
       }
+      if (result.change.scratchpads && m_scratchpadManager != nullptr) {
+        m_scratchpadManager->reconcileConfig();
+      }
       if (result.effects.invalidatesOverview()) {
+        // A four-finger gesture must not reopen a presentation this close invalidates.
+        m_gestures->cancelForLayoutChange();
         m_overview->forceClose();
       }
       applyConfig(result.effects);

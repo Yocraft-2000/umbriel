@@ -39,6 +39,11 @@ keeps your last working configuration and continues watching the failed
 candidate and its included files. Save a corrected file to try the reload
 again. Options that require a restart are marked in their reference tables.
 
+A successful reload keeps the current keyboard focus when its window or
+keyboard-interactive layer remains mapped, visible, and on an enabled output.
+If that owner is no longer usable, Umbriel selects the active workspace on the
+pointer output instead.
+
 ## Diagnostics
 
 Warnings and errors from a load or reload appear in a panel at the top of the
@@ -204,6 +209,46 @@ lid_open = "notify-send 'The laptop lid is open!'"
 ```
 
 Defines commands that are executed when the laptop lid is closed or opened.
+
+## Scratchpads
+
+With no `[[scratchpad]]` entries, Umbriel provides one implicit scratchpad
+named `default`. Bare scratchpad actions select it:
+
+```toml
+[keybinds]
+"Mod+Shift+Space" = "window-move-to-scratchpad"
+"Mod+Space" = "scratchpad-toggle"
+```
+
+To use multiple scratchpads, define each name and include that name in every
+scratchpad action:
+
+```toml
+[[scratchpad]]
+name = "terminal"
+
+[[scratchpad]]
+name = "music"
+
+[keybinds]
+"Mod+Shift+Space" = "window-toggle-scratchpad:terminal"
+"Mod+Space" = "scratchpad-toggle:terminal"
+"Mod+Shift+M" = "window-toggle-scratchpad:music"
+"Mod+M" = "scratchpad-toggle:music"
+```
+
+Defining any named scratchpad removes the implicit `default` scratchpad, so
+bare scratchpad actions are invalid in named mode. Names must be nonempty and
+unique. The name `default` is reserved and cannot appear in a
+`[[scratchpad]]` entry.
+
+Scratchpads are global and roam between outputs. Each stored window keeps its
+own restore output and workspace. Removing a scratchpad definition during a
+config reload restores its windows to those saved destinations.
+
+See [Scratchpads](scratchpad.md) for action behavior, focus, dragging, and
+multi-output details.
 
 ## Idle inhibition
 
