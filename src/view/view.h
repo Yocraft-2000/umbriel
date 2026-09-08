@@ -69,6 +69,7 @@ namespace umbriel {
     [[nodiscard]] bool onActiveWorkspace() const { return m_onActiveWorkspace; }
     [[nodiscard]] bool tiled() const { return m_tiled; }
     [[nodiscard]] bool floating() const { return !m_tiled; }
+    [[nodiscard]] bool isAloneInLayout() const;
     [[nodiscard]] const std::optional<std::string>& namedScrollingColumnName() const {
       return m_namedScrollingColumnName;
     }
@@ -412,6 +413,12 @@ namespace umbriel {
     // is work a terminal that retitles per command pays repeatedly.
     void applyDynamicRules(const ResolvedWindowRule* resolved = nullptr);
     void refreshStartupRuleEffects();
+    void notifyAloneStateChanged();
+    [[nodiscard]] ResolvedWindowRule resolveAloneRules() const;
+    [[nodiscard]] ResolvedWindowRule
+    aloneRuleDiff(const ResolvedWindowRule& alone, const ResolvedWindowRule& other) const;
+    bool applyAloneRuleEffects(const ResolvedWindowRule& delta);
+    void revertAloneRuleEffects();
     // Window rules, resolved at most once per (config, app-id, title, XDG tag, content type, focus). Resolution runs
     // every rule's regexes, and it is reached on focus changes and on every identity change; a terminal that retitles
     // per command would otherwise pay the whole rule set on each one. Every input is part of the key:
@@ -426,6 +433,21 @@ namespace umbriel {
     std::optional<std::string> m_rulesXdgTag;
     ContentType m_rulesContentType = ContentType::None;
     bool m_rulesFocused = false;
+    // Tracks alone state: applies one of the four size effects while the window is alone, and remembers which one
+    // to undo when it is not alone anymore.
+    bool m_rulesAlone = false;
+    bool m_lastAlone = false;
+    bool m_aloneEffectsActive = false;
+    enum class AloneAction {
+      None,
+      Fullscreen,
+      MaximizeToEdges,
+      Maximize,
+      Width,
+    };
+    AloneAction m_aloneAction = AloneAction::None;
+    ResolvedWindowRule m_lastAloneDelta;
+    std::optional<double> m_aloneSavedWidthFrac;
     // One-shot effects already applied at map. Late identity resolution only
     // reapplies a field when its resolved value changes.
     ResolvedWindowRule m_initialRules;

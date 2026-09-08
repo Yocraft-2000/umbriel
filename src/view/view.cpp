@@ -994,7 +994,170 @@ namespace umbriel {
 
   bool View::layoutFullscreen() const { return m_toplevel->scheduled.fullscreen; }
 
+  // True when this is the only tiled window in the workspace.
+  bool View::isAloneInLayout() const {
+    if (!m_tiled || m_workspace == nullptr) {
+      return false;
+    }
+    View* sole = nullptr;
+    for (const Column& column : m_workspace->layout().columns()) {
+      for (View* view : column.views) {
+        if (sole != nullptr) {
+          return false;
+        }
+        sole = view;
+      }
+    }
+    return sole == this;
+  }
+
   pid_t View::pid() const { return m_xwayland ? -1 : surfaceClientPid(m_toplevel->base->surface); }
+
+  // Reads the rules as if the window were not alone, so the alone effect knows what it should change.
+  ResolvedWindowRule View::resolveAloneRules() const {
+    return resolveWindowRules(
+        config(), ruleText(m_toplevel->app_id), ruleText(m_toplevel->title), m_xdgTag, m_contentType,
+        m_borderFocusedState, false, m_server->uptimeMs()
+    );
+  }
+
+  // The difference between the alone and not-alone rules. Only the four size-related fields are kept: the others
+  // are handled by the normal dynamic rules.
+  ResolvedWindowRule View::aloneRuleDiff(const ResolvedWindowRule& alone, const ResolvedWindowRule& other) const {
+    ResolvedWindowRule diff;
+    if (alone.defaultFullscreen != other.defaultFullscreen) {
+      diff.defaultFullscreen = alone.defaultFullscreen;
+    }
+    if (alone.defaultMaximizeToEdges != other.defaultMaximizeToEdges) {
+      diff.defaultMaximizeToEdges = alone.defaultMaximizeToEdges;
+    }
+    if (alone.defaultMaximize != other.defaultMaximize) {
+      diff.defaultMaximize = alone.defaultMaximize;
+    }
+    if (alone.defaultWidth != other.defaultWidth) {
+      diff.defaultWidth = alone.defaultWidth;
+    }
+    return diff;
+  }
+
+  // Applies one effect at a time, in the same order as at map time. Returns whether the effect was applied: if the
+  // window is already there, or the layout cannot do it, nothing is claimed and leaving alone will not undo anything.
+  bool View::applyAloneRuleEffects(const ResolvedWindowRule& delta) {
+    if (delta.defaultFullscreen && *delta.defaultFullscreen) {
+      if (m_toplevel->scheduled.fullscreen) {
+        return false;
+      }
+      setFullscreen(true);
+      m_aloneAction = AloneAction::Fullscreen;
+      return true;
+    }
+    if (delta.defaultMaximizeToEdges && *delta.defaultMaximizeToEdges) {
+      if (m_maximizedToEdges || m_toplevel->scheduled.fullscreen) {
+        return false;
+      }
+      setMaximizedToEdges(true);
+      m_aloneAction = AloneAction::MaximizeToEdges;
+      return true;
+    }
+    if (m_toplevel->parent == nullptr && delta.defaultMaximize && *delta.defaultMaximize) {
+      if (m_toplevel->scheduled.maximized) {
+        return false;
+      }
+      setMaximized(true);
+      m_aloneAction = AloneAction::Maximize;
+      return true;
+    }
+    if (delta.defaultWidth
+        && m_workspace != nullptr
+        && !m_toplevel->scheduled.fullscreen
+        && !m_maximizedToEdges
+        && !m_toplevel->scheduled.maximized) {
+      ScrollingLayout* scrolling = m_workspace->scrollingLayout();
+      if (scrolling != nullptr) {
+        const int column = scrolling->columnOf(this);
+        if (column >= 0) {
+          const double target = *delta.defaultWidth;
+          const double current = scrolling->widthFraction(column);
+          if (target != current) {
+            m_aloneSavedWidthFrac = current;
+            scrolling->setWidthFraction(column, target);
+            m_aloneAction = AloneAction::Width;
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  // Undoes the effect that was applied. For the width, the value saved before is restored, it is cleared even when
+  // the window no longer has a column (the layout changed).
+  void View::revertAloneRuleEffects() {
+    switch (m_aloneAction) {
+    case AloneAction::Fullscreen:
+      if (m_toplevel->scheduled.fullscreen) {
+        setFullscreen(false);
+      }
+      break;
+    case AloneAction::MaximizeToEdges:
+      if (m_maximizedToEdges) {
+        setMaximizedToEdges(false);
+      }
+      break;
+    case AloneAction::Maximize:
+      if (m_toplevel->scheduled.maximized && !m_maximizedToEdges) {
+        setMaximized(false);
+      }
+      break;
+    case AloneAction::Width:
+      if (m_aloneSavedWidthFrac && m_workspace != nullptr) {
+        ScrollingLayout* scrolling = m_workspace->scrollingLayout();
+        if (scrolling != nullptr) {
+          const int column = scrolling->columnOf(this);
+          if (column >= 0) {
+            scrolling->setWidthFraction(column, *m_aloneSavedWidthFrac);
+          }
+        }
+        m_aloneSavedWidthFrac.reset();
+      }
+      break;
+    case AloneAction::None:
+      break;
+    }
+    m_aloneAction = AloneAction::None;
+  }
+
+  // Called by the workspace whenever the tiled windows change or the config reloads. If the window is no longer
+  // alone, the applied effect is undone. While alone, the four settings are only re-applied when they changed.
+  void View::notifyAloneStateChanged() {
+    if (!m_mapped || m_workspace == nullptr) {
+      return;
+    }
+    const bool alone = isAloneInLayout();
+    if (alone != m_lastAlone) {
+      applyDynamicRules();
+      m_lastAlone = alone;
+    }
+    if (!alone) {
+      if (!m_aloneEffectsActive) {
+        return;
+      }
+      revertAloneRuleEffects();
+      m_lastAloneDelta = ResolvedWindowRule{};
+      m_aloneEffectsActive = false;
+      m_workspace->ensureFocusedVisible();
+      return;
+    }
+    const ResolvedWindowRule delta = aloneRuleDiff(resolvedRules(), resolveAloneRules());
+    if (delta == m_lastAloneDelta) {
+      return;
+    }
+    if (m_aloneEffectsActive) {
+      revertAloneRuleEffects();
+    }
+    m_aloneEffectsActive = applyAloneRuleEffects(delta);
+    m_lastAloneDelta = delta;
+  }
 
   void View::onMap(wl_listener* listener, void* /*data*/) {
     View* self = wl_container_of(listener, self, m_map);
@@ -2986,9 +3149,10 @@ namespace umbriel {
     }
     // Late app ID or title settlement may select opening rules, but identity
     // hints changed after map must not select new one-shot behavior.
+    // alone is always false here: is_alone is only checked after the window is mapped, not at map time.
     const ResolvedWindowRule rule = resolveWindowRules(
         config(), ruleText(m_toplevel->app_id), ruleText(m_toplevel->title), m_initialRulesXdgTag,
-        m_initialRulesContentType, m_borderFocusedState, m_server->uptimeMs()
+        m_initialRulesContentType, m_borderFocusedState, false, m_server->uptimeMs()
     );
 
     const bool namedScrollingColumnNameChanged = rule.defaultScrollingColumn.has_value()
@@ -3129,11 +3293,14 @@ namespace umbriel {
     const std::optional<std::string_view> appId = ruleText(m_toplevel->app_id);
     const std::optional<std::string_view> title = ruleText(m_toplevel->title);
     const uint64_t generation = configStore().generation();
+    const bool alone = isAloneInLayout();
 
+    // alone changes over time, so it must be part of the cache key.
     // An unset identity string is a distinct key from an empty one: only the latter matches a pattern accepting the
     // empty string, so a client that replaces a missing title with an empty one must re-resolve.
     if (m_rulesGeneration == generation
         && m_rulesFocused == m_borderFocusedState
+        && m_rulesAlone == alone
         && m_rulesAppId == appId
         && m_rulesTitle == title
         && m_rulesXdgTag == m_xdgTag
@@ -3141,10 +3308,12 @@ namespace umbriel {
       return m_rules;
     }
 
-    m_rules =
-        resolveWindowRules(config(), appId, title, m_xdgTag, m_contentType, m_borderFocusedState, m_server->uptimeMs());
+    m_rules = resolveWindowRules(
+        config(), appId, title, m_xdgTag, m_contentType, m_borderFocusedState, alone, m_server->uptimeMs()
+    );
     m_rulesGeneration = generation;
     m_rulesFocused = m_borderFocusedState;
+    m_rulesAlone = alone;
     m_rulesAppId = appId;
     m_rulesTitle = title;
     m_rulesXdgTag = m_xdgTag;

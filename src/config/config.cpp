@@ -1838,6 +1838,14 @@ namespace umbriel {
                 valid = false;
               }
             }
+            if (const toml::node* isAloneNode = matchKeys.take("is_alone")) {
+              if (isAloneNode->is_boolean()) {
+                rule.matchIsAlone = isAloneNode->value<bool>();
+              } else {
+                warnAt(isAloneNode->source(), "ignoring window_rule.match.is_alone (expected boolean)");
+                valid = false;
+              }
+            }
           } else {
             warnAt(matchNode->source(), "ignoring window_rule.match (expected table)");
             valid = false;

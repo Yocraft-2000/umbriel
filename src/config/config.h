@@ -262,6 +262,7 @@ namespace umbriel {
     std::optional<ContentType> matchContentType;
     std::optional<bool> matchFocused;
     std::optional<bool> matchAtStartup;
+    std::optional<bool> matchIsAlone;
     std::optional<std::string> defaultOutput;
     std::optional<bool> defaultFloating;
     std::optional<std::array<int, 2>> defaultSize; // [width, height]
@@ -297,6 +298,7 @@ namespace umbriel {
           && matchContentType == other.matchContentType
           && matchFocused == other.matchFocused
           && matchAtStartup == other.matchAtStartup
+          && matchIsAlone == other.matchIsAlone
           && defaultOutput == other.defaultOutput
           && defaultFloating == other.defaultFloating
           && defaultSize == other.defaultSize
