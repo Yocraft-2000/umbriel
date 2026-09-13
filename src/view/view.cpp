@@ -1232,9 +1232,12 @@ namespace umbriel {
   // in the layout. Now that it is, notifyAloneStateChanged hands that state to the alone effect, so leaving alone
   // undoes it again. The seed is single-use: a later pass must not take over a state the user or the client chose.
   void View::settleOpeningAloneState() {
-    const bool clientRequested = m_aloneOpeningSeed == AloneSeed::Fullscreen
-        ? m_toplevel->requested.fullscreen
-        : m_aloneOpeningSeed == AloneSeed::Maximize && m_toplevel->requested.maximized;
+    // Restored maximize only steals alone ownership when the compositor honors it. Otherwise the alone rule owns the
+    // state like any other window, and the client's session flag is ignored.
+    const bool clientRequested = m_aloneOpeningSeed == AloneSeed::Fullscreen ? m_toplevel->requested.fullscreen
+                                                                             : m_aloneOpeningSeed == AloneSeed::Maximize
+            && m_toplevel->requested.maximized
+            && config().general.honorRestoredMaximize;
     if (clientRequested) {
       // The client has asked for the state itself since the opening configure, so it owns it.
       m_aloneOpeningSeed = AloneSeed::None;
@@ -2179,6 +2182,13 @@ namespace umbriel {
     syncContentType(m_toplevel->base->surface);
     m_mapped = true;
     m_acceptClientMaximizeRequests = config().general.honorRestoredMaximize;
+    // Firefox often re-assert session maximize after map. With honor off, consume that one request so
+    // it cannot override alone/default opening policy; later maximize requests stay valid.
+    if (config().general.honorRestoredMaximize) {
+      m_consumeRestoredMaximizeRequest = false;
+    } else if (m_toplevel->requested.maximized) {
+      m_consumeRestoredMaximizeRequest = true;
+    }
     m_acceptClientMaximizeIdle =
         wl_event_loop_add_idle(wl_display_get_event_loop(m_server->display()), onAcceptClientMaximizeRequests, this);
     if (m_acceptClientMaximizeIdle == nullptr) {
@@ -2448,6 +2458,7 @@ namespace umbriel {
     m_mapped = false;
     m_openingParentRequested = false;
     m_acceptClientMaximizeRequests = false;
+    m_consumeRestoredMaximizeRequest = false;
     if (m_acceptClientMaximizeIdle != nullptr) {
       wl_event_source_remove(m_acceptClientMaximizeIdle);
       m_acceptClientMaximizeIdle = nullptr;
@@ -2609,9 +2620,13 @@ namespace umbriel {
         const bool seedMaximized =
             (alone.defaultMaximize.value_or(false) && !openingParented() && !rule.defaultMaximize.value_or(false))
             || (alone.defaultMaximizeToEdges.value_or(false) && !rule.defaultMaximizeToEdges.value_or(false));
+        // A client's restored maximize flag only blocks alone ownership when we honor it. Otherwise alone seeds as
+        // usual and the restore is ignored (and consumed after map if the client re-asserts it).
+        const bool clientOwnsRestoredMaximize =
+            config().general.honorRestoredMaximize && m_toplevel->requested.maximized;
         if (seedFullscreen && !m_toplevel->requested.fullscreen) {
           m_aloneOpeningSeed = AloneSeed::Fullscreen;
-        } else if (seedMaximized && !m_toplevel->requested.fullscreen && !m_toplevel->requested.maximized) {
+        } else if (seedMaximized && !m_toplevel->requested.fullscreen && !clientOwnsRestoredMaximize) {
           m_aloneOpeningSeed = AloneSeed::Maximize;
         }
         rule.defaultFullscreen = alone.defaultFullscreen;
@@ -2933,12 +2948,38 @@ namespace umbriel {
         // configure. Reconfigure before they map a buffer so their first visible
         // content already matches the maximized layout target.
         handleCommit(true);
+      } else if (m_toplevel->requested.maximized) {
+        m_consumeRestoredMaximizeRequest = true;
       }
       return;
     }
     if (!m_acceptClientMaximizeRequests) {
+      // Opening gate: remember a restore re-assert that arrived before the idle opens the gate.
+      if (!config().general.honorRestoredMaximize && m_toplevel->requested.maximized) {
+        m_consumeRestoredMaximizeRequest = true;
+      }
       return;
     }
+    // Alone-owned maximize is compositor policy. Clients that closed unmaximized (Firefox) re-assert that after map
+    // and would otherwise undo the is_alone default_maximize flash.
+    if (m_aloneEffectsActive
+        && (m_aloneAction == AloneAction::Maximize || m_aloneAction == AloneAction::MaximizeToEdges)) {
+      m_consumeRestoredMaximizeRequest = false;
+      if (m_toplevel->requested.maximized != m_toplevel->scheduled.maximized) {
+        wlr_xdg_toplevel_set_maximized(m_toplevel, m_toplevel->scheduled.maximized);
+      }
+      return;
+    }
+    if (m_consumeRestoredMaximizeRequest && m_toplevel->requested.maximized) {
+      // Drop the opening restore re-assert without granting the client maximize ownership. If the compositor (alone
+      // rule, etc.) already maximized, stay there; otherwise re-ack the unmaximized configure.
+      m_consumeRestoredMaximizeRequest = false;
+      if (!m_toplevel->scheduled.maximized) {
+        wlr_xdg_toplevel_set_maximized(m_toplevel, false);
+      }
+      return;
+    }
+    m_consumeRestoredMaximizeRequest = false;
     if (m_tiled && m_workspace != nullptr) {
       if (maximizeRequestTargetsEdges(m_maximizedToEdges)) {
         setMaximizedToEdges(m_toplevel->requested.maximized);
