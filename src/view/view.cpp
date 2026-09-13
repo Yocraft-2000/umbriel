@@ -2403,6 +2403,7 @@ namespace umbriel {
     m_floatingMaximized = false;
     m_maximizedToEdges = false;
     m_hasFullscreenRestoreBox = false;
+    m_restorePinnedAfterFullscreen = false;
     if (m_pinned) {
       m_pinned = false;
       m_restoreTiledAfterUnpin = false;
@@ -3200,6 +3201,7 @@ namespace umbriel {
     if (unpinning) {
       m_pinned = false;
       m_restoreTiledAfterUnpin = false;
+      m_restorePinnedAfterFullscreen = false;
       if (m_workspace != nullptr) {
         wlr_scene_node_reparent(&m_sceneTree->node, m_workspace->viewLayer(false));
         reparentShadow(m_workspace->shadowLayer());
@@ -3288,6 +3290,7 @@ namespace umbriel {
 
     m_floating.clearSizeRequest();
     m_tiled = true;
+    m_restorePinnedAfterFullscreen = false;
     // Restore the fullscreen the float toggle dropped BEFORE the layout attach: arrange then sizes the column to the
     // full output instead of a regular column width, and the client sees no transient windowed configure. setFullscreen
     // also reparents and disables borders.
@@ -3358,7 +3361,7 @@ namespace umbriel {
     if (fullscreen) {
       if (unpinning) {
         m_pinned = false;
-        m_restoreTiledAfterUnpin = false;
+        m_restorePinnedAfterFullscreen = true;
         if (m_workspace != nullptr) {
           wlr_scene_node_reparent(&m_sceneTree->node, m_workspace->viewLayer(false));
           reparentShadow(m_workspace->shadowLayer());
@@ -3427,6 +3430,20 @@ namespace umbriel {
         }
       } else if (!restoreFloating) {
         placeInUsableArea();
+      }
+    }
+    if (!fullscreen && m_restorePinnedAfterFullscreen) {
+      m_restorePinnedAfterFullscreen = false;
+      m_pinned = true;
+      restorePinnedSceneParent();
+      if (m_workspace != nullptr) {
+        m_workspace->syncViewPresentation(this);
+        if (m_workspace->group() != nullptr && m_workspace->group()->output() != nullptr) {
+          wlr_output_schedule_frame(m_workspace->group()->output()->wlr());
+        }
+      }
+      if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
+        overview->onViewPinnedChanged(this);
       }
     }
     updateForeignState();
