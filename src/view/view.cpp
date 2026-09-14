@@ -566,7 +566,8 @@ namespace umbriel {
 
   float View::effectiveOpacity() const {
     // Overshooting curves can push this past [0, 1]; wlr_scene_buffer_set_opacity asserts.
-    const float ruleOpacity = m_toplevel->scheduled.fullscreen ? 1.0F : m_ruleOpacity;
+    const float ruleOpacity =
+        m_toplevel->scheduled.fullscreen && config().appearance.opaqueFullscreen ? 1.0F : m_ruleOpacity;
     const float fade = m_customFade && m_fade.animating() ? 1.0F : m_fadeAlpha;
     return std::clamp(fade * ruleOpacity * m_dragOpacity * static_cast<float>(m_focusDim.current()), 0.0F, 1.0F);
   }
