@@ -1728,6 +1728,7 @@ namespace umbriel {
     }
     updateShadow();
     reloadBackdropColor();
+    updateFullscreenPresentation(m_presentation.width(), m_presentation.height());
   }
 
   void View::beginCloseAnimation() {
