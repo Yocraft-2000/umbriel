@@ -3118,6 +3118,20 @@ namespace umbriel {
     raiseToTop();
   }
 
+  void View::applyPinnedState() {
+    m_pinned = true;
+    restorePinnedSceneParent();
+    if (m_workspace != nullptr) {
+      m_workspace->syncViewPresentation(this);
+      if (m_workspace->group() != nullptr && m_workspace->group()->output() != nullptr) {
+        wlr_output_schedule_frame(m_workspace->group()->output()->wlr());
+      }
+    }
+    if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
+      overview->onViewPinnedChanged(this);
+    }
+  }
+
   void View::togglePinned() { setPinned(!m_pinned, true); }
 
   void View::setPinned(bool pinned, bool focus) {
@@ -3132,17 +3146,7 @@ namespace umbriel {
       if (m_tiled) {
         setFloating(true, false);
       }
-      m_pinned = true;
-      restorePinnedSceneParent();
-      if (m_workspace != nullptr) {
-        m_workspace->syncViewPresentation(this);
-      }
-      if (m_workspace != nullptr && m_workspace->group() != nullptr && m_workspace->group()->output() != nullptr) {
-        wlr_output_schedule_frame(m_workspace->group()->output()->wlr());
-      }
-      if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
-        overview->onViewPinnedChanged(this);
-      }
+      applyPinnedState();
       if (focus) {
         m_server->focusView(this);
       }
@@ -3434,17 +3438,7 @@ namespace umbriel {
     }
     if (!fullscreen && m_restorePinnedAfterFullscreen) {
       m_restorePinnedAfterFullscreen = false;
-      m_pinned = true;
-      restorePinnedSceneParent();
-      if (m_workspace != nullptr) {
-        m_workspace->syncViewPresentation(this);
-        if (m_workspace->group() != nullptr && m_workspace->group()->output() != nullptr) {
-          wlr_output_schedule_frame(m_workspace->group()->output()->wlr());
-        }
-      }
-      if (Overview* overview = m_server->overview(); overview != nullptr && overview->active()) {
-        overview->onViewPinnedChanged(this);
-      }
+      applyPinnedState();
     }
     updateForeignState();
     if (m_workspace != nullptr && m_workspace->group() != nullptr) {

@@ -246,6 +246,8 @@ namespace umbriel {
     void togglePinned();
     // Restore the global pinned scene layer after temporary drag reparenting.
     void restorePinnedSceneParent();
+    // Apply the pinned state: reparent to the global pinned layer, resync presentation, and notify the overview.
+    void applyPinnedState();
     // Enable/disable the view's scene tree and its shadow container together.
     void setNodeEnabled(bool enabled);
     void raiseToTop();
