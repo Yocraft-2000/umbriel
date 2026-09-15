@@ -2801,6 +2801,11 @@ namespace umbriel {
     if (Output* output = currentOutput()) {
       output->updateHdr();
     }
+    // The first root commit after the opening gate settles the restore sequence.
+    // A later maximize request is client intent and must not be consumed.
+    if (m_mapped && m_acceptClientMaximizeRequests) {
+      m_consumeRestoredMaximizeRequest = false;
+    }
   }
 
   void View::handleDestroy() {
@@ -2954,9 +2959,10 @@ namespace umbriel {
       return;
     }
     if (!m_acceptClientMaximizeRequests) {
-      // Opening gate: remember a restore re-assert that arrived before the idle opens the gate.
+      // A mapped request before the opening gate is itself the restore re-assert.
+      // Consume it here so no later request inherits the suppression.
       if (!config().general.honorRestoredMaximize && m_toplevel->requested.maximized) {
-        m_consumeRestoredMaximizeRequest = true;
+        m_consumeRestoredMaximizeRequest = false;
       }
       return;
     }
