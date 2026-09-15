@@ -241,7 +241,7 @@ namespace umbriel {
       if (floating) {
         view.rememberFloatingPosition();
       }
-      view.moveToWorkspace(&target); // layoutAttach self-guards on tiled()
+      view.moveToWorkspace(&target, true, LayoutAttachOrigin::MovedView); // layoutAttach self-guards on tiled()
       if (widthFrac.has_value()) {
         ScrollingLayout* targetLayout = target.scrollingLayout();
         const int column = targetLayout != nullptr ? targetLayout->columnOf(&view) : -1;
@@ -286,6 +286,8 @@ namespace umbriel {
       if (column.views.empty()) {
         return false;
       }
+
+      target.exitFullscreenForIncomingView(focused);
 
       const int focusedTargetColumn = target.layout().columnOf(target.focusedView());
       const int targetIndex =

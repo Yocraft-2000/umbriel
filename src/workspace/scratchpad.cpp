@@ -965,6 +965,9 @@ namespace umbriel {
     }
     view->moveToWorkspace(workspace, false);
     if (entry.returnTiled) {
+      if (workspace != nullptr) {
+        workspace->exitFullscreenForIncomingView(view);
+      }
       view->setFloating(false);
     } else {
       view->setFloating(true);
