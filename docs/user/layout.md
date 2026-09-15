@@ -200,7 +200,7 @@ new_exits_fullscreen = false
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `preserve_split` | bool | `false` | Keep each split direction fixed after it is created. |
-| `new_exits_fullscreen` | bool | `false` | Exits fullscreen when a new window is opened in the workspace. |
+| `new_exits_fullscreen` | bool | `false` | Exits fullscreen when a new window is opened in the workspace or when another window is moved from another workspace. |
 
 ### Behavior
 
@@ -240,7 +240,7 @@ new_exits_fullscreen = false
 | `default_width_fraction` | float | `0.55` | Initial fraction assigned to the master area when both areas exist (0.1-0.9). |
 | `new_on_top` | bool | `true` | Place new windows at the top of the stack. Disable to place them at the bottom. |
 | `new_becomes_master` | bool | `false` | Give the master slot to each new window and move the last master row to the stack top. |
-| `new_exits_fullscreen` | bool | `false` | Exits fullscreen when a new window is opened in the workspace. |
+| `new_exits_fullscreen` | bool | `false` | Exits fullscreen when a new window is opened in the workspace or when another window is moved from another workspace. |
 
 ### Behavior
 
