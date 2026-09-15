@@ -2350,6 +2350,9 @@ namespace umbriel {
       // visibility is resolved data-side (no per-render-pass pass to do it).
       if (m_workspace != nullptr) {
         m_workspace->syncViewPresentation(this);
+        // A floating or pinned opening skips layoutAttach (which guards on
+        // tiled), so the arriving-window fullscreen exit is driven here.
+        m_workspace->exitFullscreenForIncomingView(this);
       }
     }
 

@@ -242,6 +242,11 @@ namespace umbriel {
         view.rememberFloatingPosition();
       }
       view.moveToWorkspace(&target, true, LayoutAttachOrigin::MovedView); // layoutAttach self-guards on tiled()
+      if (!view.tiled()) {
+        // A floating or pinned move skips layoutAttach's tiled guard, so the arriving-window fullscreen exit is driven
+        // here.
+        target.exitFullscreenForIncomingView(&view);
+      }
       if (widthFrac.has_value()) {
         ScrollingLayout* targetLayout = target.scrollingLayout();
         const int column = targetLayout != nullptr ? targetLayout->columnOf(&view) : -1;
