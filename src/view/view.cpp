@@ -4101,6 +4101,17 @@ namespace umbriel {
     const ResolvedWindowRule& rule = resolved != nullptr ? *resolved : resolvedRules();
     m_appliedRuleState = ruleState();
     m_decoration.applyRule(rule);
+    const std::array<float, 4> targetBorder = resolvedBorderBaseColor(m_borderFocusedState, rule);
+    const auto& borderAnimation = config().animation.border;
+    if (m_mapped && m_borderColorAnim.animating() && borderAnimation.enabled) {
+      if (m_borderColorAnim.target() != targetBorder) {
+        m_borderColorAnim.retarget(targetBorder, borderAnimation.durationMs, borderAnimation.curve);
+        scheduleFrame();
+      }
+    } else {
+      m_borderColorAnim.snap(targetBorder);
+      m_decoration.setBorderColor(m_borderFocusedState, rule, effectiveOpacity());
+    }
     const float newOpacity = rule.opacity ? static_cast<float>(*rule.opacity) : 1.0F;
     if (newOpacity != m_ruleOpacity) {
       m_ruleOpacity = newOpacity;
