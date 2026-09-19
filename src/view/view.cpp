@@ -2405,7 +2405,9 @@ namespace umbriel {
 
   void View::applyPresentation(const wlr_box& target) {
     updateFullscreenPresentation(target.width, target.height);
-    if (m_toplevel->current.fullscreen) {
+    if (m_openCenterBox) {
+      m_presentation.setBackdropEnabled(false);
+    } else if (m_toplevel->current.fullscreen) {
       // The whole tile: the output's clipped root scissors whatever hangs over the shared edge.
       m_presentation.setBackdropBox(0, 0, target.width, target.height);
     }
