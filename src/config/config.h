@@ -759,6 +759,7 @@ namespace umbriel {
       struct Touchpad {
         std::optional<bool> tap = true;
         std::optional<bool> naturalScroll;
+        std::optional<bool> leftHanded;
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
         // Touchpad scroll speed multiplier. `scroll_factor` is either one number
@@ -779,6 +780,7 @@ namespace umbriel {
 
       struct Mouse {
         std::optional<bool> naturalScroll;
+        std::optional<bool> leftHanded;
         std::optional<AccelProfile> accelProfile;
         // Evdev BTN_* code libinput turns into a scroll modifier: holding it makes pointer motion scroll instead of
         // clicking. Unset leaves the device's libinput default alone.
@@ -829,6 +831,7 @@ namespace umbriel {
         std::optional<int> repeatDelay;
         std::optional<bool> tap;
         std::optional<bool> naturalScroll;
+        std::optional<bool> leftHanded;
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
         std::optional<bool> disableWhileTyping;
