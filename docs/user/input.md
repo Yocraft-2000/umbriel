@@ -144,6 +144,7 @@ every single change of focus unless the compositor remembers.
 [input.touchpad]
 tap = true
 natural_scroll = true
+left_handed = false
 # accel_profile = "adaptive"  # "flat", "adaptive", or a custom curve
 # sensitivity = 0.5           # -1.0 to 1.0
 # scroll_factor = 1.5         # touchpad scroll speed, 0.1 to 10.0
@@ -214,6 +215,7 @@ the key on reload restores the device's default.
 ```toml
 [input.mouse]
 natural_scroll = false
+left_handed = false
 # accel_profile = "flat"  # "flat", "adaptive", or a custom curve
 sensitivity = 0.0        # -1.0 to 1.0
 scroll_wheel_step = 60  # 1-1000, pixels per step for layout-scroll-left/right
@@ -276,6 +278,7 @@ repeat_delay = 250
 name = "Acme Precision Touchpad"
 tap = true
 natural_scroll = false
+left_handed = false
 accel_profile = "flat"
 sensitivity = 0.0
 disable_while_typing = false
