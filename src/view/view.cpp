@@ -682,6 +682,8 @@ namespace umbriel {
     return std::clamp(fade * ruleOpacity * m_dragOpacity * static_cast<float>(m_focusDim.current()), 0.0F, 1.0F);
   }
 
+  bool View::fullscreenOpaque() const { return config().appearance.opaqueFullscreen || m_ruleOpacity >= 1.0F; }
+
   void View::setFadeAlpha(float alpha) {
     // Overshooting curves can push this out of range; wlr_scene_buffer_set_opacity asserts opacity is in [0, 1].
     m_fadeAlpha = std::clamp(alpha, 0.0F, 1.0F);
@@ -2117,6 +2119,10 @@ namespace umbriel {
 
   void View::updateBlur(int contentWidth, int contentHeight) {
     UMBRIEL_ZONE("View::updateBlur");
+    if (m_toplevel->current.fullscreen && fullscreenOpaque()) {
+      m_decoration.hideBlur();
+      return;
+    }
     const wlr_box nodeBox{0, 0, contentWidth, contentHeight};
     m_decoration.updateBlur(
         m_sceneTree, m_toplevel->base->surface, nodeBox, m_toplevel->base->geometry, surfaceRadius(), nullptr,
@@ -2178,7 +2184,6 @@ namespace umbriel {
     }
     updateShadow();
     reloadBackdropColor();
-    updateFullscreenPresentation(m_presentation.width(), m_presentation.height());
   }
 
   CloseSnapshotId View::beginCloseAnimation() {
@@ -4123,7 +4128,14 @@ namespace umbriel {
       }
       m_floating.clearSizeRequest();
     }
+    // Entering fullscreen during a size animation grows from the size on screen, not from the committed one.
+    const bool continuePresentation = fullscreen && sizeAnimating();
+    const int presentedWidth = m_presentation.width();
+    const int presentedHeight = m_presentation.height();
     cancelSizeAnimation();
+    if (continuePresentation) {
+      m_presentation.setSize(presentedWidth, presentedHeight);
+    }
     wlr_xdg_toplevel_set_fullscreen(m_toplevel, fullscreen);
     setFadeAlpha(m_fadeAlpha);
     updateFullscreenPresentation(0, 0);
@@ -4134,8 +4146,10 @@ namespace umbriel {
       // Snap scroll to the now viewport-wide column and reflow neighbors.
       if (m_workspace != nullptr) {
         m_workspace->snapVisible(this);
-        // arrange() sends the full-output size even when this workspace is hidden.
-        m_workspace->markArrange(true);
+        // Arrange now, not at the next frame: the fullscreen configure must carry the output size, and the resize
+        // animation must own the presentation before a fast client commits, or that commit shows its old buffer
+        // centered on the backdrop. arrange() sends the full-output size even when this workspace is hidden.
+        m_workspace->arrange(true);
       }
       if (!m_tiled || m_workspace == nullptr) {
         // Floating fullscreen is not part of the layout; size it directly.
@@ -4520,6 +4534,7 @@ namespace umbriel {
       m_ruleOpacity = newOpacity;
       setFadeAlpha(m_fadeAlpha); // refresh effective opacity
     }
+    m_presentation.setFullscreenOpaque(fullscreenOpaque());
     updateBlur();
     // updateBlur creates the full node box. Re-apply the owning output's clip immediately, because focus, title, and
     // app-id rule refreshes do not necessarily produce a later surface commit or layout pass.
