@@ -6,10 +6,12 @@
 #include "view/deferred_unfullscreen.h"
 #include "view/floating.h"
 #include "view/presentation.h"
+#include "view/resize_crossfade.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -39,6 +41,7 @@ namespace umbriel {
   class ScratchpadManager;
   class WineColorManager;
   class Workspace;
+  enum class LayoutAttachOrigin;
   struct ResolvedWindowRule;
 
   class View : public SceneNode, public Animatable {
@@ -133,10 +136,11 @@ namespace umbriel {
       bool workspaceNamed = false;
       std::shared_ptr<const LayoutSnapshot> layoutSnapshot;
       LayoutMemberId layoutMember = 0;
-      bool ownsNamedScrollingColumnWidth = false;
+      bool ownsNamedScrollingColumnExtent = false;
       // A late owner width can settle while this window is temporarily attached
       // to another output. Replay it after restoring the captured home layout.
-      std::optional<double> pendingNamedScrollingColumnWidth;
+      std::optional<int> pendingNamedScrollingColumnExtentPx;
+      std::optional<double> pendingNamedScrollingColumnExtent;
       std::optional<LayoutMode> layoutModeOverride;
       // Position relative to the full logical output. Unlike the ordinary
       // usable-area memory, this stays stable while a returning panel has not
@@ -156,6 +160,28 @@ namespace umbriel {
     void setInScratchpad(bool scratchpad);
     void animateTo(int x, int y);
     void setPosition(int x, int y);
+    // True once a placement has put the node somewhere; an unpositioned tile is opening and has no `from` box.
+    [[nodiscard]] bool positioned() const { return m_positioned; }
+    // Record the authoritative layout slot origin without moving the node. An established view's workspace motion or an
+    // opening lifecycle presentation carries the scene node there.
+    void setLayoutTarget(int x, int y);
+    // Per-frame presentation of a layout-assigned tiled slot. Remembers the unscaled logical box underneath an
+    // opening popin or zoom.
+    void presentTiledBox(const wlr_box& box);
+    // Present `box` carrying whatever opening inset is running: position the node, adopt the presented size, refresh
+    // the derived chrome. Width and height are clamped to at least 1.
+    void presentBox(const wlr_box& box);
+    // Keep a fresh tiled opener invisible from map until the admitting arrange places it. Resuming starts a fresh
+    // windows_in at that slot.
+    void deferTiledOpening();
+    void resumeTiledOpening();
+    [[nodiscard]] bool tiledOpeningDeferred() const { return m_tiledOpeningDeferred; }
+    // windows_move owns this established view's box until endLayoutMotion. `direction` feeds its custom shader.
+    void beginLayoutMotion(float direction);
+    // Finish at the workspace target without falling back to an older committed client buffer. If the configure that
+    // supplies the target buffer is still outstanding, compositor presentation remains authoritative until it lands.
+    void completeLayoutMotion(const wlr_box& target);
+    void endLayoutMotion();
     // The authoritative layout position: where the window's slot is, not where its scene node happens to be
     // mid-animation. Workspace slides and arrange reflows move nodes without touching the animation targets, so window
     // listings that order by position must read these instead.
@@ -186,6 +212,11 @@ namespace umbriel {
     // its current pending or committed size.
     bool
     resizeFloatingFractions(const std::optional<double>& widthFraction, const std::optional<double>& heightFraction);
+    // Edge-anchored floating resize: `edges` names the moving edge and the
+    // opposite one stays put, so a positive `delta` (a fraction of the usable
+    // extent on that axis) grows the window until the usable extent or the
+    // client's size hints stop it. A fullscreen view is left alone.
+    void resizeFloatingEdge(uint32_t edges, double delta);
     // The size a float episode lands on: the remembered floating size, else the
     // last size the client acked, was configured with, or was assigned.
     [[nodiscard]] std::array<int, 2> floatingRestoreSize() const;
@@ -287,7 +318,9 @@ namespace umbriel {
 
     static void onMap(wl_listener* listener, void* data);
     static void onUnmap(wl_listener* listener, void* data);
+    static void onRootSurfaceDestroy(wl_listener* listener, void* data);
     static void onCommit(wl_listener* listener, void* data);
+    static void onClientCommit(wl_listener* listener, void* data);
     static void onDestroy(wl_listener* listener, void* data);
     static void onRequestMove(wl_listener* listener, void* data);
     static void onRequestResize(wl_listener* listener, void* data);
@@ -310,6 +343,8 @@ namespace umbriel {
     void handleMap();
     void handleUnmap();
     void handleCommit(bool reconfigureOpeningState = false);
+    // Capture the outgoing frame when the client commits the size a layout motion requested.
+    void handleClientCommit();
     void setXdgTag(std::string_view tag);
     void syncContentType(wlr_surface* committedSurface = nullptr);
     void handleDestroy();
@@ -349,12 +384,14 @@ namespace umbriel {
     // Re-apply compositor-owned opacity to surface buffers. With opaque_fullscreen (default), fullscreen bypasses
     // window-rule opacity, while fades, drag opacity, focus dimming, and client-provided alpha remain active.
     [[nodiscard]] float effectiveOpacity() const;
+    // The lifecycle fade runs through a whole-window shader, so buffers and borders stay opaque under it.
+    [[nodiscard]] bool fadeComposited() const;
     void applyEffectiveOpacity();
     void flushPendingEffectiveOpacity();
     void watchViewSurfaceTree(wlr_surface* root, wlr_subsurface* attachment = nullptr);
     void watchViewSurface(wlr_surface* surface, wlr_subsurface* attachment);
     void clearViewSurfaceWatches();
-    void beginCloseAnimation();
+    [[nodiscard]] CloseSnapshotId beginCloseAnimation();
     void applyPresentedSize();
     // Refresh presentation through whichever owner currently holds the view.
     // Scratchpads are detached from workspaces but still need animated crop
@@ -373,7 +410,36 @@ namespace umbriel {
     // Shared tail of a finished/cancelled size animation: settle the presented
     // size on the committed geometry and refresh the derived chrome.
     void finishSizeAnimation();
-    [[nodiscard]] bool sizeAnimating() const { return m_presentation.animating(); }
+    [[nodiscard]] bool sizeAnimating() const {
+      return m_presentation.animating() || m_layoutMotion || tiledOpeningActive() || fullscreenOpeningActive();
+    }
+    [[nodiscard]] bool layoutPresentationOwned() const { return sizeAnimating() || m_layoutPresentationHeld; }
+    void requestTiledSize(int width, int height);
+    [[nodiscard]] bool settleTiledSizeRequest();
+    // While windows_in owns a freshly admitted tiled view, presentation follows its final layout slot rather than the
+    // client's possibly stale committed geometry. A later arrange can move its cached logical box independently.
+    [[nodiscard]] bool tiledOpeningActive() const;
+    // The same for a window that opens fullscreen: the layout owns the output box it rests in, windows_in owns the
+    // scaled box it is presented at until the fade ends.
+    [[nodiscard]] bool fullscreenOpeningActive() const;
+    // A built-in popin, zoom, or slide open offsets the presented box inside the box the layout assigned it, until
+    // the fade that drives it reaches rest.
+    [[nodiscard]] bool openingInsetPending() const { return m_openingScale < 1.0 || m_openingSlide != 0; }
+    [[nodiscard]] bool openingInsetActive() const {
+      return openingInsetPending() && (tiledOpeningActive() || fullscreenOpeningActive());
+    }
+    // `box` with that inset applied, else `box` itself. Both extents are at least 1.
+    [[nodiscard]] wlr_box openingInsetBox(const wlr_box& box) const;
+    // The output box a fullscreen view rests in, carrying the scrolling column offset its workspace applies.
+    [[nodiscard]] wlr_box fullscreenLayoutBox() const;
+    // Position the node at `box` with any opening inset applied and adopt that presented size, without refreshing the
+    // chrome derived from it.
+    void placePresentedBox(const wlr_box& box);
+    // Unscaled logical box underneath an active tiled windows_in presentation. Once another layout change arrives, the
+    // view can retain its lifecycle effect while this box participates independently in windows_move.
+    [[nodiscard]] std::optional<wlr_box> openingLayoutBox() const;
+    // Drop the opening inset and put the node back on its resting origin; the caller settles the presented size.
+    void dropOpeningInset();
     // True while the border ring exists and is showing. Fullscreen keeps the
     // tree but disables it, so the pointer alone does not answer this.
     [[nodiscard]] bool decorated() const;
@@ -414,11 +480,17 @@ namespace umbriel {
     // Where `origin` has to move so a float of `width` by `height` keeps its on-screen margin, or nullopt when the
     // clamp does not apply or the origin already satisfies it.
     [[nodiscard]] std::optional<FloatingPoint> floatingClampTarget(FloatingPoint origin, int width, int height);
+    std::optional<FloatingPoint> getFloatingPosition(
+        const wlr_box usable, const std::optional<WindowPosition>& position = std::nullopt,
+        const std::optional<std::array<int, 2>> size = std::nullopt
+    );
     void placeInUsableArea(const std::optional<WindowPosition>& position = std::nullopt);
     // The output box a fullscreen window covers: its workspace's output, else the one under it.
     [[nodiscard]] wlr_box fullscreenArea() const;
     void setPinned(bool pinned, bool focus);
+    [[nodiscard]] View* xdgParent() const;
     [[nodiscard]] View* transientParent() const;
+    [[nodiscard]] bool inheritScratchpadFromParent(bool restoreTiled);
     void syncTransientSceneParent();
     void raiseTransientTree();
     void updateForeignIdentity();
@@ -427,7 +499,7 @@ namespace umbriel {
     void enterForeignOutput(Output* output);
     void leaveForeignOutput();
     void applyWindowRules(const ResolvedWindowRule& initiallyApplied);
-    bool attachToAvailableWorkspace(const ResolvedWindowRule& rule);
+    bool attachToAvailableWorkspace(const ResolvedWindowRule& rule, LayoutAttachOrigin origin);
     // `resolved` lets a caller that already resolved the rules pass them in. Rule resolution runs every regex in the
     // config, and applyDynamicRules is reached on focus changes and on every title change, so resolving twice per pass
     // is work a terminal that retitles per command pays repeatedly.
@@ -498,7 +570,7 @@ namespace umbriel {
     std::optional<int> m_namedScrollingColumnOrder;
     // True for the member that created its current named scrolling column.
     // Its own late width rule still applies after peers have joined.
-    bool m_ownsNamedScrollingColumnWidth = false;
+    bool m_ownsNamedScrollingColumnExtent = false;
 
     Server* m_server = nullptr;
     wlr_xdg_toplevel* m_toplevel = nullptr;
@@ -510,7 +582,11 @@ namespace umbriel {
     wlr_scene* m_captureScene = nullptr;
     ViewDecoration m_decoration;
     ViewPresentation m_presentation;
+    ResizeCrossfade m_resizeCrossfade;
     wlr_box m_presentedBox{};
+    // Last unscaled box supplied by the workspace. A tiled popin or zoom presents an inset inside this logical box,
+    // so a later layout change must animate from the logical box rather than scaling the inset a second time.
+    wlr_box m_presentedTiledBox{};
     wlr_foreign_toplevel_handle_v1* m_foreign = nullptr;
     wlr_ext_foreign_toplevel_handle_v1* m_extForeign = nullptr;
     wlr_output* m_foreignOutput = nullptr;
@@ -525,11 +601,30 @@ namespace umbriel {
     // Saved client state commonly requests maximization while the surface is
     // opening. Layout policy owns that transition; later requests are valid.
     bool m_acceptClientMaximizeRequests = false;
+    // With honor_restored_maximize off, suppress a restored maximize re-assert
+    // only through the first root commit after the opening gate.
+    bool m_consumeRestoredMaximizeRequest = false;
     wl_event_source* m_acceptClientMaximizeIdle = nullptr;
     bool m_xwayland = false;
     // False until the first setPosition/animateTo places the node; the initial
     // placement snaps (avoids animating from the default (0,0) world origin).
     bool m_positioned = false;
+    // The workspace's layout motion currently drives the presented box.
+    bool m_layoutMotion = false;
+    // A completed layout motion keeps its final logical size until the client commit for that configure arrives.
+    bool m_layoutPresentationHeld = false;
+    struct TiledSizeRequest {
+      uint32_t serial = 0;
+      int width = 0;
+      int height = 0;
+    };
+    std::optional<TiledSizeRequest> m_tiledSizeRequest;
+    float m_layoutMotionDirection = 1.0F;
+    bool m_tiledOpeningDeferred = false;
+    // Inset a built-in windows_in style starts an opener at, interpolated to rest by the fade: a popin or zoom scale
+    // (1.0 = none) and a slide offset in logical pixels (0 = none).
+    double m_openingScale = 1.0;
+    int m_openingSlide = 0;
     bool m_tiled = false;
     bool m_floatingMaximized = false;
     bool m_maximizedToEdges = false;
@@ -575,10 +670,21 @@ namespace umbriel {
     bool m_hasMaximizeRestoreBox = false;
     wlr_box m_maximizeRestoreBox{};
     FloatingGeometry m_floating;
+    // Unapplied floating defaults stay in their configured units until the first float transition.
+    std::optional<int> m_pendingFloatingWidthPx;
+    std::optional<int> m_pendingFloatingHeightPx;
+    std::optional<double> m_pendingFloatingWidth;
+    std::optional<double> m_pendingFloatingHeight;
+    std::optional<WindowPosition> m_pendingFloatingPosition;
+    // The scrolling extent to restore when returned to tiled. A pixel rule stays pixel-based until first use.
+    std::optional<int> m_savedScrollingExtentPx;
+    std::optional<double> m_savedScrollingExtent;
 
     wl_listener m_map{};
     wl_listener m_unmap{};
+    wl_listener m_rootSurfaceDestroy{};
     wl_listener m_commit{};
+    wl_listener m_clientCommit{};
     wl_listener m_destroy{};
     wl_listener m_requestMove{};
     wl_listener m_requestResize{};

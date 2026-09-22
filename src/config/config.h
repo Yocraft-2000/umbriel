@@ -52,21 +52,23 @@ namespace umbriel {
     std::optional<LayoutMode> mode;
     std::optional<int> gap;
     LayoutStrutOverrides struts;
-    std::optional<std::vector<double>> widthPresets;
+    std::optional<std::vector<double>> extentPresets;
     struct Scrolling {
-      std::optional<double> defaultWidthFraction;
+      std::optional<double> defaultExtentFraction;
       std::optional<bool> centerUnderfullStrip;
       std::optional<CenterFocusedColumn> centerFocused;
       bool operator==(const Scrolling&) const = default;
     } scrolling;
     struct Dwindle {
       std::optional<bool> preserveSplit;
+      std::optional<bool> newExitsFullscreen;
       bool operator==(const Dwindle&) const = default;
     } dwindle;
     struct Master {
       std::optional<double> defaultWidthFraction;
       std::optional<bool> newOnTop;
       std::optional<bool> newBecomesMaster;
+      std::optional<bool> newExitsFullscreen;
       std::optional<MasterPosition> position;
       bool operator==(const Master&) const = default;
     } master;
@@ -96,9 +98,9 @@ namespace umbriel {
     LayoutMode mode = LayoutMode::Scrolling;
     int gap = 8;
     LayoutStruts struts;
-    std::vector<double> widthPresets{1.0 / 3, 0.5, 2.0 / 3};
+    std::vector<double> extentPresets{1.0 / 3, 0.5, 2.0 / 3};
     struct Scrolling {
-      std::optional<double> defaultWidthFraction;
+      std::optional<double> defaultExtentFraction;
       bool centerUnderfullStrip = true;
       CenterFocusedColumn centerFocused = CenterFocusedColumn::Never;
       // Axis-agnostic layout state is preserved when config reload changes direction.
@@ -107,12 +109,14 @@ namespace umbriel {
     } scrolling;
     struct Dwindle {
       bool preserveSplit = false;
+      bool newExitsFullscreen = false;
       bool operator==(const Dwindle&) const = default;
     } dwindle;
     struct Master {
       double defaultWidthFraction = 0.55;
       bool newOnTop = true;
       bool newBecomesMaster = false;
+      bool newExitsFullscreen = false;
       MasterPosition position = MasterPosition::Left;
       bool operator==(const Master&) const = default;
     } master;
@@ -229,7 +233,7 @@ namespace umbriel {
     struct Layout {
       struct Scrolling {
         // Initial strip-axis extent inherited by workspaces on this output.
-        std::optional<double> defaultWidthFraction;
+        std::optional<double> defaultExtentFraction;
         bool operator==(const Scrolling&) const = default;
       } scrolling;
       bool operator==(const Layout&) const = default;
@@ -305,10 +309,13 @@ namespace umbriel {
     std::optional<bool> matchAtStartup;
     std::optional<std::string> defaultOutput;
     std::optional<bool> defaultFloating;
-    std::optional<std::array<int, 2>> defaultSize; // [width, height]
+    std::optional<int> defaultFloatingWidthPx;
+    std::optional<int> defaultFloatingHeightPx;
+    std::optional<double> defaultFloatingWidth;
+    std::optional<double> defaultFloatingHeight;
     std::optional<WindowPosition> defaultPosition;
-    std::optional<double> defaultWidth;  // column width fraction override
-    std::optional<double> defaultHeight; // floating height fraction of the usable area
+    std::optional<int> defaultScrollingExtentPx;
+    std::optional<double> defaultScrollingExtent;
     std::optional<WorkspaceReference> defaultWorkspace;
     std::optional<std::string> defaultScratchpad;
     std::optional<std::string> defaultScrollingColumn;
@@ -345,10 +352,13 @@ namespace umbriel {
           && matchAtStartup == other.matchAtStartup
           && defaultOutput == other.defaultOutput
           && defaultFloating == other.defaultFloating
-          && defaultSize == other.defaultSize
+          && defaultFloatingWidthPx == other.defaultFloatingWidthPx
+          && defaultFloatingHeightPx == other.defaultFloatingHeightPx
+          && defaultFloatingWidth == other.defaultFloatingWidth
+          && defaultFloatingHeight == other.defaultFloatingHeight
           && defaultPosition == other.defaultPosition
-          && defaultWidth == other.defaultWidth
-          && defaultHeight == other.defaultHeight
+          && defaultScrollingExtentPx == other.defaultScrollingExtentPx
+          && defaultScrollingExtent == other.defaultScrollingExtent
           && defaultWorkspace == other.defaultWorkspace
           && defaultScratchpad == other.defaultScratchpad
           && defaultScrollingColumn == other.defaultScrollingColumn
@@ -374,10 +384,13 @@ namespace umbriel {
   struct ResolvedWindowRule {
     std::optional<std::string> defaultOutput;
     std::optional<bool> defaultFloating;
-    std::optional<std::array<int, 2>> defaultSize;
+    std::optional<int> defaultFloatingWidthPx;
+    std::optional<int> defaultFloatingHeightPx;
+    std::optional<double> defaultFloatingWidth;
+    std::optional<double> defaultFloatingHeight;
     std::optional<WindowPosition> defaultPosition;
-    std::optional<double> defaultWidth;
-    std::optional<double> defaultHeight;
+    std::optional<int> defaultScrollingExtentPx;
+    std::optional<double> defaultScrollingExtent;
     std::optional<WorkspaceReference> defaultWorkspace;
     std::optional<std::string> defaultScratchpad;
     std::optional<std::string> defaultScrollingColumn;
@@ -524,19 +537,21 @@ namespace umbriel {
       struct WindowsIn {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
-        int durationMs = 150;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        // Springs derive their own length; duration_ms stays at the shared value for a duration-based curve.
+        int durationMs = 250;
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 900.0}};
         std::string style = "popin";
-        double scale = 0.85;
+        double scale = 0.5;
         bool operator==(const WindowsIn&) const = default;
       } windowsIn;
 
       struct WindowsOut {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
-        int durationMs = 150;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
-        std::string style = "fade";
+        int durationMs = 250;
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 1400.0}};
+        std::string style = "popin";
+        double scale = 0.8;
         bool operator==(const WindowsOut&) const = default;
       } windowsOut;
 
@@ -544,7 +559,7 @@ namespace umbriel {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::Snappy};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 900.0}};
         bool operator==(const WindowsMove&) const = default;
       } windowsMove;
 
@@ -552,7 +567,7 @@ namespace umbriel {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 800.0}};
         bool operator==(const Workspaces&) const = default;
       } workspaces;
 
@@ -560,7 +575,7 @@ namespace umbriel {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 800.0}};
         // Filmstrip movement between workspace previews, for the wheel, the keyboard and touchpad releases alike. A
         // spring curve settles from the current position and carries the release velocity of a gesture; any other
         // curve runs over duration_ms and ignores it.
@@ -570,10 +585,10 @@ namespace umbriel {
 
       struct Scratchpad {
         std::optional<AnimationShaderSource> shader;
-        bool enabled = false;
+        bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
-        double dim = 0.5;
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 800.0}};
+        double dim = 0.8;
         bool blur = false;
         double scale = 0.0;
         bool maximize = false;
@@ -583,9 +598,9 @@ namespace umbriel {
 
       struct Border {
         std::optional<AnimationShaderSource> shader;
-        bool enabled = false;
+        bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 600.0}};
         bool operator==(const Border&) const = default;
       } border;
 
@@ -612,7 +627,7 @@ namespace umbriel {
     struct Overview {
       // Workspace scale when fully zoomed out.
       double zoom = 0.5;
-      // Touchpad travel per workspace or viewport in the overview, by the physical direction of the movement rather
+      // Touchpad travel and wheel accumulation in the overview, by the physical direction of the movement rather
       // than the output's workspace axis. Independent of an input device's own scroll_factor.
       double scrollFactorHorizontal = 1.0;
       double scrollFactorVertical = 1.0;
@@ -648,21 +663,23 @@ namespace umbriel {
       LayoutMode mode = LayoutMode::Scrolling;
       int gap = 8;
       LayoutStruts struts;
-      std::vector<double> widthPresets{1.0 / 3, 0.5, 2.0 / 3};
+      std::vector<double> extentPresets{1.0 / 3, 0.5, 2.0 / 3};
       struct Scrolling {
-        std::optional<double> defaultWidthFraction;
+        std::optional<double> defaultExtentFraction;
         bool centerUnderfullStrip = true;
         CenterFocusedColumn centerFocused = CenterFocusedColumn::Never;
         bool operator==(const Scrolling&) const = default;
       } scrolling;
       struct Dwindle {
         bool preserveSplit = false;
+        bool newExitsFullscreen = false;
         bool operator==(const Dwindle&) const = default;
       } dwindle;
       struct Master {
         double defaultWidthFraction = 0.55;
         bool newOnTop = true;
         bool newBecomesMaster = false;
+        bool newExitsFullscreen = false;
         MasterPosition position = MasterPosition::Left;
         bool operator==(const Master&) const = default;
       } master;
@@ -748,7 +765,16 @@ namespace umbriel {
         std::optional<bool> naturalScroll;
         std::optional<AccelProfile> accelProfile;
         std::optional<double> sensitivity;
-        std::optional<double> scrollFactor;
+        // Touchpad scroll speed multiplier. `scroll_factor` is either one number
+        // for both axes or a table with per-axis `horizontal`/`vertical` overrides.
+        // A missing axis, or the whole key absent, stays at identity 1.0. Only the
+        // continuous two-finger delta is scaled, never the discrete notches.
+        struct ScrollFactor {
+          std::optional<double> horizontal = std::nullopt;
+          std::optional<double> vertical = std::nullopt;
+          bool operator==(const ScrollFactor&) const = default;
+        };
+        std::optional<ScrollFactor> scrollFactor;
         std::optional<bool> disableWhileTyping;
         std::optional<bool> disableOnExternalMouse;
         std::optional<ClickMethod> clickMethod;

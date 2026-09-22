@@ -7,6 +7,7 @@ unit_tests = [
   ['scene-clip', ['unit/scene_clip.cpp'], [wayland_server_dep]],
   ['presentation', ['unit/presentation.cpp'], [umbriel_core_dep]],
   ['animation', ['unit/animation.cpp'], [umbriel_core_dep]],
+  ['application-scope', ['unit/application_scope.cpp'], [umbriel_core_dep], [], ['-Wl,--wrap=close_range']],
   ['animation-shader', ['unit/animation_shader.cpp'], []],
   ['window-opacity-blur', ['unit/window_opacity_blur.cpp'], [umbriel_core_dep]],
   ['value-parse', ['unit/value_parse.cpp'], []],
@@ -21,6 +22,7 @@ unit_tests = [
   ['output-frame-schedule', ['unit/output_frame_schedule.cpp'], []],
   ['hdr-format', ['unit/hdr_format.cpp'], []],
   ['layout-struts', ['unit/layout_struts.cpp'], []],
+  ['layout-motion', ['unit/layout_motion.cpp'], []],
   ['scrolling-layout', ['unit/scrolling_layout.cpp'], []],
   ['dwindle-layout', ['unit/dwindle_layout.cpp'], []],
   ['master-layout', ['unit/master_layout.cpp'], []],
@@ -292,6 +294,20 @@ seat_log_client = executable(
     xdg_shell_client_c,
     xdg_foreign_client_h,
     xdg_foreign_client_c,
+    keyboard_shortcuts_inhibit_client_h,
+    keyboard_shortcuts_inhibit_client_c,
+  ],
+  dependencies: [wayland_client_dep],
+)
+
+# Harness helper that sends complete test or apply transactions through
+# wlr-output-management, including logical output disable and re-enable.
+output_management_client = executable(
+  'output-management-client',
+  [
+    'harness/clients/output_management_client.cpp',
+    output_mgmt_client_h,
+    output_mgmt_client_c,
   ],
   dependencies: [wayland_client_dep],
 )
@@ -314,4 +330,5 @@ harness_client_targets = [
   lock_client,
   security_context_client,
   seat_log_client,
+  output_management_client,
 ]

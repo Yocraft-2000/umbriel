@@ -5,7 +5,6 @@
 struct wlr_scene_shadow;
 struct wlr_scene_tree;
 struct wlr_scene_node;
-struct wlr_box;
 
 namespace umbriel {
 

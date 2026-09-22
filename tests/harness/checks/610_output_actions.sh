@@ -213,10 +213,10 @@ if [[ $returned_workspace != "$start_workspace" ]]; then
   exit 1
 fi
 
-# window-modify-width: Headless output is 1280x720 with the shipped defaults (gap 8, border 2): viewport 1260, so -0.2 shrinks a column by about 252px.
+# window-modify-primary-extent: Headless output is 1280x720 with the shipped defaults (gap 8, border 2): viewport 1260, so -0.2 shrinks a column by about 252px.
 # The exact geometry math lives in 110_scrolling_layout.sh (624 wide at 0.5).
 before_w=$(jq -r '.[0].w' <<< "$("$UMBRIEL" windows --json)")
-accepts "window-modify-width:-0.2"
+accepts "window-modify-primary-extent:-0.2"
 after_w=$before_w
 for _ in $(seq 40); do
   after_w=$(jq -r '.[0].w' <<< "$("$UMBRIEL" windows --json)")
@@ -313,7 +313,7 @@ if [[ $source_w -ne $narrow_w ]]; then
   echo "expected source column to restore width $narrow_w, got $source_w"
   exit 1
 fi
-accepts "window-modify-width:+0.2"
+accepts "window-modify-primary-extent:+0.2"
 restored_w=0
 for _ in $(seq 40); do
   restored_w=$(jq -r '.[0].w' <<< "$("$UMBRIEL" windows --json)")
@@ -357,6 +357,55 @@ if [[ $dx -lt -3 || $dx -gt 3 || $dy -lt -3 || $dy -gt 3 ]]; then
   exit 1
 fi
 accepts "window-toggle-floating" # restore tiled
+
+spawn_client window-toggle-unfoucsed
+wait_for_windows 2
+
+read -r id <<< "$(jq -r '.[0].id' <<< "$("$UMBRIEL" windows --json)")"
+accepts "window-focus:$id"
+
+read -r unfocused_id started_focused started_floating <<< "$(jq -r '.[1] | "\(.id) \(.focused) \(.floating)"' <<< "$("$UMBRIEL" windows --json)")"
+accepts "window-toggle-floating:$unfocused_id"
+read -r ended_focused ended_floating <<< "$(jq -r '.[1] | "\(.focused) \(.floating)"' <<< "$("$UMBRIEL" windows --json )")"
+
+if [[ $started_focused == false && $ended_focused == true ]]; then
+  echo "Window stole focus when toggled"
+  exit 1
+fi
+
+if [[ $started_floating == false && $ended_floating == false ]]; then
+  echo "Window did not start floating"
+  exit 1
+fi
+
+accepts "window-toggle-floating:$unfocused_id"
+
+accepts "window-move-to-scratchpad"
+accepts "scratchpad-toggle"
+
+read -r active focused <<< "$(jq '.[0] | "\(.active) \(.focused)"' <<< "$("$UMBRIEL" windows --json)")"
+if [[ $active == false || $focused == true ]]; then
+  echo "Scrachpad window is not behaving properly"
+  exit 1
+fi
+
+accepts "window-toggle-floating:$unfocused_id"
+read -r ended_active ended_floating <<< "$(jq -r '.[1] | "\(.active) \(.floating)"' <<< "$("$UMBRIEL" windows --json )")"
+
+if [[ $ended_active == true ]]; then
+  echo "Scratchpad should be active, not floating window"
+  exit 1
+fi
+
+if [[ $ended_floating == false ]]; then
+  echo "Window did not start floating with scratchpad visible"
+  exit 1
+fi
+
+accepts "window-toggle-floating:$unfocused_id"
+accepts "window-restore-from-scratchpad"
+
+accepts "window-close"
 
 # workspace-set-layout
 spawn_client dwindle-b

@@ -480,6 +480,30 @@ namespace umbriel {
       };
     }
 
+    std::optional<Config::Input::Touchpad::ScrollFactor> readScrollFactor(Section& section) {
+      const toml::node* node = section.take("scroll_factor");
+      if (node == nullptr) {
+        return std::nullopt;
+      }
+      Config::Input::Touchpad::ScrollFactor factor;
+      if (const toml::table* table = node->as_table()) {
+        Section axes(*table, "input.touchpad.scroll_factor", configStore().mutableDiagnostics());
+        axes.real("horizontal", 0.1, 10.0, factor.horizontal);
+        axes.real("vertical", 0.1, 10.0, factor.vertical);
+        return factor;
+      }
+      const auto value = node->value<double>();
+      if (!value || std::isnan(*value)) {
+        warnAt(node->source(), "ignoring input.touchpad.scroll_factor (expected number or table)");
+        return std::nullopt;
+      }
+      const double used = std::clamp(*value, 0.1, 10.0);
+      if (used != *value) {
+        warnAt(node->source(), "input.touchpad.scroll_factor = {} out of range, clamped to {}", *value, used);
+      }
+      return Config::Input::Touchpad::ScrollFactor{.horizontal = used, .vertical = used};
+    }
+
     std::optional<ClickMethod> readClickMethod(Section& section, std::string_view context) {
       const toml::node* node = section.take("click_method");
       if (node == nullptr) {
@@ -547,14 +571,14 @@ namespace umbriel {
       return matrix;
     }
 
-    std::optional<std::vector<double>> readWidthPresets(Section& section, std::string_view context) {
-      const toml::node* node = section.take("width_presets");
+    std::optional<std::vector<double>> readExtentPresets(Section& section, std::string_view context) {
+      const toml::node* node = section.take("extent_presets");
       if (node == nullptr) {
         return std::nullopt;
       }
       const auto* array = node->as_array();
       if (array == nullptr || array->empty()) {
-        warnAt(node->source(), "ignoring {}.width_presets (expected non-empty array of numbers)", context);
+        warnAt(node->source(), "ignoring {}.extent_presets (expected non-empty array of numbers)", context);
         return std::nullopt;
       }
 
@@ -563,12 +587,12 @@ namespace umbriel {
       for (const auto& entry : *array) {
         const auto value = entry.value<double>();
         if (!value || std::isnan(*value)) {
-          warnAt(node->source(), "ignoring {}.width_presets (expected non-empty array of numbers)", context);
+          warnAt(node->source(), "ignoring {}.extent_presets (expected non-empty array of numbers)", context);
           return std::nullopt;
         }
         const double used = std::clamp(*value, 0.1, 1.0);
         if (used != *value) {
-          warnAt(entry.source(), "{}.width_presets = {} out of range, clamped to {}", context, *value, used);
+          warnAt(entry.source(), "{}.extent_presets = {} out of range, clamped to {}", context, *value, used);
         }
         parsed.push_back(used);
       }
@@ -595,24 +619,28 @@ namespace umbriel {
             }
             s.integer("gap", 0, 500, overrides.gap);
             s.sub("struts", [&](Section& struts) { readLayoutStruts(struts, overrides.struts); });
-            if (auto presets = readWidthPresets(s, layoutContext)) {
-              overrides.widthPresets = std::move(*presets);
+            if (auto presets = readExtentPresets(s, layoutContext)) {
+              overrides.extentPresets = std::move(*presets);
             }
             s.sub("scrolling", [&](Section& sc) {
-              sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
+              sc.real("default_extent_fraction", 0.1, 1.0, overrides.scrolling.defaultExtentFraction)
                   .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip);
               if (const auto centerFocused = readCenterFocused(sc, layoutContext + ".scrolling")) {
                 overrides.scrolling.centerFocused = centerFocused;
               }
             });
-            s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", overrides.dwindle.preserveSplit); });
+            s.sub("dwindle", [&](Section& sd) {
+              sd.boolean("preserve_split", overrides.dwindle.preserveSplit)
+                  .boolean("new_exits_fullscreen", overrides.dwindle.newExitsFullscreen);
+            });
             s.sub("master", [&](Section& sm) {
               if (const auto position = readMasterPosition(sm, layoutContext + ".master")) {
                 overrides.master.position = position;
               }
               sm.real("default_width_fraction", 0.1, 0.9, overrides.master.defaultWidthFraction)
                   .boolean("new_on_top", overrides.master.newOnTop)
-                  .boolean("new_becomes_master", overrides.master.newBecomesMaster);
+                  .boolean("new_becomes_master", overrides.master.newBecomesMaster)
+                  .boolean("new_exits_fullscreen", overrides.master.newExitsFullscreen);
             });
           },
           layoutContext
@@ -961,7 +989,7 @@ namespace umbriel {
           || *damping < 0.01
           || *damping > 5.0
           || *stiffness < 1.0
-          || *stiffness > 1000.0) {
+          || *stiffness > 10000.0) {
         return std::nullopt;
       }
       return SpringConfig{.damping = *damping, .stiffness = *stiffness};
@@ -1085,6 +1113,23 @@ namespace umbriel {
       const auto readCurve = [&](Section& section, std::string_view context, AnimationCurve& target) {
         readCurveKey(section, "curve", context, target);
       };
+      // duration_ms and curve resolve together, because a spring derives its own length: a duration configured
+      // beside one reaches nothing and has to say so rather than look honoured.
+      const auto readTimeline = [&](Section& section, std::string_view context, int& duration, AnimationCurve& curve) {
+        std::optional<int> configured;
+        section.integer("duration_ms", 1, 10000, configured);
+        readCurve(section, context, curve);
+        if (!configured) {
+          return;
+        }
+        duration = *configured;
+        if (curve.easing != Easing::Spring) {
+          return;
+        }
+        if (const toml::node* node = section.node("duration_ms")) {
+          warnAt(node->source(), "{}.duration_ms has no effect: its spring curve sets its own length", context);
+        }
+      };
       const auto readStyle = [](Section& section, std::string& target,
                                 std::initializer_list<std::string_view> allowed) {
         std::string parsed = target;
@@ -1102,36 +1147,30 @@ namespace umbriel {
 
       s.sub("windows_in", [&](Section& section) {
         readShader(section, animation.windowsIn);
-        section.boolean("enabled", animation.windowsIn.enabled)
-            .integer("duration_ms", 1, 10000, animation.windowsIn.durationMs)
-            .real("scale", 0.1, 1.0, animation.windowsIn.scale);
+        section.boolean("enabled", animation.windowsIn.enabled).real("scale", 0.1, 1.0, animation.windowsIn.scale);
         readStyle(section, animation.windowsIn.style, {"popin", "zoom", "slide", "fade", "none"});
-        readCurve(section, "animation.windows_in", animation.windowsIn.curve);
+        readTimeline(section, "animation.windows_in", animation.windowsIn.durationMs, animation.windowsIn.curve);
       });
       s.sub("windows_out", [&](Section& section) {
         readShader(section, animation.windowsOut);
-        section.boolean("enabled", animation.windowsOut.enabled)
-            .integer("duration_ms", 1, 10000, animation.windowsOut.durationMs);
-        readStyle(section, animation.windowsOut.style, {"fade", "slide"});
-        readCurve(section, "animation.windows_out", animation.windowsOut.curve);
+        section.boolean("enabled", animation.windowsOut.enabled).real("scale", 0.1, 1.0, animation.windowsOut.scale);
+        readStyle(section, animation.windowsOut.style, {"fade", "slide", "popin", "zoom"});
+        readTimeline(section, "animation.windows_out", animation.windowsOut.durationMs, animation.windowsOut.curve);
       });
       s.sub("windows_move", [&](Section& section) {
         readShader(section, animation.windowsMove);
-        section.boolean("enabled", animation.windowsMove.enabled)
-            .integer("duration_ms", 1, 10000, animation.windowsMove.durationMs);
-        readCurve(section, "animation.windows_move", animation.windowsMove.curve);
+        section.boolean("enabled", animation.windowsMove.enabled);
+        readTimeline(section, "animation.windows_move", animation.windowsMove.durationMs, animation.windowsMove.curve);
       });
       s.sub("workspaces", [&](Section& section) {
         readShader(section, animation.workspaces);
-        section.boolean("enabled", animation.workspaces.enabled)
-            .integer("duration_ms", 1, 10000, animation.workspaces.durationMs);
-        readCurve(section, "animation.workspaces", animation.workspaces.curve);
+        section.boolean("enabled", animation.workspaces.enabled);
+        readTimeline(section, "animation.workspaces", animation.workspaces.durationMs, animation.workspaces.curve);
       });
       s.sub("overview", [&](Section& section) {
         readShader(section, animation.overview);
-        section.boolean("enabled", animation.overview.enabled)
-            .integer("duration_ms", 1, 10000, animation.overview.durationMs);
-        readCurve(section, "animation.overview", animation.overview.curve);
+        section.boolean("enabled", animation.overview.enabled);
+        readTimeline(section, "animation.overview", animation.overview.durationMs, animation.overview.curve);
         readCurveKey(
             section, "workspace_curve", "animation.overview.workspace_curve", animation.overview.workspaceCurve
         );
@@ -1139,33 +1178,45 @@ namespace umbriel {
       s.sub("scratchpad", [&](Section& section) {
         readShader(section, animation.scratchpad);
         section.boolean("enabled", animation.scratchpad.enabled)
-            .integer("duration_ms", 1, 10000, animation.scratchpad.durationMs)
             .real("dim", 0.0, 1.0, animation.scratchpad.dim)
             .boolean("blur", animation.scratchpad.blur)
             .real("scale", 0.0, 1.0, animation.scratchpad.scale)
             .boolean("maximize", animation.scratchpad.maximize)
             .boolean("fullscreen", animation.scratchpad.fullscreen);
-        readCurve(section, "animation.scratchpad", animation.scratchpad.curve);
+        readTimeline(section, "animation.scratchpad", animation.scratchpad.durationMs, animation.scratchpad.curve);
       });
       s.sub("border", [&](Section& section) {
         readShader(section, animation.border);
-        section.boolean("enabled", animation.border.enabled)
-            .integer("duration_ms", 1, 10000, animation.border.durationMs);
-        readCurve(section, "animation.border", animation.border.curve);
+        section.boolean("enabled", animation.border.enabled);
+        readTimeline(section, "animation.border", animation.border.durationMs, animation.border.curve);
       });
       s.sub("dim_unfocused", [&](Section& section) {
         readShader(section, animation.dimUnfocused);
-        section.boolean("enabled", animation.dimUnfocused.enabled)
-            .integer("duration_ms", 1, 10000, animation.dimUnfocused.durationMs)
-            .real("dim", 0.0, 1.0, animation.dimUnfocused.dim);
-        readCurve(section, "animation.dim_unfocused", animation.dimUnfocused.curve);
+        section.boolean("enabled", animation.dimUnfocused.enabled).real("dim", 0.0, 1.0, animation.dimUnfocused.dim);
+        readTimeline(
+            section, "animation.dim_unfocused", animation.dimUnfocused.durationMs, animation.dimUnfocused.curve
+        );
       });
       s.sub("layers", [&](Section& section) {
         readShader(section, animation.layers);
-        section.boolean("enabled", animation.layers.enabled)
-            .integer("duration_ms", 1, 10000, animation.layers.durationMs);
-        readCurve(section, "animation.layers", animation.layers.curve);
+        section.boolean("enabled", animation.layers.enabled);
+        readTimeline(section, "animation.layers", animation.layers.durationMs, animation.layers.curve);
       });
+
+      // The shared duration reaches nothing once every timeline it feeds derives its own length.
+      if (defaultDuration) {
+        const std::array timelines{animation.windowsIn.curve.easing,    animation.windowsOut.curve.easing,
+                                   animation.windowsMove.curve.easing,  animation.workspaces.curve.easing,
+                                   animation.overview.curve.easing,     animation.overview.workspaceCurve.easing,
+                                   animation.scratchpad.curve.easing,   animation.border.curve.easing,
+                                   animation.dimUnfocused.curve.easing, animation.layers.curve.easing};
+        const bool allSprings = std::ranges::all_of(timelines, [](Easing easing) { return easing == Easing::Spring; });
+        if (allSprings) {
+          if (const toml::node* node = s.node("duration_ms")) {
+            warnAt(node->source(), "animation.duration_ms has no effect: every animation curve is a spring");
+          }
+        }
+      }
     }
 
     void readAnimation(Section& root, Config& loaded) {
@@ -1290,24 +1341,28 @@ namespace umbriel {
         }
         s.integer("gap", 0, 500, loaded.layout.gap);
         s.sub("struts", [&](Section& struts) { readLayoutStruts(struts, loaded.layout.struts); });
-        if (auto presets = readWidthPresets(s, "layout")) {
-          loaded.layout.widthPresets = std::move(*presets);
+        if (auto presets = readExtentPresets(s, "layout")) {
+          loaded.layout.extentPresets = std::move(*presets);
         }
         s.sub("scrolling", [&](Section& sc) {
-          sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
+          sc.real("default_extent_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultExtentFraction)
               .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip);
           if (const auto centerFocused = readCenterFocused(sc, "layout.scrolling")) {
             loaded.layout.scrolling.centerFocused = *centerFocused;
           }
         });
-        s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", loaded.layout.dwindle.preserveSplit); });
+        s.sub("dwindle", [&](Section& sd) {
+          sd.boolean("preserve_split", loaded.layout.dwindle.preserveSplit)
+              .boolean("new_exits_fullscreen", loaded.layout.dwindle.newExitsFullscreen);
+        });
         s.sub("master", [&](Section& sm) {
           if (const auto position = readMasterPosition(sm, "layout.master")) {
             loaded.layout.master.position = *position;
           }
           sm.real("default_width_fraction", 0.1, 0.9, loaded.layout.master.defaultWidthFraction)
               .boolean("new_on_top", loaded.layout.master.newOnTop)
-              .boolean("new_becomes_master", loaded.layout.master.newBecomesMaster);
+              .boolean("new_becomes_master", loaded.layout.master.newBecomesMaster)
+              .boolean("new_exits_fullscreen", loaded.layout.master.newExitsFullscreen);
         });
       });
     }
@@ -1569,9 +1624,9 @@ namespace umbriel {
           t.boolean("tap", in.touchpad.tap)
               .boolean("natural_scroll", in.touchpad.naturalScroll)
               .real("sensitivity", -1.0, 1.0, in.touchpad.sensitivity)
-              .real("scroll_factor", 0.1, 10.0, in.touchpad.scrollFactor)
               .boolean("disable_while_typing", in.touchpad.disableWhileTyping)
               .boolean("disable_on_external_mouse", in.touchpad.disableOnExternalMouse);
+          in.touchpad.scrollFactor = readScrollFactor(t);
           in.touchpad.accelProfile = readAccelProfile(t, "accel_profile", "input.touchpad");
           in.touchpad.clickMethod = readClickMethod(t, "input.touchpad");
         });
@@ -1646,7 +1701,7 @@ namespace umbriel {
             .boolean("direct_scanout", rule.directScanout);
         keys.sub("layout", [&](Section& layout) {
           layout.sub("scrolling", [&](Section& scrolling) {
-            scrolling.real("default_width_fraction", 0.1, 1.0, rule.layout.scrolling.defaultWidthFraction);
+            scrolling.real("default_extent_fraction", 0.1, 1.0, rule.layout.scrolling.defaultExtentFraction);
           });
         });
         keys.integer("min_workspaces", 1, static_cast<int>(kMaxWorkspaces), rule.minWorkspaces);
@@ -1822,6 +1877,7 @@ namespace umbriel {
         bool hasSubmapAfter = false;
         bool repeatBind = true;
         bool allowWhenLocked = false;
+        bool allowWhenInhibited = false;
         int cooldownMs = 0;
 
         if (const auto* tbl = entry.as_table()) {
@@ -1830,6 +1886,7 @@ namespace umbriel {
           // bad action must not also be told its `repeat` key is unknown.
           bind.boolean("repeat", repeatBind);
           bind.boolean("allow_when_locked", allowWhenLocked);
+          bind.boolean("allow_when_inhibited", allowWhenInhibited);
           bind.integer("cooldown_ms", 0, 3600000, cooldownMs);
           const toml::node* submapNode = bind.node("submap");
           hasSubmapAfter = submapNode != nullptr && submapNode->is_string();
@@ -1876,6 +1933,7 @@ namespace umbriel {
         }
         binding.repeat = repeatBind && !binding.modifierOnly && !binding.submapAfter.has_value();
         binding.allowWhenLocked = allowWhenLocked;
+        binding.allowWhenInhibited = allowWhenInhibited;
         binding.cooldownMs = cooldownMs;
         if (!parseAction(actionStr, binding)) {
           warnAt(key.source(), "ignoring keybind '{}' (unknown action '{}')", chord, actionStr);
@@ -2064,6 +2122,34 @@ namespace umbriel {
             .boolean("blur_optimized", rule.blurOptimized)
             .real("opacity", 0.0, 1.0, rule.opacity)
             .real("blur_ignore_alpha", 0.0, 1.0, rule.blurIgnoreAlpha);
+        if (const toml::node* n = keys.take("default_floating_size")) {
+          const auto* table = n->as_table();
+          if (table == nullptr) {
+            warnAt(
+                n->source(),
+                "ignoring window_rule.default_floating_size "
+                "(expected {{ width = number, height = number }})"
+            );
+          } else {
+            Section size(*table, "window_rule.default_floating_size", configStore().mutableDiagnostics());
+            size.real("width", 0.1, 1.0, rule.defaultFloatingWidth)
+                .real("height", 0.1, 1.0, rule.defaultFloatingHeight);
+          }
+        }
+        if (const toml::node* n = keys.take("default_floating_size_px")) {
+          const auto* table = n->as_table();
+          if (table == nullptr) {
+            warnAt(
+                n->source(),
+                "ignoring window_rule.default_floating_size_px "
+                "(expected {{ width = integer, height = integer }})"
+            );
+          } else {
+            Section size(*table, "window_rule.default_floating_size_px", configStore().mutableDiagnostics());
+            size.integer("width", 1, 100000, rule.defaultFloatingWidthPx)
+                .integer("height", 1, 100000, rule.defaultFloatingHeightPx);
+          }
+        }
         if (const toml::node* vrrNode = keys.take("vrr")) {
           if (const auto value = readVrrMode(*vrrNode)) {
             rule.vrr = value;
@@ -2083,27 +2169,6 @@ namespace umbriel {
             rule.defaultOutput = *value;
           } else {
             warnAt(n->source(), "ignoring window_rule.default_output (expected string)");
-          }
-        }
-
-        if (const toml::node* n = keys.take("default_size")) {
-          const auto* arr = n->as_array();
-          bool valid = arr != nullptr && arr->size() == 2;
-          std::array<int, 2> parsed{};
-          if (valid) {
-            for (size_t index = 0; index < 2; ++index) {
-              const auto value = (*arr)[index].value<std::int64_t>();
-              if (!value || *value < 1 || *value > 100000) {
-                valid = false;
-                break;
-              }
-              parsed[index] = static_cast<int>(*value);
-            }
-          }
-          if (!valid) {
-            warnAt(n->source(), "ignoring window_rule.default_size (expected [width, height] positive integers)");
-          } else {
-            rule.defaultSize = parsed;
           }
         }
 
@@ -2163,31 +2228,8 @@ namespace umbriel {
           }
         }
 
-        if (const toml::node* n = keys.take("default_width")) {
-          const auto value = n->value<double>();
-          if (!value || std::isnan(*value)) {
-            warnAt(n->source(), "ignoring window_rule.default_width (expected number 0.1-1.0)");
-          } else {
-            const double used = std::clamp(*value, 0.1, 1.0);
-            if (used != *value) {
-              warnAt(n->source(), "window_rule.default_width = {} out of range, clamped to {}", *value, used);
-            }
-            rule.defaultWidth = used;
-          }
-        }
-
-        if (const toml::node* n = keys.take("default_height")) {
-          const auto value = n->value<double>();
-          if (!value || std::isnan(*value)) {
-            warnAt(n->source(), "ignoring window_rule.default_height (expected number 0.1-1.0)");
-          } else {
-            const double used = std::clamp(*value, 0.1, 1.0);
-            if (used != *value) {
-              warnAt(n->source(), "window_rule.default_height = {} out of range, clamped to {}", *value, used);
-            }
-            rule.defaultHeight = used;
-          }
-        }
+        keys.integer("default_scrolling_extent_px", 1, 100000, rule.defaultScrollingExtentPx)
+            .real("default_scrolling_extent", 0.1, 1.0, rule.defaultScrollingExtent);
 
         if (const toml::node* n = keys.take("default_workspace")) {
           if (const auto value = n->value<std::int64_t>()) {

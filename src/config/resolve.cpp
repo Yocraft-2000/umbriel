@@ -102,8 +102,8 @@ namespace umbriel {
       if (overrides.struts.bottom) {
         resolved.struts.bottom = *overrides.struts.bottom;
       }
-      if (overrides.scrolling.defaultWidthFraction) {
-        resolved.scrolling.defaultWidthFraction = overrides.scrolling.defaultWidthFraction;
+      if (overrides.scrolling.defaultExtentFraction) {
+        resolved.scrolling.defaultExtentFraction = overrides.scrolling.defaultExtentFraction;
       }
       if (overrides.scrolling.centerUnderfullStrip) {
         resolved.scrolling.centerUnderfullStrip = *overrides.scrolling.centerUnderfullStrip;
@@ -114,6 +114,9 @@ namespace umbriel {
       if (overrides.dwindle.preserveSplit) {
         resolved.dwindle.preserveSplit = *overrides.dwindle.preserveSplit;
       }
+      if (overrides.dwindle.newExitsFullscreen) {
+        resolved.dwindle.newExitsFullscreen = *overrides.dwindle.newExitsFullscreen;
+      }
       if (overrides.master.defaultWidthFraction) {
         resolved.master.defaultWidthFraction = *overrides.master.defaultWidthFraction;
       }
@@ -123,11 +126,14 @@ namespace umbriel {
       if (overrides.master.newBecomesMaster) {
         resolved.master.newBecomesMaster = *overrides.master.newBecomesMaster;
       }
+      if (overrides.master.newExitsFullscreen) {
+        resolved.master.newExitsFullscreen = *overrides.master.newExitsFullscreen;
+      }
       if (overrides.master.position) {
         resolved.master.position = *overrides.master.position;
       }
-      if (overrides.widthPresets) {
-        resolved.widthPresets = *overrides.widthPresets;
+      if (overrides.extentPresets) {
+        resolved.extentPresets = *overrides.extentPresets;
       }
       const int borderWidth = config.appearance.totalBorderWidth();
       resolved.totalGap = resolved.gap + 2 * borderWidth;
@@ -242,17 +248,20 @@ namespace umbriel {
       if (rule.defaultFloating) {
         resolved.defaultFloating = rule.defaultFloating;
       }
-      if (rule.defaultSize) {
-        resolved.defaultSize = rule.defaultSize;
+      if (rule.defaultFloatingWidthPx || rule.defaultFloatingWidth) {
+        resolved.defaultFloatingWidthPx = rule.defaultFloatingWidthPx;
+        resolved.defaultFloatingWidth = rule.defaultFloatingWidth;
+      }
+      if (rule.defaultFloatingHeightPx || rule.defaultFloatingHeight) {
+        resolved.defaultFloatingHeightPx = rule.defaultFloatingHeightPx;
+        resolved.defaultFloatingHeight = rule.defaultFloatingHeight;
       }
       if (rule.defaultPosition) {
         resolved.defaultPosition = rule.defaultPosition;
       }
-      if (rule.defaultWidth) {
-        resolved.defaultWidth = rule.defaultWidth;
-      }
-      if (rule.defaultHeight) {
-        resolved.defaultHeight = rule.defaultHeight;
+      if (rule.defaultScrollingExtentPx || rule.defaultScrollingExtent) {
+        resolved.defaultScrollingExtentPx = rule.defaultScrollingExtentPx;
+        resolved.defaultScrollingExtent = rule.defaultScrollingExtent;
       }
       if (rule.defaultWorkspace) {
         resolved.defaultWorkspace = rule.defaultWorkspace;
@@ -370,14 +379,16 @@ namespace umbriel {
     resolved.mode = config.layout.mode;
     resolved.gap = config.layout.gap;
     resolved.struts = config.layout.struts;
-    resolved.widthPresets = config.layout.widthPresets;
-    resolved.scrolling.defaultWidthFraction = config.layout.scrolling.defaultWidthFraction;
+    resolved.extentPresets = config.layout.extentPresets;
+    resolved.scrolling.defaultExtentFraction = config.layout.scrolling.defaultExtentFraction;
     resolved.scrolling.centerUnderfullStrip = config.layout.scrolling.centerUnderfullStrip;
     resolved.scrolling.centerFocused = config.layout.scrolling.centerFocused;
     resolved.dwindle.preserveSplit = config.layout.dwindle.preserveSplit;
+    resolved.dwindle.newExitsFullscreen = config.layout.dwindle.newExitsFullscreen;
     resolved.master.defaultWidthFraction = config.layout.master.defaultWidthFraction;
     resolved.master.newOnTop = config.layout.master.newOnTop;
     resolved.master.newBecomesMaster = config.layout.master.newBecomesMaster;
+    resolved.master.newExitsFullscreen = config.layout.master.newExitsFullscreen;
     resolved.master.position = config.layout.master.position;
     const int borderWidth = config.appearance.totalBorderWidth();
     resolved.totalGap = resolved.gap + 2 * borderWidth;
@@ -392,8 +403,8 @@ namespace umbriel {
       ResolvedLayoutConfig resolved = resolveGlobalLayout(config);
       const OutputRule* output = matchingOutputRule(config, identity);
       if (output != nullptr) {
-        if (output->layout.scrolling.defaultWidthFraction) {
-          resolved.scrolling.defaultWidthFraction = output->layout.scrolling.defaultWidthFraction;
+        if (output->layout.scrolling.defaultExtentFraction) {
+          resolved.scrolling.defaultExtentFraction = output->layout.scrolling.defaultExtentFraction;
         }
         resolved.scrolling.direction = output->workspaceAxis == WorkspaceAxis::Horizontal
             ? ScrollingDirection::Vertical

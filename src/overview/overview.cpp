@@ -168,10 +168,10 @@ namespace umbriel {
     out.axis = group != nullptr ? group->workspaceAxis() : WorkspaceAxis::Vertical;
     out.previewW = std::max(1, static_cast<int>(std::lround(outputBox.width * zoom)));
     out.previewH = std::max(1, static_cast<int>(std::lround(outputBox.height * zoom)));
-    out.baseX = outputBox.x + (outputBox.width - out.previewW) / 2.0;
-    out.baseY = outputBox.y + (outputBox.height - out.previewH) / 2.0;
+    out.baseX = static_cast<int>(std::lround(outputBox.x + (outputBox.width - out.previewW) / 2.0));
+    out.baseY = static_cast<int>(std::lround(outputBox.y + (outputBox.height - out.previewH) / 2.0));
     const int axisExtent = out.axis == WorkspaceAxis::Horizontal ? outputBox.width : outputBox.height;
-    out.gap = kRowGapFraction * axisExtent * zoom;
+    out.gap = static_cast<int>(std::lround(kRowGapFraction * axisExtent * zoom));
     return true;
   }
 
@@ -197,6 +197,12 @@ namespace umbriel {
       return;
     }
     wlr_scene_node_set_enabled(&card.tree->node, true);
+    // A tiled opener waiting for the arrange that places it is not showing yet. Its card follows.
+    if (view->tiledOpeningDeferred()) {
+      card.blur.hide();
+      wlr_scene_node_set_enabled(&card.tree->node, false);
+      return;
+    }
 
     const double z = metrics.zoom;
     const wlr_box& world = view->presentedBox();
@@ -986,7 +992,10 @@ namespace umbriel {
       return;
     }
     wlr_scene_node_copy_animations_for_snapshot(&snapshot->node, &card.tree->node);
-    m_server->animateCloseSnapshot(card.owner->output, snapshot, std::move(borders));
+    // The frozen card owns its captured geometry and windows_out lifecycle. Retain an interrupted windows_in effect,
+    // but do not carry the live card's windows_move effect into the close snapshot.
+    wlr_scene_node_set_animation(&snapshot->node, static_cast<unsigned>(AnimationEvent::WindowsMove), nullptr, nullptr);
+    (void)m_server->animateCloseSnapshot(card.owner->output, snapshot, snapshot, std::move(borders), {});
     wlr_output_schedule_frame(card.owner->output->wlr());
   }
 
@@ -1384,6 +1393,7 @@ namespace umbriel {
     if (m_outputs.empty()) {
       return false;
     }
+    m_server->cursor()->resetWheelAccumulation();
 
     if (ScratchpadManager* scratchpad = m_server->scratchpadManager()) {
       scratchpad->hideAll();
@@ -1484,6 +1494,7 @@ namespace umbriel {
     if (!m_active || m_closing) {
       return;
     }
+    m_server->cursor()->resetWheelAccumulation();
     cancelNavigation();
     if (m_dragCard != nullptr) {
       endDrag(false);
@@ -1566,7 +1577,16 @@ namespace umbriel {
     }
     bool rowTicked = false;
     for (const auto& state : m_outputs) {
-      rowTicked = state->rowScroll.tick(nowMsec) || rowTicked;
+      const bool ticked = state->rowScroll.tick(nowMsec);
+      if (ticked && state->rowScroll.animating() && state->rowScroll.curve().easing == Easing::Spring) {
+        PreviewMetrics metrics;
+        if (previewMetrics(*state, *m_server, zoom(), metrics)) {
+          const double step =
+              (metrics.axis == WorkspaceAxis::Horizontal ? metrics.previewW : metrics.previewH) + metrics.gap;
+          static_cast<void>(state->rowScroll.finishSpringTail(step));
+        }
+      }
+      rowTicked = ticked || rowTicked;
       active = active || state->rowScroll.animating();
     }
     if (zoomTicked || rowTicked || m_cardPresentationDirty) {
@@ -1616,6 +1636,7 @@ namespace umbriel {
   }
 
   void Overview::teardown() {
+    m_server->cursor()->resetWheelAccumulation();
     cancelNavigation();
     clearMiddlePress();
     hideDropHint();
@@ -2377,12 +2398,29 @@ namespace umbriel {
     Output* output = m_server->outputFromWlr(wlr_output_layout_output_at(m_server->outputLayout(), lx, ly));
     const WorkspaceGroup* group = output != nullptr ? output->workspaceGroup() : nullptr;
     const bool horizontalWorkspaces = group != nullptr && group->workspaceAxis() == WorkspaceAxis::Horizontal;
-    // The vertical wheel navigates either arrangement; a horizontal wheel only
-    // matches horizontally arranged workspaces.
-    if (!vertical && !horizontalWorkspaces) {
+    const int sign = direction < 0 ? -1 : 1;
+    // Wheel input commits discrete targets on its physical axis, unlike continuous touchpad navigation.
+    if (vertical != horizontalWorkspaces) {
+      selectRelativeWorkspace(sign, output);
       return true;
     }
-    selectRelativeWorkspace(direction < 0 ? -1 : 1, output);
+    Workspace* workspace = workspaceAtPoint(lx, ly, nullptr, nullptr, true);
+    ScrollingLayout* scrolling = workspace != nullptr ? workspace->scrollingLayout() : nullptr;
+    if (scrolling == nullptr) {
+      return true;
+    }
+    View* target = vertical ? workspace->focusVertical(sign) : workspace->focusAdjacent(sign);
+    if (target == nullptr) {
+      return true;
+    }
+    clearShortcutInput();
+    if (workspace->active()) {
+      m_server->focusView(target, FocusReason::Gesture);
+    } else {
+      workspace->setFocusedView(target);
+    }
+    scrolling->snapVisible(scrolling->columnOf(target), workspace->scrollViewportExtent());
+    workspace->markArrange(true);
     return true;
   }
 

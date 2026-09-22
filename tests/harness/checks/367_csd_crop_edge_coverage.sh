@@ -18,6 +18,7 @@ cat >> "$UMBRIEL_CONFIG" <<'EOF'
 
 [animation]
 duration_ms = 1
+curve = "linear"
 
 [colors.border]
 focused = "#FF0000"
@@ -34,7 +35,7 @@ enabled = false
 [[window_rule]]
 match.title = "^csd-crop$"
 default_floating = true
-default_size = [602, 402]
+default_floating_size_px = { width = 602, height = 402 }
 default_position = { x = 9, y = 9, anchor = "top_left" }
 
 [output."HEADLESS-1"]

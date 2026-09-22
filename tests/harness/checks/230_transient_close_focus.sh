@@ -33,12 +33,13 @@ cat >> "$UMBRIEL_CONFIG" <<'EOF'
 
 [animation]
 duration_ms = 1
+curve = "linear"
 
 [layout]
 mode = "scrolling"
 
 [layout.scrolling]
-default_width_fraction = 0.75
+default_extent_fraction = 0.75
 
 [[window_rule]]
 match.title = "^transient-child-ready$"

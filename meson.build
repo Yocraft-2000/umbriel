@@ -137,6 +137,22 @@ layer_shell_protocol_dep = declare_dependency(
   include_directories: include_directories('.'),
 )
 
+# Off by default: an enabled client opens a listening socket. The probe is
+# `___tracy_connected` because the no-op stub still links and records nothing.
+tracy_dep = dependency('tracy', required: get_option('tracy'))
+if tracy_dep.found()
+  if not cpp.has_function(
+    '___tracy_connected',
+    args: ['-DTRACY_ENABLE', '-DTRACY_ON_DEMAND'],
+    prefix: '#include <tracy/TracyC.h>',
+    dependencies: tracy_dep,
+  )
+    error('the Tracy client must be built with TRACY_ENABLE=ON and TRACY_ON_DEMAND=ON')
+  endif
+  # C++ needs the same definitions so both sets of zones share one timeline.
+  add_project_arguments('-DTRACY_ENABLE', '-DTRACY_ON_DEMAND', language: 'cpp')
+endif
+
 # Umbriel's fork of the wlroots scene graph and renderer. No installed package
 # can supply it, so it is never probed for.
 subdir('umbrielfx')
@@ -356,6 +372,18 @@ idle_inhibit_client_c = custom_target(
   output: 'idle-inhibit-unstable-v1-protocol.c',
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
+keyboard_shortcuts_inhibit_client_h = custom_target(
+  'keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml',
+  output: 'keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+keyboard_shortcuts_inhibit_client_c = custom_target(
+  'keyboard-shortcuts-inhibit-unstable-v1-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml',
+  output: 'keyboard-shortcuts-inhibit-unstable-v1-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
 ext_idle_notify_client_h = custom_target(
   'ext-idle-notify-v1-client-protocol.h',
   input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/ext-idle-notify/ext-idle-notify-v1.xml',
@@ -474,6 +502,7 @@ pure_sources = files(
   'src/input/surface_layouts.cpp',
   'src/input/shortcut_keysym.cpp',
   'src/layout/layout.cpp',
+  'src/layout/layout_motion.cpp',
   'src/layout/scrolling.cpp',
   'src/layout/dwindle.cpp',
   'src/layout/master.cpp',
@@ -514,6 +543,7 @@ umbriel_pure_dep = declare_dependency(
 # and the executable is just an entry point.
 core_sources = files(
   'src/core/animation.cpp',
+  'src/core/application_scope.cpp',
   'src/scene/animation_shader.cpp',
   'src/core/fdlimit.cpp',
   'src/core/log.cpp',
@@ -539,6 +569,7 @@ core_sources = files(
   'src/view/view.cpp',
   'src/view/decoration.cpp',
   'src/view/presentation.cpp',
+  'src/view/resize_crossfade.cpp',
   'src/view/registry.cpp',
   'src/server/focus.cpp',
   'src/xwayland/supervisor.cpp',

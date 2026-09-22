@@ -48,6 +48,7 @@ cat >> "$UMBRIEL_CONFIG" <<'EOF'
 
 [animation]
 duration_ms = 1
+curve = "linear"
 
 [appearance]
 border_width = 0
@@ -55,7 +56,7 @@ outer_border_width = 0
 corner_radius = 0
 
 [layout.scrolling]
-default_width_fraction = 0.5
+default_extent_fraction = 0.5
 
 [[window_rule]]
 match.title = "^maximize-ruled$"

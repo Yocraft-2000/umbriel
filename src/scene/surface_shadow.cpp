@@ -124,7 +124,10 @@ namespace umbriel {
     wlr_scene_node_set_position(&node->node, m_node->node.x, m_node->node.y);
     wlr_scene_shadow_set_clipped_region(node, m_node->clipped_region);
     wlr_scene_shadow_set_animation_source(node, source, config().colors.shadow.data());
-    ShadowSnapshot result{.tree = tree, .node = node};
+    ShadowSnapshot result{
+        .tree = tree,
+        .node = node,
+    };
     std::copy_n(m_node->color, 4, result.color.begin());
     return result;
   }

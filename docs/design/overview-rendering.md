@@ -35,7 +35,13 @@ source moves it the same way through `Overview::animateRow`, which uses
 position through `AnimatedValue::settleSpring`, carrying the release velocity
 scaled by the rubber-band derivative at the release point; any other curve runs
 over `duration_ms` from rest. A gesture in flight snaps the value each frame,
-which also stops a settle still running on that output.
+which also stops a settle still running on that output. Settled preview origins
+and gaps use an integral logical-pixel grid. The analytic spring remains in
+control while its position and velocity energy could still cross a pixel
+boundary. Once that complete envelope is strictly below half a logical pixel,
+the solver stops at its target. The projected preview already rounds to that
+same target pixel, so stopping is invisible and cannot introduce a faster
+terminal step. Larger release motion and configured bounce remain intact.
 
 ## Animation ownership
 
@@ -67,9 +73,12 @@ navigation cannot extend the zoom deadline.
 Unmap is the one transition that cannot remain live because the client buffer
 may disappear immediately. Before removing an unmapped card, the overview
 freezes its already-scaled buffers and borders into a scene snapshot. That tree
-uses the same `Server::CloseSnapshot` animation owner, easing, half-duration,
-and starting buffer opacity as a close on the normal workspace. Overview owns
-only the projection into card coordinates, not a separate close timeline.
+uses the same `Server::CloseSnapshot` animation owner, `windows_out` timing and
+effect, and starting buffer opacity as a close on the normal workspace. It
+keeps the captured card geometry while the remaining cards reflow independently.
+Overview owns only the projection into card coordinates, not a separate close
+timeline. The `overview` event controls entering and leaving overview, not the
+close of an individual card.
 
 ## Decoration and clipping
 
@@ -148,6 +157,12 @@ The relevant checks are:
 
 - [`tests/harness/checks/310_overview_wheel.sh`](../../tests/harness/checks/310_overview_wheel.sh)
   for overview interaction and workspace navigation.
+- [`tests/harness/checks/313_overview_settle_stability.sh`](../../tests/harness/checks/313_overview_settle_stability.sh)
+  for the destination card reaching and holding its final projected position at
+  2560x1600, scale 1.5, and 165 Hz.
+- [`tests/unit/animation.cpp`](../../tests/unit/animation.cpp) for terminal
+  spring motion following the analytic solution without accelerating in either
+  direction at the same refresh rate.
 - [`tests/harness/checks/346_overview_keybind_actions.sh`](../../tests/harness/checks/346_overview_keybind_actions.sh)
   for configured directional actions and fallback arrow navigation.
 - [`tests/harness/checks/460_external_drag.sh`](../../tests/harness/checks/460_external_drag.sh)
@@ -160,8 +175,9 @@ The relevant checks are:
   for adjacent focus reassignment when the focused window closes in the
   overview.
 - [`tests/harness/checks/330_overview_close_fade.sh`](../../tests/harness/checks/330_overview_close_fade.sh)
-  for a card remaining visible after unmap and disappearing when the shared
-  close snapshot settles.
+  for a card dropping its live movement effect, running the configured
+  `windows_out` shader after unmap, and disappearing when the close snapshot
+  settles.
 - [`tests/harness/checks/340_overview_focus_motion.sh`](../../tests/harness/checks/340_overview_focus_motion.sh)
   for selected-column focus and reveal beginning during the closing zoom.
 - [`tests/harness/checks/361_overview_focus_marker.sh`](../../tests/harness/checks/361_overview_focus_marker.sh)

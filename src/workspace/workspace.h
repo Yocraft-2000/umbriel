@@ -2,10 +2,14 @@
 #include "config/config.h"
 #include "core/animation.h"
 #include "layout/layout.h"
+#include "layout/layout_motion.h"
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +28,11 @@ namespace umbriel {
   class Server;
   class View;
   class WorkspaceGroup;
+
+  enum class LayoutAttachOrigin {
+    ExistingView,
+    OpeningView,
+  };
 
   class Workspace {
   public:
@@ -69,6 +78,9 @@ namespace umbriel {
     // Tiled view box used for presentation. Maximize-to-edges maps the
     // scrolling strip position back into the unstrutted usable area.
     [[nodiscard]] wlr_box presentedTiledBox(const View* view) const;
+    // Output box a fullscreen view rests in. A member of the scrolling strip keeps its column's position, so scrolling
+    // still carries it off-screen.
+    [[nodiscard]] wlr_box fullscreenTargetBox(const View* view) const;
     // Primary extent the strip scrolls within, less edge padding on both sides.
     // At least 1, so callers can divide by it.
     [[nodiscard]] int scrollViewportExtent() const;
@@ -96,8 +108,8 @@ namespace umbriel {
     void addView(View* view, bool attachToLayout = true);
     View* removeView(View* view, bool reconcile = true);
     void layoutAttach(
-        View* view, std::optional<double> initialWidth = std::nullopt,
-        std::optional<int> initialPixelWidth = std::nullopt
+        View* view, std::optional<double> initialExtent = std::nullopt,
+        std::optional<int> initialExtentPx = std::nullopt, LayoutAttachOrigin origin = LayoutAttachOrigin::ExistingView
     );
     // True when no tiled window other than `view` is in the layout: `view` is the only tiled window, or would be the
     // only one once it attaches. The opening path needs that second form, before the view is in the layout.
@@ -110,10 +122,12 @@ namespace umbriel {
         View* view, const wlr_box& usable, std::string_view group, std::optional<int> order, bool maximized
     ) const;
     // Reposition a tiled view after a late title selects its named scrolling-column rule.
-    // initialWidth seeds a new column when its name has no existing member.
+    // The initial extent seeds a new column when its name has no existing member.
     // A name change permits a split; an order-only change preserves manual placement.
-    void
-    applyNamedScrollingColumnRule(View* view, std::optional<double> initialWidth, NamedScrollingColumnChange change);
+    void applyNamedScrollingColumnRule(
+        View* view, std::optional<double> initialExtent, std::optional<int> initialExtentPx,
+        NamedScrollingColumnChange change
+    );
     void layoutDetach(View* view, bool animate = false);
     void arrange(bool animate = true);
     // Record that the layout is stale instead of rebuilding it now. The work runs once, before the next frame, however
@@ -150,6 +164,13 @@ namespace umbriel {
     bool modifyFocusedWidth(double delta);
     bool setFocusedHeight(double fraction);
     bool modifyFocusedHeight(double delta);
+    // Edge-anchored resize of the focused window: `edges` names the moving edge
+    // (exactly one of WLR_EDGE_LEFT/RIGHT/TOP/BOTTOM) and `delta` is a signed
+    // fraction of the usable extent on that edge's axis. Unlike
+    // modifyFocusedWidth/Height the opposite edge stays put, so a positive delta
+    // grows the window from that edge until the size saturates. An edge the active
+    // layout cannot resize leaves the window untouched.
+    bool resizeFocusedEdge(uint32_t edges, double delta);
     bool toggleFocusedFullWidth();
     bool toggleFocusedMaximizedToEdges();
     bool toggleFocusedFullscreen();
@@ -171,9 +192,20 @@ namespace umbriel {
     // Pull the scroll offset back into [0, maxScroll]. For removals and restored offsets only: a touchpad swipe
     // overscrolls on purpose.
     void clampScrollToRange();
+    // Own every view close snapshot so it follows workspace visibility and translation: the workspace translates the
+    // snapshot with its slides and hides it while the workspace is not showing.
+    void trackCloseSnapshot(CloseSnapshotId id, const wlr_box& outputBox);
+    // Drop `view` from the running motion without touching its presentation; the caller now owns its box.
+    void releaseLayoutMotion(View* view);
+    // The running motion's progress, for the windows_move shader; null when no motion runs.
+    [[nodiscard]] const AnimatedValue* layoutMotionValue() const;
+    // Advances the motion; true while it is still running.
+    bool tickLayoutMotion(uint64_t nowMsec);
+    [[nodiscard]] bool layoutMotionActive() const { return m_motion.progress.animating() || !m_motion.views.empty(); }
 
   private:
-    void applyPositions(bool animate);
+    // `resized` lists the members whose assigned size this arrange changed.
+    void applyPositions(bool animate, std::span<View* const> resized);
     [[nodiscard]] wlr_box tiledTargetBox(const View* view, const wlr_box& usable) const;
     [[nodiscard]] std::unique_ptr<Layout> previewLayout() const;
     [[nodiscard]] int layoutAttachIndex(const View* view) const;
@@ -196,6 +228,11 @@ namespace umbriel {
     bool moveWithinLane(int direction);
     // Take `view` out of the layout while holding visible lanes still.
     void detachFromLayout(View* view);
+    // Snap or animate every tiled member of the layout into its slot from wherever it is presented now.
+    void applyTiledMotion(const wlr_box& usable, bool animate, std::span<View* const> resized);
+    void endLayoutMotion();
+    void syncCloseSnapshots();
+    void discardCloseSnapshots();
     WorkspaceGroup* m_group = nullptr;
     wlr_ext_workspace_handle_v1* m_handle = nullptr;
     std::string m_id;
@@ -226,6 +263,23 @@ namespace umbriel {
     wlr_scene_tree* m_tiledLayer = nullptr;
     wlr_scene_tree* m_floatingLayer = nullptr;
     wlr_scene_tree* m_fullscreenTree = nullptr;
+    struct LayoutMotion {
+      struct ViewEntry {
+        View* view = nullptr;
+        wlr_box from{};
+        wlr_box to{};
+        float direction = 1.0F;
+      };
+      AnimatedValue progress;
+      MonotonicEasing geometryCurve;
+      std::vector<ViewEntry> views;
+    };
+    LayoutMotion m_motion;
+    struct TrackedCloseSnapshot {
+      CloseSnapshotId id = kInvalidCloseSnapshot;
+      wlr_box canvas{};
+    };
+    std::vector<TrackedCloseSnapshot> m_trackedCloseSnapshots;
   };
 
   class WorkspaceGroup : public Animatable {
@@ -283,7 +337,7 @@ namespace umbriel {
     // Advances the workspace slide; returns true while it is still running.
     [[nodiscard]] AnimationPhase animationPhase() const override { return AnimationPhase::Workspaces; }
     bool tickAnimations(uint64_t nowMsec) override;
-    [[nodiscard]] bool hasActiveAnimations() const override { return m_slideAnim.animating(); }
+    [[nodiscard]] bool hasActiveAnimations() const override;
     [[nodiscard]] bool animatesOn(const Output* output) const override { return m_output == output; }
 
   private:
