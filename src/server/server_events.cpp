@@ -235,17 +235,15 @@ namespace umbriel {
         return;
       }
       enum libinput_config_tap_button_map requested = LIBINPUT_CONFIG_TAP_MAP_LRM;
-      const char* requestedName = "left_right_middle";
       switch (*configured) {
       case TapButtonMap::LeftRightMiddle:
         break;
       case TapButtonMap::LeftMiddleRight:
         requested = LIBINPUT_CONFIG_TAP_MAP_LMR;
-        requestedName = "left_middle_right";
         break;
       }
       if (libinput_device_config_tap_set_button_map(libinputDevice, requested) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
-        kLog.warn("input: '{}' does not support the {} tap button map", deviceName(device), requestedName);
+        kLog.warn("input: failed to apply {} to '{}'", setting, deviceName(device));
       }
     }
 
