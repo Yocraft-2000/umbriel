@@ -25,12 +25,14 @@ namespace umbriel {
     // Settle every compositor-owned gesture before a layout change replaces the
     // objects and axes it captured. Client-forwarded gestures are left alone.
     void cancelForLayoutChange();
-    // Commit an in-flight switch/scroll like a release, without settling the slide.
+    // Ends an in-flight workspace swipe without settling its slide, for the overview to finish on the filmstrip.
+    // `target` is where a release would land, the starting workspace when it would snap back; `offset` is the swipe's
+    // position relative to it in rows. `group` is null when no swipe was in flight.
     struct SwitchPick {
       WorkspaceGroup* group = nullptr;
       Workspace* target = nullptr;
-      double progress = 0; // row offset from the starting workspace
-      double velocity = 0; // rows/s at release
+      double offset = 0;
+      double velocity = 0; // rows/s
     };
     [[nodiscard]] SwitchPick pickSwitchForOverview();
     // Mouse-button bindings use the same overscroll, velocity projection, and

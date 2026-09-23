@@ -25,6 +25,7 @@ extern "C" {
 #include "view/view.h"
 // clang-format off
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <linux/input-event-codes.h>
@@ -1370,11 +1371,8 @@ namespace umbriel {
       return false;
     }
     m_server->cursor()->resetMode();
-    // Commit any in-flight three-finger switch like a release, then continue it on the filmstrip.
+    // An in-flight three-finger switch settles on the filmstrip instead of the hidden desktop slide.
     const Gestures::SwitchPick switchPick = m_server->gestures()->pickSwitchForOverview();
-    const double fromRow = (switchPick.group != nullptr && switchPick.group->active() != nullptr)
-        ? static_cast<double>(switchPick.group->active()->index())
-        : 0.0;
     for (const auto& output : m_server->outputs()) {
       WorkspaceGroup* group = output->workspaceGroup();
       if (group == nullptr) {
@@ -1388,9 +1386,7 @@ namespace umbriel {
       }
     }
     // Before buildState: reconcileDynamic must not invalidate cards mid-build.
-    if (switchPick.group != nullptr
-        && switchPick.target != nullptr
-        && switchPick.group->active() != switchPick.target) {
+    if (switchPick.group != nullptr) {
       switchPick.group->activate(switchPick.target, false);
     }
 
@@ -1425,12 +1421,11 @@ namespace umbriel {
       }
     }
     if (switchPick.group != nullptr) {
-      if (OutputState* pickState = stateFor(switchPick.group->output())) {
-        Workspace* active = switchPick.group->active();
-        const double targetRow = active != nullptr ? static_cast<double>(active->index()) : fromRow;
-        pickState->rowScroll.snap(fromRow + switchPick.progress);
-        pickState->activeWorkspaceIndex = active != nullptr ? active->index() : static_cast<size_t>(fromRow);
-        animateRow(*pickState, targetRow, switchPick.velocity);
+      if (OutputState* state = stateFor(switchPick.group->output())) {
+        // Read the row after activate: reconcileDynamic may have dropped the workspace the swipe left.
+        const auto row = static_cast<double>(switchPick.target->index());
+        state->rowScroll.snap(row + switchPick.offset);
+        animateRow(*state, row, switchPick.velocity);
       }
     }
     assignShortcuts();
@@ -1509,7 +1504,13 @@ namespace umbriel {
       return;
     }
     m_server->cursor()->resetWheelAccumulation();
-    endNavigation(false, 0, m_navigationSource);
+    // A close releases any navigation mid-gesture. Input events carry monotonic milliseconds, so the release sample
+    // shares their clock and bleeds the speed of fingers that came to rest before the close.
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    endNavigation(
+        false, static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count()),
+        m_navigationSource
+    );
     if (m_dragCard != nullptr) {
       endDrag(false);
     }

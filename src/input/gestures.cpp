@@ -155,31 +155,33 @@ namespace umbriel {
   }
 
   Gestures::SwitchPick Gestures::pickSwitchForOverview() {
-    SwitchPick pick;
-    if (m_state == State::Scroll) {
-      finishScroll(false, 0);
-      return pick;
-    }
-    if (m_state != State::Switch || m_switchGroup == nullptr) {
-      return pick;
+    if (m_state != State::Switch) {
+      return {};
     }
     WorkspaceGroup* group = m_switchGroup;
-    pick.group = group;
-    pick.progress = m_progress;
-    pick.velocity = m_velocity * 1000.0 / kSwipeWorkspacePx;
-    if (group->active() != nullptr) {
-      const size_t index = group->active()->index();
-      const int delta = switchCommitDelta(m_progress, m_velocity, m_hasPrev, m_hasNext);
-      if (delta < 0 && index > 0) {
-        pick.target = group->workspaceAt(index - 1);
-      } else if (delta > 0 && index + 1 < group->workspaceCount()) {
-        pick.target = group->workspaceAt(index + 1);
-      }
-    }
+    Workspace* base = group != nullptr && group->slideActive() ? group->active() : nullptr;
     m_switchGroup = nullptr;
     m_output = nullptr;
     m_state = State::Idle;
-    return pick;
+    if (base == nullptr) {
+      return {};
+    }
+    int delta = switchCommitDelta(m_progress, m_velocity, m_hasPrev, m_hasNext);
+    const size_t index = base->index();
+    Workspace* target = base;
+    if (delta < 0 && index > 0) {
+      target = group->workspaceAt(index - 1);
+    } else if (delta > 0 && index + 1 < group->workspaceCount()) {
+      target = group->workspaceAt(index + 1);
+    } else {
+      delta = 0;
+    }
+    return {
+        .group = group,
+        .target = target,
+        .offset = m_progress - delta,
+        .velocity = m_velocity * 1000.0 / kSwipeWorkspacePx,
+    };
   }
 
   void Gestures::cancelActive() {
@@ -457,15 +459,10 @@ namespace umbriel {
     }
 
     case State::Switch: {
-      // slideApply needs an active slide; overview open parks it underneath us.
+      // slideApply needs a live slide. Another workspace change (a switch, a reorder) can settle it under the fingers.
       Output* out = m_server->outputFromWlr(m_server->preferredOutput());
-      if (m_switchGroup == nullptr
-          || out == nullptr
-          || out->workspaceGroup() != m_switchGroup
-          || !m_switchGroup->slideActive()) {
-        if (m_switchGroup != nullptr) {
-          m_switchGroup->slideFinish();
-        }
+      if (out == nullptr || out->workspaceGroup() != m_switchGroup || !m_switchGroup->slideActive()) {
+        m_switchGroup->slideFinish();
         m_switchGroup = nullptr;
         m_output = nullptr;
         m_state = State::Idle;
