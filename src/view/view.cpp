@@ -11,6 +11,7 @@
 #include "output/output.h"
 #include "overview/overview.h"
 #include "scene/animation_shader.h"
+#include "scene/surface_blur.h"
 #include "server/server.h"
 extern "C" {
 #include <umbrielfx/render/animation.h>
@@ -25,7 +26,6 @@ extern "C" {
 #include <variant>
 #include "wlr.h"
 // clang-format on
-#include <pixman.h>
 #include "workspace/scratchpad.h"
 #include "workspace/workspace.h"
 
@@ -698,25 +698,20 @@ namespace umbriel {
     );
   }
 
-  bool View::clientSurfaceOpaque() const {
-    if (m_toplevel == nullptr) {
+  bool View::fullscreenOpaque() const {
+    if (config().appearance.opaqueFullscreen) {
       return true;
     }
+    if (m_ruleOpacity < 1.0F) {
+      return false;
+    }
     wlr_surface* surface = m_toplevel->base->surface;
-    if (const wlr_alpha_modifier_surface_v1_state* clientAlpha = wlr_alpha_modifier_v1_get_surface_state(surface)) {
-      if (clientAlpha->multiplier < 1.0) {
-        return false;
-      }
+    if (const wlr_alpha_modifier_surface_v1_state* clientAlpha = wlr_alpha_modifier_v1_get_surface_state(surface);
+        clientAlpha != nullptr && clientAlpha->multiplier < 1.0) {
+      return false;
     }
-    if (surface->current.width > 0 && surface->current.height > 0) {
-      const pixman_box32_t box{0, 0, surface->current.width, surface->current.height};
-      return pixman_region32_contains_rectangle(&surface->opaque_region, &box) == PIXMAN_REGION_IN;
-    }
-    return true;
-  }
-
-  bool View::fullscreenOpaque() const {
-    return config().appearance.opaqueFullscreen || (m_ruleOpacity >= 1.0F && clientSurfaceOpaque());
+    const wlr_box& geometry = m_toplevel->base->geometry;
+    return geometry.width <= 0 || geometry.height <= 0 || !surfaceTransparent(surface, geometry);
   }
 
   void View::setFadeAlpha(float alpha) {
@@ -3250,7 +3245,10 @@ namespace umbriel {
       m_resizeCrossfade.applyOpacity(effectiveOpacity());
       scheduleFrame();
     }
-    m_presentation.setFullscreenOpaque(fullscreenOpaque());
+    // Client transparency can change on any commit. An unmap commit reaches here after handleUnmap hid the backdrop.
+    if (m_mapped) {
+      m_presentation.setFullscreenOpaque(fullscreenOpaque());
+    }
     if (m_captureScene != nullptr) {
       // Restrict the capture to the xdg window geometry. Client subsurfaces
       // remain visible, while buffer content outside the declared window is
