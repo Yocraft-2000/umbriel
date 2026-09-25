@@ -377,13 +377,9 @@ namespace umbriel {
       return std::nullopt;
     }
 
-    // Scope named by a single config token. "all" is not a single bit, so it comes back as std::nullopt on success.
-    std::optional<FullscreenExitScope> fullscreenExitScopeBit(std::string_view token, bool& wasAll) {
-      if (token == "all") {
-        wasAll = true;
-        return std::nullopt;
-      }
-      wasAll = false;
+    constexpr std::string_view kFullscreenExitScopeValues = R"("tiled", "floating", "pinned", or "all")";
+
+    std::optional<FullscreenExitScope> parseFullscreenExitScope(std::string_view token) {
       if (token == "tiled") {
         return FullscreenExitScope::Tiled;
       }
@@ -393,72 +389,49 @@ namespace umbriel {
       if (token == "pinned") {
         return FullscreenExitScope::Pinned;
       }
+      if (token == "all") {
+        return FullscreenExitScope::All;
+      }
       return std::nullopt;
     }
 
+    // A string names one scope; an array combines several, and an empty array disables the behavior.
     std::optional<FullscreenExitScope> readFullscreenExitScope(Section& section, std::string_view context) {
       const toml::node* node = section.take("new_exits_fullscreen");
       if (node == nullptr) {
         return std::nullopt;
       }
-      // A single string ("all", "tiled", "floating", "pinned").
       if (const auto* value = node->as_string()) {
-        bool wasAll = false;
-        if (std::optional<FullscreenExitScope> bit = fullscreenExitScopeBit(value->get(), wasAll)) {
-          return bit;
+        const std::optional<FullscreenExitScope> scope = parseFullscreenExitScope(value->get());
+        if (!scope) {
+          warnAt(
+              node->source(), R"(ignoring {}.new_exits_fullscreen "{}" (expected {}))", context, value->get(),
+              kFullscreenExitScopeValues
+          );
         }
-        if (wasAll) {
-          return FullscreenExitScope::All;
-        }
-        warnAt(
-            node->source(),
-            R"(unknown {}.new_exits_fullscreen "{}" (expected "all", "tiled", "floating", or "pinned"))", context,
-            value->get()
-        );
-        return std::nullopt;
+        return scope;
       }
-      // An array of strings, elements combine into a bitmask. An empty array is the explicit "off".
       const auto* array = node->as_array();
       if (array == nullptr) {
         warnAt(
-            node->source(),
-            R"({}.new_exits_fullscreen must be a string or an array of strings ("tiled", "floating", "pinned"))",
-            context
+            node->source(), "ignoring {}.new_exits_fullscreen (expected a string or an array of strings, each {})",
+            context, kFullscreenExitScopeValues
         );
         return std::nullopt;
       }
-      if (array->empty()) {
-        return FullscreenExitScope::None;
-      }
-      uint8_t combined = 0;
-      bool sawAll = false;
-      bool sawInvalid = false;
+      auto combined = static_cast<uint8_t>(FullscreenExitScope::None);
       for (const toml::node& entry : *array) {
-        if (const auto* value = entry.as_string()) {
-          bool wasAll = false;
-          if (std::optional<FullscreenExitScope> bit = fullscreenExitScopeBit(value->get(), wasAll)) {
-            combined |= static_cast<uint8_t>(*bit);
-            continue;
-          }
-          if (wasAll) {
-            sawAll = true;
-            continue;
-          }
+        const auto* value = entry.as_string();
+        const std::optional<FullscreenExitScope> scope =
+            value != nullptr ? parseFullscreenExitScope(value->get()) : std::nullopt;
+        if (!scope) {
+          warnAt(
+              entry.source(), "ignoring {}.new_exits_fullscreen entry (expected {})", context,
+              kFullscreenExitScopeValues
+          );
+          continue;
         }
-        sawInvalid = true;
-      }
-      if (sawInvalid) {
-        warnAt(
-            node->source(),
-            R"(ignoring unknown element in {}.new_exits_fullscreen (expected "tiled", "floating", "pinned", or "all"))",
-            context
-        );
-      }
-      if (sawAll) {
-        combined |= static_cast<uint8_t>(FullscreenExitScope::All);
-        if (array->size() > 1) {
-          warnAt(node->source(), R"({}.new_exits_fullscreen "all" already covers every scope)", context);
-        }
+        combined |= static_cast<uint8_t>(*scope);
       }
       return static_cast<FullscreenExitScope>(combined);
     }
