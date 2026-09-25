@@ -489,6 +489,7 @@ follows_mouse = false                           # Focus on pointer motion and Dw
 mode = "scrolling"                              # scrolling, dwindle, or master
 gap = 8                                         # Logical pixels between tiles, 0-500
 width_presets = [0.333, 0.5, 0.667]             # Width and height cycling fractions
+new_exits_fullscreen = []                       # Arriving window kinds that exit fullscreen: tiled, floating, pinned, all, or an array
 
 [layout.struts]
 # Signed logical pixels reserved after panel exclusive zones. Negative values
@@ -506,14 +507,12 @@ center_focused = "never"                        # never, always, or on_overflow
 
 [layout.dwindle]
 # preserve_split = false                        # Keep every split direction fixed after creation
-new_exits_fullscreen = []                       # Exits fullscreen when a window arrives in the workspace. Accepts "all", "tiled", "floating", "pinned" or a combination: ["tiled", "floating"]
 
 [layout.master]
 position = "left"                               # left, right, or center master area
 default_width_fraction = 0.55                   # Initial master area fraction, 0.1-0.9
 new_on_top = true                               # Put new windows at the top of the stack
 new_becomes_master = false                      # New windows take the master slot
-new_exits_fullscreen = []                       # Exits fullscreen when a window arrives in the workspace. Accepts "all", "tiled", "floating", "pinned" or a combination: ["tiled", "floating"]
 
 # ───────────────────────────── Window Rules ─────────────────────────────────
 # Match windows by application ID, title, XDG tag, content type, or focus state.

@@ -708,6 +708,9 @@ namespace umbriel {
             if (auto presets = readWidthPresets(s, layoutContext)) {
               overrides.widthPresets = std::move(*presets);
             }
+            if (const auto scope = readFullscreenExitScope(s, layoutContext)) {
+              overrides.newExitsFullscreen = scope;
+            }
             s.sub("scrolling", [&](Section& sc) {
               sc.real("default_width_fraction", 0.1, 1.0, overrides.scrolling.defaultWidthFraction)
                   .boolean("center_underfull_strip", overrides.scrolling.centerUnderfullStrip);
@@ -715,12 +718,7 @@ namespace umbriel {
                 overrides.scrolling.centerFocused = centerFocused;
               }
             });
-            s.sub("dwindle", [&](Section& sd) {
-              sd.boolean("preserve_split", overrides.dwindle.preserveSplit);
-              if (const auto scope = readFullscreenExitScope(sd, layoutContext + ".dwindle")) {
-                overrides.dwindle.newExitsFullscreen = scope;
-              }
-            });
+            s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", overrides.dwindle.preserveSplit); });
             s.sub("master", [&](Section& sm) {
               if (const auto position = readMasterPosition(sm, layoutContext + ".master")) {
                 overrides.master.position = position;
@@ -728,9 +726,6 @@ namespace umbriel {
               sm.real("default_width_fraction", 0.1, 0.9, overrides.master.defaultWidthFraction)
                   .boolean("new_on_top", overrides.master.newOnTop)
                   .boolean("new_becomes_master", overrides.master.newBecomesMaster);
-              if (const auto scope = readFullscreenExitScope(sm, layoutContext + ".master")) {
-                overrides.master.newExitsFullscreen = scope;
-              }
             });
           },
           layoutContext
@@ -1410,6 +1405,9 @@ namespace umbriel {
         if (auto presets = readWidthPresets(s, "layout")) {
           loaded.layout.widthPresets = std::move(*presets);
         }
+        if (const auto scope = readFullscreenExitScope(s, "layout")) {
+          loaded.layout.newExitsFullscreen = *scope;
+        }
         s.sub("scrolling", [&](Section& sc) {
           sc.real("default_width_fraction", 0.1, 1.0, loaded.layout.scrolling.defaultWidthFraction)
               .boolean("center_underfull_strip", loaded.layout.scrolling.centerUnderfullStrip);
@@ -1417,12 +1415,7 @@ namespace umbriel {
             loaded.layout.scrolling.centerFocused = *centerFocused;
           }
         });
-        s.sub("dwindle", [&](Section& sd) {
-          sd.boolean("preserve_split", loaded.layout.dwindle.preserveSplit);
-          if (const auto scope = readFullscreenExitScope(sd, "layout.dwindle")) {
-            loaded.layout.dwindle.newExitsFullscreen = *scope;
-          }
-        });
+        s.sub("dwindle", [&](Section& sd) { sd.boolean("preserve_split", loaded.layout.dwindle.preserveSplit); });
         s.sub("master", [&](Section& sm) {
           if (const auto position = readMasterPosition(sm, "layout.master")) {
             loaded.layout.master.position = *position;
@@ -1430,9 +1423,6 @@ namespace umbriel {
           sm.real("default_width_fraction", 0.1, 0.9, loaded.layout.master.defaultWidthFraction)
               .boolean("new_on_top", loaded.layout.master.newOnTop)
               .boolean("new_becomes_master", loaded.layout.master.newBecomesMaster);
-          if (const auto scope = readFullscreenExitScope(sm, "layout.master")) {
-            loaded.layout.master.newExitsFullscreen = *scope;
-          }
         });
       });
     }

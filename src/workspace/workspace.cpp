@@ -315,8 +315,7 @@ namespace umbriel {
   }
 
   void Workspace::exitFullscreenForIncomingView(const View* joining) {
-    const FullscreenExitScope scope = m_layoutMode == LayoutMode::Dwindle ? m_layoutConfig.dwindle.newExitsFullscreen
-                                                                          : m_layoutConfig.master.newExitsFullscreen;
+    const FullscreenExitScope scope = m_layoutConfig.newExitsFullscreen;
     // The scope picks which kinds of arriving window are allowed to displace a fullscreen one; a joining window is
     // classified the way it will live on the workspace (pinned wins over floating over tiled).
     const auto joiningBit = static_cast<uint8_t>(

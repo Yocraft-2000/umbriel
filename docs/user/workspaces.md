@@ -284,6 +284,7 @@ Strut edges are resolved independently. A rule that sets only
 | `layout.gap` | int | Gap in pixels (0-500). |
 | `layout.struts.{left,right,top,bottom}` | int | Signed logical pixels reserved at each edge of the normal tiled layout (-65535 to 65535). Positive values shrink the area and negative values expand it. |
 | `layout.width_presets` | float array | Fractions used by the width-cycle and height-cycle actions in every layout. |
+| `layout.new_exits_fullscreen` | string or string array | Kinds of arriving window that make a fullscreen window leave fullscreen. See [Leaving fullscreen](layout.md#leaving-fullscreen). |
 | `layout.scrolling.default_width_fraction` | float | Optional initial scrolling lane extent (0.1-1.0). It overrides the global and matching output values. When omitted at every level, the client chooses its initial logical extent. Reloading a default does not resize existing columns. |
 | `layout.scrolling.center_underfull_strip` | bool | Center the complete strip whenever it is narrower than the viewport. Disable to left-align underfull strips. |
 | `layout.scrolling.center_focused` | string | When a focus change centers the newly focused column. `"never"` only scrolls far enough to reveal it, `"always"` centers it, and `"on_overflow"` centers it when it cannot share the viewport with the neighboring column on the side focus came from. |

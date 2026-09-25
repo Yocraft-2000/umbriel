@@ -17,6 +17,7 @@ cat >> "$UMBRIEL_CONFIG" <<'EOF'
 
 [layout]
 mode = "dwindle"
+new_exits_fullscreen = []
 
 [animation]
 enabled = false
@@ -76,10 +77,8 @@ wait_for_query \
   '[.[] | select(.title == "dwindle-fullscreen-second" and .focused)] | length == 1' \
   "leaving the obscuring fullscreen changed focus"
 
+sed -i 's/^new_exits_fullscreen = \[\]$/new_exits_fullscreen = "tiled"/' "$UMBRIEL_CONFIG"
 cat >> "$UMBRIEL_CONFIG" <<'EOF'
-
-[layout.dwindle]
-new_exits_fullscreen = true
 
 [output.HEADLESS-1]
 workspaces = 2
