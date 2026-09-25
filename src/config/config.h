@@ -161,6 +161,7 @@ namespace umbriel {
     ClickFinger,
   };
 
+  // Which buttons one-, two-, and three-finger taps produce.
   enum class TapButtonMap : uint8_t {
     LeftRightMiddle,
     LeftMiddleRight,

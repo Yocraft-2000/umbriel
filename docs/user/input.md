@@ -117,7 +117,7 @@ settings are reported in the log.
 | `disable_while_typing` | Disable the touchpad during keyboard input. |
 | `disable_on_external_mouse` | Disable the touchpad while an external mouse is connected. |
 | `click_method` | Use `"button_areas"` or `"clickfinger"`. |
-| `tap_button_map` | Map 1/2/3-finger taps with `"left_right_middle"` or `"left_middle_right"`. |
+| `tap_button_map` | Buttons for one-, two-, and three-finger taps: `"left_right_middle"` or `"left_middle_right"`. |
 
 `scroll_factor` also accepts per-axis values:
 
