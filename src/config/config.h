@@ -509,6 +509,9 @@ namespace umbriel {
       int outerBorderWidth = 0;
       int cornerRadius = 10;
       double dragOpacity = 0.75;
+      // Fullscreen windows ignore window rule opacity and draw over the backdrop. When false, a fullscreen window with
+      // rule or client transparency shows the desktop instead.
+      bool opaqueFullscreen = true;
       struct Blur {
         bool enabled = true;
         bool optimized = true;
@@ -543,19 +546,21 @@ namespace umbriel {
       struct WindowsIn {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
-        int durationMs = 150;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        // Springs derive their own length; duration_ms stays at the shared value for a duration-based curve.
+        int durationMs = 250;
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 900.0}};
         std::string style = "popin";
-        double scale = 0.85;
+        double scale = 0.5;
         bool operator==(const WindowsIn&) const = default;
       } windowsIn;
 
       struct WindowsOut {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
-        int durationMs = 150;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
-        std::string style = "fade";
+        int durationMs = 250;
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 1400.0}};
+        std::string style = "popin";
+        double scale = 0.8;
         bool operator==(const WindowsOut&) const = default;
       } windowsOut;
 
@@ -563,7 +568,7 @@ namespace umbriel {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::Snappy};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 900.0}};
         bool operator==(const WindowsMove&) const = default;
       } windowsMove;
 
@@ -571,7 +576,7 @@ namespace umbriel {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 800.0}};
         bool operator==(const Workspaces&) const = default;
       } workspaces;
 
@@ -579,7 +584,7 @@ namespace umbriel {
         std::optional<AnimationShaderSource> shader;
         bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 800.0}};
         // Filmstrip movement between workspace previews, for the wheel, the keyboard and touchpad releases alike. A
         // spring curve settles from the current position and carries the release velocity of a gesture; any other
         // curve runs over duration_ms and ignores it.
@@ -589,10 +594,10 @@ namespace umbriel {
 
       struct Scratchpad {
         std::optional<AnimationShaderSource> shader;
-        bool enabled = false;
+        bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
-        double dim = 0.5;
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 800.0}};
+        double dim = 0.8;
         bool blur = false;
         double scale = 0.0;
         bool maximize = false;
@@ -602,9 +607,9 @@ namespace umbriel {
 
       struct Border {
         std::optional<AnimationShaderSource> shader;
-        bool enabled = false;
+        bool enabled = true;
         int durationMs = 250;
-        AnimationCurve curve{.easing = Easing::EaseOutCubic};
+        AnimationCurve curve{.easing = Easing::Spring, .spring = {.damping = 1.0, .stiffness = 900.0}};
         bool operator==(const Border&) const = default;
       } border;
 
