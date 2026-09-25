@@ -966,14 +966,8 @@ namespace umbriel {
     view->moveToWorkspace(workspace, false);
     if (entry.returnTiled) {
       view->setFloating(false);
-      if (workspace != nullptr) {
-        workspace->exitFullscreenForIncomingView(view);
-      }
     } else {
       view->setFloating(true);
-      if (workspace != nullptr) {
-        workspace->exitFullscreenForIncomingView(view);
-      }
       if (restoreOutput != nullptr && restoreOutput != scratchpadOutput) {
         const wlr_box area = restoreOutput->usableArea();
         if (area.width > 0 && area.height > 0) {
@@ -987,6 +981,7 @@ namespace umbriel {
       }
     }
     if (workspace != nullptr) {
+      workspace->exitFullscreenForIncomingView(view);
       workspace->syncViewPresentation(view);
     }
 

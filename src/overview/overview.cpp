@@ -2974,7 +2974,6 @@ namespace umbriel {
       view->rememberFloatingPosition();
       if (view->workspace() != target) {
         view->moveToWorkspace(target, /*attachToLayout=*/false);
-        target->exitFullscreenForIncomingView(view);
       }
       view->restoreFloatingPosition();
       m_server->focusView(view, FocusReason::DragDrop);
