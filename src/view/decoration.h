@@ -1,5 +1,6 @@
 #pragma once
 
+#include "config/config.h"
 #include "scene/border_rect.h"
 #include "scene/surface_blur.h"
 #include "scene/surface_shadow.h"
@@ -13,8 +14,6 @@ struct wlr_scene_tree;
 struct wlr_surface;
 
 namespace umbriel {
-
-  struct ResolvedWindowRule;
 
   // Everything drawn around a view's surface: the inner border ring, the outer ring, the blur sampled behind the
   // surface, and the drop shadow. The shadow container is a child of the view's frame, below its content, so it follows
@@ -34,24 +33,26 @@ namespace umbriel {
     [[nodiscard]] wlr_scene_tree* borderTree() const { return m_borderTree; }
     void setBordersEnabled(bool enabled);
     void updateBorderGeometry(int contentWidth, int contentHeight);
-    // `alpha` premultiplies both colors so a fading view's ring fades with it. The rule's per-focus
-    // border colors override [colors.border] when present, falling back to the global defaults.
-    void setBorderColor(bool focused, const ResolvedWindowRule& rule, float alpha);
-    void setBorderRawColor(const std::array<float, 4>& baseColor, const std::array<float, 4>& outerColor, float alpha);
+    // `alpha` premultiplies the border color so a fading view's ring fades with it.
+    void setBorderColor(bool focused, float alpha);
+    void setBorderRawColor(const std::array<float, 4>& baseColor, float alpha);
+    // [colors.border] with the last applied rule's overrides.
+    [[nodiscard]] const Config::Colors::Border& borderColors() const { return m_borderColors; }
     // True when the drawn ring no longer matches the given content size, i.e. a
     // client commit changed geometry behind the layout's back.
     [[nodiscard]] bool borderGeometryStale(int contentWidth, int contentHeight) const;
-    // Copy the border into a close-animation snapshot tree. `innerColor` and `outerColor` are the straight colours the
-    // ring currently shows and `opacity` the effective opacity it is drawn at.
+    // Copy the border into a close-animation snapshot tree. `innerColor` is the straight colour the ring currently
+    // shows and `opacity` the effective opacity it is drawn at.
     void snapshotBorders(
-        wlr_scene_tree* snapshot, const std::array<float, 4>& innerColor, const std::array<float, 4>& outerColor,
-        float opacity, std::vector<BorderSnapshot>& out
+        wlr_scene_tree* snapshot, const std::array<float, 4>& innerColor, float opacity,
+        std::vector<BorderSnapshot>& out
     ) const;
+    // Take the rule's blur options and border colors.
+    void applyRule(const ResolvedWindowRule& rule);
 
     // Blur
     [[nodiscard]] SurfaceBlurOptions blurOptions() const { return m_blurOptions; }
     [[nodiscard]] SurfaceBlurOptions popupBlurOptions() const { return m_popupBlurOptions; }
-    void applyRule(const ResolvedWindowRule& rule);
     void updateBlur(
         wlr_scene_tree* tree, wlr_surface* surface, const wlr_box& nodeBox, const wlr_box& geometry, int radius,
         const wlr_box* clip, float surfaceOpacity, float blurAlpha
@@ -85,6 +86,7 @@ namespace umbriel {
   private:
     wlr_scene_tree* m_borderTree = nullptr;
     wlr_scene_border* m_border = nullptr;
+    Config::Colors::Border m_borderColors = config().colors.border;
     SurfaceBlur m_blur;
     SurfaceBlurOptions m_blurOptions;
     SurfaceBlurOptions m_popupBlurOptions;

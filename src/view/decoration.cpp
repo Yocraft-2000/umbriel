@@ -53,24 +53,22 @@ namespace umbriel {
     );
   }
 
-  void ViewDecoration::setBorderColor(bool focused, const ResolvedWindowRule& rule, float alpha) {
+  void ViewDecoration::setBorderColor(bool focused, float alpha) {
     if (m_borderTree == nullptr) {
       return;
     }
-    setBorderRawColor(resolvedBorderBaseColor(focused, rule), resolvedBorderOuter(rule), alpha);
+    setBorderRawColor(focused ? m_borderColors.focused : m_borderColors.unfocused, alpha);
   }
 
-  void ViewDecoration::setBorderRawColor(
-      const std::array<float, 4>& baseColor, const std::array<float, 4>& outerColor, float alpha
-  ) {
+  void ViewDecoration::setBorderRawColor(const std::array<float, 4>& baseColor, float alpha) {
     if (m_border == nullptr) {
       return;
     }
     float innerColor[4];
-    float outer[4];
+    float outerColor[4];
     premultiplied(innerColor, baseColor, alpha);
-    premultiplied(outer, outerColor, alpha);
-    wlr_scene_border_set_colors(m_border, innerColor, outer);
+    premultiplied(outerColor, m_borderColors.outer, alpha);
+    wlr_scene_border_set_colors(m_border, innerColor, outerColor);
   }
 
   bool ViewDecoration::borderGeometryStale(int contentWidth, int contentHeight) const {
@@ -85,8 +83,7 @@ namespace umbriel {
   }
 
   void ViewDecoration::snapshotBorders(
-      wlr_scene_tree* snapshot, const std::array<float, 4>& innerColor, const std::array<float, 4>& outerColor,
-      float opacity, std::vector<BorderSnapshot>& out
+      wlr_scene_tree* snapshot, const std::array<float, 4>& innerColor, float opacity, std::vector<BorderSnapshot>& out
   ) const {
     if (!bordersVisible() || m_border == nullptr) {
       return;
@@ -106,14 +103,19 @@ namespace umbriel {
     wlr_scene_node_copy_animations_for_snapshot(&copy->node, &m_borderTree->node);
     // Straight colours at the opacity the ring is drawn with right now, so the fade starts from what is on screen
     // and stays in step with the content buffers, which keep their current opacity as their base.
-    BorderSnapshot captured{.node = copy, .innerColor = innerColor, .outerColor = outerColor};
+    BorderSnapshot captured{.node = copy, .innerColor = innerColor, .outerColor = m_borderColors.outer};
     captured.innerColor[3] *= opacity;
     captured.outerColor[3] *= opacity;
     out.push_back(captured);
   }
 
-  // Blur
   void ViewDecoration::applyRule(const ResolvedWindowRule& rule) {
+    const auto& border = config().colors.border;
+    m_borderColors = {
+        .focused = rule.borderColorFocused.value_or(border.focused),
+        .unfocused = rule.borderColorUnfocused.value_or(border.unfocused),
+        .outer = rule.borderColorOuter.value_or(border.outer),
+    };
     m_blurOptions = SurfaceBlurOptions{
         .ignoreAlpha = static_cast<float>(rule.blurIgnoreAlpha.value_or(0.0)),
         .enabled = rule.blur.value_or(false),
@@ -126,6 +128,7 @@ namespace umbriel {
     };
   }
 
+  // Blur
   void ViewDecoration::updateBlur(
       wlr_scene_tree* tree, wlr_surface* surface, const wlr_box& nodeBox, const wlr_box& geometry, int radius,
       const wlr_box* clip, float surfaceOpacity, float blurAlpha
