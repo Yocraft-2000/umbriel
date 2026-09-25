@@ -3,8 +3,11 @@
 #include "config/config.h"
 #include "config/resolve.h"
 #include "core/log.h"
+#include "core/tracy.h"
+#include "input/cursor.h"
 #include "input/seat.h"
 #include "layer/layer_surface.h"
+#include "lock/session_lock.h"
 #include "output/frame_schedule.h"
 #include "output/hdr_format.h"
 #include "output/identity.h"
@@ -14,6 +17,7 @@
 #include "scene/config_banner.h"
 #include "scene/node.h"
 #include "scene/quit_confirm.h"
+#include "server/ipc.h"
 #include "server/server.h"
 #include "server/wine_color_manager.h"
 #include "view/view.h"
@@ -68,11 +72,12 @@ namespace umbriel {
         wl_event_loop_add_timer(wl_display_get_event_loop(m_server->display()), onFrameRetryTimer, this);
 
     applyCursorConfig();
+    m_desktopEnabled = configuredEnabled();
     (void)applyConfiguredState();
     m_sceneOutput = wlr_scene_output_create(m_server->scene(), m_output);
     wlr_scene_output_set_direct_scanout_enabled(m_sceneOutput, configuredDirectScanoutEnabled());
     updateSceneSdrWhite();
-    if (configuredEnabled()) {
+    if (desktopEnabled()) {
       wlr_output_layout_output* layoutOutput = addToLayout();
       wlr_scene_output_layout_add_output(m_server->sceneLayout(), layoutOutput, m_sceneOutput);
     }
@@ -84,7 +89,6 @@ namespace umbriel {
     m_viewRoot = wlr_scene_tree_create(m_server->xdgTree());
     m_fullscreenRoot = wlr_scene_tree_create(m_server->fullscreenTree());
     m_pinnedRoot = wlr_scene_tree_create(m_server->pinnedTree());
-    m_pinnedShadowRoot = wlr_scene_tree_create(m_server->pinnedShadowTree());
     arrangeLayers();
     m_workspaceGroup = std::make_unique<WorkspaceGroup>(*m_server, *this);
   }
@@ -236,8 +240,7 @@ namespace umbriel {
   bool Output::applyConfiguredState() {
     const OutputRule* rule = findOutputRule(config(), identity());
     const std::optional<double> configuredScale = rule != nullptr ? rule->scale : std::nullopt;
-    const bool configured = configuredEnabled();
-    const bool enabled = configured && !m_dpmsOff;
+    const bool enabled = desktopEnabled() && !m_dpmsOff;
     wlr_output_state state{};
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, enabled);
@@ -427,8 +430,8 @@ namespace umbriel {
           "output '{}': applied mode={}x{}@{}mHz scale={} transform={}", m_output->name, m_output->width,
           m_output->height, m_output->refresh, m_output->scale, static_cast<int>(m_output->transform)
       );
-    } else if (!configured) {
-      kLog.info("output '{}': disabled by config", m_output->name);
+    } else if (!desktopEnabled()) {
+      kLog.info("output '{}': disabled by {}", m_output->name, configuredEnabled() ? "output management" : "config");
     } else {
       kLog.info("output '{}': powered off", m_output->name);
     }
@@ -545,6 +548,14 @@ namespace umbriel {
   }
 
   void Output::applyOutputState() {
+    const bool previousDesktopEnabled = m_desktopEnabled;
+    const bool previousDpmsOff = m_dpmsOff;
+    m_desktopEnabled = configuredEnabled();
+    if (m_desktopEnabled != previousDesktopEnabled) {
+      // Logical disablement subsumes DPMS. A later logical enable must power
+      // the connector on instead of reviving it in a stale DPMS-off state.
+      m_dpmsOff = false;
+    }
     const HdrMode nextHdrMode = hdrMode();
     if (nextHdrMode == HdrMode::Auto) {
       m_fullscreenHdrRequested = false;
@@ -559,9 +570,11 @@ namespace umbriel {
       m_fullscreenHdrRequested = false;
     }
     if (!applyConfiguredState()) {
+      m_desktopEnabled = previousDesktopEnabled;
+      m_dpmsOff = previousDpmsOff;
       return;
     }
-    if (configuredEnabled()) {
+    if (desktopEnabled()) {
       wlr_output_layout_output* layoutOutput = addToLayout();
       // Re-bind the scene output after a disable removed it from the layout.
       // No-op while it is still bound.
@@ -573,11 +586,41 @@ namespace umbriel {
     if (m_server->sessionLocked()) {
       m_server->updateLockBlank();
     }
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
+    }
     wlr_output_schedule_frame(m_output);
   }
 
+  void Output::adoptOutputManagerEnabled(bool enabled) {
+    const bool wasDesktopEnabled = m_desktopEnabled;
+    m_desktopEnabled = enabled;
+    if (!enabled || !wasDesktopEnabled) {
+      // A logical disable is not a pending DPMS request. Re-enabling through
+      // output management must therefore bring the connector up.
+      m_dpmsOff = false;
+    }
+  }
+
+  void Output::applyOutputManagerLayout(int x, int y) {
+    if (desktopEnabled()) {
+      wlr_output_layout_output* layoutOutput = wlr_output_layout_add(m_server->outputLayout(), m_output, x, y);
+      wlr_scene_output_layout_add_output(m_server->sceneLayout(), layoutOutput, m_sceneOutput);
+    } else {
+      wlr_output_layout_remove(m_server->outputLayout(), m_output);
+    }
+    handleExternalConfigChange();
+    kLog.info(
+        "output '{}': {} by output management, power {}", m_output->name, desktopEnabled() ? "enabled" : "disabled",
+        m_output->enabled ? "on" : "off"
+    );
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
+    }
+  }
+
   bool Output::setPowered(bool powered) {
-    if (!configuredEnabled()) {
+    if (!desktopEnabled()) {
       return false;
     }
     const bool dpmsOff = !powered;
@@ -599,6 +642,10 @@ namespace umbriel {
         m_server->updateLockBlank();
       }
       wlr_output_schedule_frame(m_output);
+      m_server->scheduleDisplacedViewRestore();
+    }
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
     }
     m_server->updateOutputManagerConfig();
     return true;
@@ -669,7 +716,7 @@ namespace umbriel {
       wlr_scene_node_destroy(&m_optimizedBlur->node);
       m_optimizedBlur = nullptr;
     }
-    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot, m_pinnedShadowRoot}) {
+    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot}) {
       if (root != nullptr) {
         wlr_scene_node_destroy(&root->node);
       }
@@ -677,7 +724,6 @@ namespace umbriel {
     m_viewRoot = nullptr;
     m_fullscreenRoot = nullptr;
     m_pinnedRoot = nullptr;
-    m_pinnedShadowRoot = nullptr;
   }
 
   wlr_scene_tree* Output::layerTree(uint32_t layer) const {
@@ -711,13 +757,22 @@ namespace umbriel {
   }
 
   void Output::arrangeLayers() {
-    wlr_box fullArea{};
-    wlr_output_effective_resolution(m_output, &fullArea.width, &fullArea.height);
-    if (fullArea.width <= 0 || fullArea.height <= 0) {
+    wlr_box outputArea{};
+    wlr_output_effective_resolution(m_output, &outputArea.width, &outputArea.height);
+    if (outputArea.width <= 0 || outputArea.height <= 0) {
       return;
     }
 
-    wlr_box usableArea = fullArea;
+    int physicalWidth = 0;
+    int physicalHeight = 0;
+    wlr_output_transformed_resolution(m_output, &physicalWidth, &physicalHeight);
+    const wlr_box layerArea = {
+        .x = 0,
+        .y = 0,
+        .width = static_cast<int>(std::ceil(static_cast<double>(physicalWidth) / m_output->scale)),
+        .height = static_cast<int>(std::ceil(static_cast<double>(physicalHeight) / m_output->scale)),
+    };
+    wlr_box usableArea = outputArea;
 
     // Exclusive first, overlay down to background so higher layers win the zone.
     static constexpr uint32_t kExclusiveOrder[] = {
@@ -727,12 +782,12 @@ namespace umbriel {
         ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND,
     };
     for (uint32_t layer : kExclusiveOrder) {
-      arrangeLayer(m_layerTrees[layer], &fullArea, &usableArea, true);
+      arrangeLayer(m_layerTrees[layer], &layerArea, &usableArea, true);
     }
     for (uint32_t layer : kExclusiveOrder) {
-      arrangeLayer(m_layerTrees[layer], &fullArea, &usableArea, false);
+      arrangeLayer(m_layerTrees[layer], &layerArea, &usableArea, false);
     }
-    updateOptimizedBlur(fullArea);
+    updateOptimizedBlur(outputArea);
 
     // Layer trees are output-local; pin them to the scene-output origin.
     for (auto& m_layerTree : m_layerTrees) {
@@ -741,15 +796,15 @@ namespace umbriel {
     wlr_scene_node_set_position(&m_popupTree->node, m_sceneOutput->x, m_sceneOutput->y);
 
     // Content roots are clipped to this output's layout box, not repositioned: views are laid out in layout
-    // coordinates. A disabled output never gets here (fullArea is empty above), and its workspaces have already been
+    // coordinates. A disabled output never gets here (outputArea is empty above), and its workspaces have already been
     // evacuated, so the stale clip it keeps has nothing under it.
     const wlr_box outputBox = {
         .x = m_sceneOutput->x,
         .y = m_sceneOutput->y,
-        .width = fullArea.width,
-        .height = fullArea.height,
+        .width = outputArea.width,
+        .height = outputArea.height,
     };
-    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot, m_pinnedShadowRoot}) {
+    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot}) {
       wlr_scene_tree_set_clip(root, &outputBox);
     }
 
@@ -880,6 +935,14 @@ namespace umbriel {
     if (m_server->sessionLocked()) {
       m_server->updateLockBlank();
     }
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
+    }
+    wlr_output_schedule_frame(m_output);
+  }
+
+  void Output::scheduleFullFrame() {
+    wlr_damage_ring_add_whole(&m_sceneOutput->damage_ring);
     wlr_output_schedule_frame(m_output);
   }
 
@@ -889,6 +952,7 @@ namespace umbriel {
   }
 
   void Output::flushDirty() {
+    UMBRIEL_ZONE("Output::flushDirty");
     // Server-wide chrome is recorded on the Server and flushed by whichever
     // output frames first; each of these is idempotent and cheap.
     Dirty pending = m_dirty | m_server->takeDirty();
@@ -921,6 +985,7 @@ namespace umbriel {
   }
 
   void Output::handleFrame() {
+    UMBRIEL_ZONE("Output::handleFrame");
     // A failed DRM commit can immediately queue another frame after logind revokes device access. Stop before that
     // retry loop can keep the final event-loop dispatch alive. A null session belongs to a nested or headless backend
     // and remains renderable.
@@ -938,8 +1003,7 @@ namespace umbriel {
     }
     timespec now{};
     clock_gettime(CLOCK_MONOTONIC, &now);
-    const uint64_t nowMsec = static_cast<uint64_t>(now.tv_sec) * 1000 + static_cast<uint64_t>(now.tv_nsec) / 1'000'000;
-    m_server->tickAnimations(nowMsec);
+    m_server->tickAnimations(m_server->animationClockMsec());
 
     // Surface commits reset scene-buffer opacity to the protocol alpha. Repair
     // pending rule opacity after every commit listener and before composition.
@@ -1016,8 +1080,16 @@ namespace umbriel {
     // "nothing to render" path, they never commit again -> damage stays clean -> wlr_scene_output_needs_frame returns
     // false forever -> compositor parks in epoll_wait. (Reproducible with any mailbox/FIFO Vulkan game.)
     bool commitFailed = false;
-    if (wlr_scene_output_needs_frame(m_sceneOutput) || m_gammaDirty) {
+    const bool sceneChanged = wlr_scene_output_needs_frame(m_sceneOutput);
+    if (sceneChanged) {
+      // Scene motion under a stationary cursor must reach the client before its next press.
+      if (Cursor* cursor = m_server->cursor()) {
+        cursor->refreshPointerContents(this);
+      }
+    }
+    if (sceneChanged || m_gammaDirty) {
       m_inFrame = true;
+      UMBRIEL_ZONE("Output::render");
 
       wlr_output_state state{};
       wlr_output_state_init(&state);
@@ -1092,6 +1164,9 @@ namespace umbriel {
           ) {
             m_tearingFallbackReason = "recovered with regular page flip";
           }
+          if (SessionLock* lock = m_server->sessionLock()) {
+            lock->handleOutputCommit(*this, m_output->commit_seq);
+          }
         } else if (commitTearing) {
           m_tearingFallbackReason = "async page flip commit failed";
         } else if (hasBuffer && m_tearingRecovery.regularCommitPending()) {
@@ -1132,6 +1207,10 @@ namespace umbriel {
       break;
     }
 
+    if (Ipc* ipc = m_server->ipc()) {
+      ipc->notifyOutputFrame(*this);
+    }
+
     // Unconditional: see comment above. Never gate this on commit success.
     wlr_scene_output_send_frame_done(m_sceneOutput, &now);
   }
@@ -1157,12 +1236,18 @@ namespace umbriel {
     if ((event->state->committed & (WLR_OUTPUT_STATE_MODE | WLR_OUTPUT_STATE_ENABLED)) != 0) {
       markDirty(Dirty::LayerArrange | Dirty::Banner | Dirty::Backdrop);
       m_gammaDirty = true;
+      if (SessionLock* lock = m_server->sessionLock()) {
+        lock->handleOutputStateChanged(*this);
+      }
     }
     wlr_output_schedule_frame(m_output);
   }
 
   void Output::handlePresent(void* data) {
     const auto* event = static_cast<const wlr_output_event_present*>(data);
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputPresent(*this, event->commit_seq, event->presented);
+    }
     if (!m_trackingPresentation || event->commit_seq != m_trackedPresentationCommitSeq) {
       return;
     }

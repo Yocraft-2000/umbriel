@@ -268,7 +268,7 @@ prefer_no_csd = true
 
 [layout]
 mode = "dwindle"
-width_presets = [0.05, 0.5, 2.0]
+extent_presets = [0.05, 0.5, 2.0]
 
 [layout.scrolling]
 center_underfull_strip = false
@@ -285,7 +285,7 @@ name = "dev"
 
 [workspace.layout]
 mode = "scrolling"
-width_presets = [0.25, 0.75]
+extent_presets = [0.25, 0.75]
 
 [workspace.layout.scrolling]
 center_underfull_strip = true
@@ -299,10 +299,10 @@ preserve_split = false
 
   CHECK(result.success);
   CHECK(store.config().layout.mode == LayoutMode::Dwindle);
-  CHECK_EQ(store.config().layout.widthPresets.size(), size_t{3});
-  CHECK_EQ(store.config().layout.widthPresets[0], 0.1);
-  CHECK_EQ(store.config().layout.widthPresets[1], 0.5);
-  CHECK_EQ(store.config().layout.widthPresets[2], 1.0);
+  CHECK_EQ(store.config().layout.extentPresets.size(), size_t{3});
+  CHECK_EQ(store.config().layout.extentPresets[0], 0.1);
+  CHECK_EQ(store.config().layout.extentPresets[1], 0.5);
+  CHECK_EQ(store.config().layout.extentPresets[2], 1.0);
   CHECK(!store.config().layout.scrolling.centerUnderfullStrip);
   CHECK(store.config().layout.dwindle.preserveSplit);
   CHECK(store.config().appearance.preferNoCsd);
@@ -311,14 +311,25 @@ preserve_split = false
   CHECK_EQ(*store.config().outputs[0].scale, 4.0);
   CHECK_EQ(store.config().workspaceRules.size(), size_t{1});
   CHECK(store.config().workspaceRules[0].layout.mode == LayoutMode::Scrolling);
-  CHECK(store.config().workspaceRules[0].layout.widthPresets.has_value());
-  CHECK_EQ(store.config().workspaceRules[0].layout.widthPresets->size(), size_t{2});
+  CHECK(store.config().workspaceRules[0].layout.extentPresets.has_value());
+  CHECK_EQ(store.config().workspaceRules[0].layout.extentPresets->size(), size_t{2});
   CHECK(store.config().workspaceRules[0].layout.scrolling.centerUnderfullStrip == true);
   CHECK(store.config().workspaceRules[0].layout.dwindle.preserveSplit == false);
   CHECK(containsDiagnostic(store, "unknown key unknown_root_key"));
   CHECK(containsDiagnostic(store, "output.DP-1.scale = 9"));
   CHECK(containsDiagnostic(store, "unknown key layout.scrolling.always_center_single_column"));
   CHECK(containsDiagnostic(store, "unknown key general.prefer_no_csd"));
+}
+
+UMBRIEL_TEST(rejectsRemovedWidthPresetKey) {
+  const TempConfig file;
+  file.write("[layout]\nwidth_presets = [0.75]\n");
+
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().layout.extentPresets.size(), size_t{3});
+  CHECK(containsDiagnostic(store, "unknown key layout.width_presets"));
 }
 
 UMBRIEL_TEST(backgroundDefaultsOpaque) {
@@ -579,26 +590,31 @@ UMBRIEL_TEST(masterPositionAcceptsCenterAndRejectsOtherValues) {
   CHECK(containsDiagnostic(store, R"(unknown layout.master.position "middle")"));
 }
 
-UMBRIEL_TEST(scrollingDefaultWidthIsOptional) {
+UMBRIEL_TEST(scrollingDefaultExtentIsOptional) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
   store.setRootPath(file.path(), true);
 
   file.write("[layout.scrolling]\ncenter_underfull_strip = false\n");
   CHECK(store.reload().success);
-  CHECK(!store.config().layout.scrolling.defaultWidthFraction.has_value());
+  CHECK(!store.config().layout.scrolling.defaultExtentFraction.has_value());
 
-  file.write("[layout.scrolling]\ndefault_width_fraction = 0.75\n");
+  file.write("[layout.scrolling]\ndefault_extent_fraction = 0.75\n");
   CHECK(store.reload().success);
-  CHECK(store.config().layout.scrolling.defaultWidthFraction.has_value());
-  CHECK_EQ(*store.config().layout.scrolling.defaultWidthFraction, 0.75);
+  CHECK(store.config().layout.scrolling.defaultExtentFraction.has_value());
+  CHECK_EQ(*store.config().layout.scrolling.defaultExtentFraction, 0.75);
+
+  file.write("[layout.scrolling]\ndefault_width_fraction = 0.25\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().layout.scrolling.defaultExtentFraction.has_value());
+  CHECK(containsDiagnostic(store, "unknown key layout.scrolling.default_width_fraction"));
 
   file.write("[layout.scrolling]\ncenter_underfull_strip = true\n");
   CHECK(store.reload().success);
-  CHECK(!store.config().layout.scrolling.defaultWidthFraction.has_value());
+  CHECK(!store.config().layout.scrolling.defaultExtentFraction.has_value());
 }
 
-UMBRIEL_TEST(outputScrollingDefaultWidthUsesNarrowLayoutScope) {
+UMBRIEL_TEST(outputScrollingDefaultExtentUsesNarrowLayoutScope) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
   store.setRootPath(file.path(), true);
@@ -608,24 +624,24 @@ UMBRIEL_TEST(outputScrollingDefaultWidthUsesNarrowLayoutScope) {
 gap = 12
 
 [output.DP-1.layout.scrolling]
-default_width_fraction = 0.05
+default_extent_fraction = 0.05
 center_focused = true
 )");
   CHECK(store.reload().success);
   CHECK_EQ(store.config().outputs.size(), size_t{1});
-  CHECK(store.config().outputs[0].layout.scrolling.defaultWidthFraction.has_value());
-  if (store.config().outputs[0].layout.scrolling.defaultWidthFraction) {
-    CHECK_EQ(*store.config().outputs[0].layout.scrolling.defaultWidthFraction, 0.1);
+  CHECK(store.config().outputs[0].layout.scrolling.defaultExtentFraction.has_value());
+  if (store.config().outputs[0].layout.scrolling.defaultExtentFraction) {
+    CHECK_EQ(*store.config().outputs[0].layout.scrolling.defaultExtentFraction, 0.1);
   }
   CHECK(containsDiagnostic(
-      store, "output.DP-1.layout.scrolling.default_width_fraction = 0.05 out of range, clamped to 0.1"
+      store, "output.DP-1.layout.scrolling.default_extent_fraction = 0.05 out of range, clamped to 0.1"
   ));
   CHECK(containsDiagnostic(store, "unknown key output.DP-1.layout.gap"));
   CHECK(containsDiagnostic(store, "unknown key output.DP-1.layout.scrolling.center_focused"));
 
   file.write("[output.DP-1]\nenabled = true\n");
   CHECK(store.reload().success);
-  CHECK(!store.config().outputs[0].layout.scrolling.defaultWidthFraction.has_value());
+  CHECK(!store.config().outputs[0].layout.scrolling.defaultExtentFraction.has_value());
 }
 
 UMBRIEL_TEST(outputWorkspaceAxisAcceptsOnlyItsTwoNames) {
@@ -744,6 +760,30 @@ UMBRIEL_TEST(keybindTableLoadsAllowWhenLocked) {
   CHECK(allowedWhenLocked);
   CHECK(defaultsToBlocked);
   CHECK(!containsDiagnostic(store, "allow_when_locked"));
+}
+
+UMBRIEL_TEST(keybindTableLoadsAllowWhenInhibited) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write(
+      "[keybinds]\n"
+      "\"Mod+Escape\" = { action = \"shortcuts-inhibit-toggle\", allow_when_inhibited = true }\n"
+      "\"Mod+Return\" = \"spawn:terminal\"\n"
+  );
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().keybinds.size(), size_t{2});
+
+  bool allowedWhenInhibited = false;
+  bool defaultsToBlocked = false;
+  for (const auto& bind : store.config().keybinds) {
+    allowedWhenInhibited = allowedWhenInhibited || bind.allowWhenInhibited;
+    defaultsToBlocked = defaultsToBlocked || !bind.allowWhenInhibited;
+  }
+  CHECK(allowedWhenInhibited);
+  CHECK(defaultsToBlocked);
+  CHECK(!containsDiagnostic(store, "allow_when_inhibited"));
 }
 
 UMBRIEL_TEST(keybindTablePreservesWorkspaceReferenceKinds) {
@@ -1008,6 +1048,36 @@ UMBRIEL_TEST(overviewWorkspaceCurveLoadsAndFallsBackToItsSpring) {
   CHECK_EQ(store.config().animation.overview.workspaceCurve.spring.stiffness, 1000.0);
 }
 
+UMBRIEL_TEST(durationBesideASpringCurveIsReportedAsInert) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  // A spring derives its own length, so the duration next to it reaches nothing and must not look honoured.
+  file.write("[animation.windows_in]\nduration_ms = 200\ncurve = \"spring:1,1000\"\n");
+  CHECK(store.reload().success);
+  CHECK(containsDiagnostic(store, "animation.windows_in.duration_ms has no effect"));
+
+  // The same duration with a duration-based curve is honoured and silent.
+  file.write("[animation.windows_in]\nduration_ms = 200\ncurve = \"easeout\"\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().animation.windowsIn.durationMs, 200);
+  CHECK(!containsDiagnostic(store, "has no effect"));
+
+  // A shared spring curve makes every event derive its length, which leaves the shared duration inert too.
+  file.write("[animation]\nduration_ms = 200\ncurve = \"spring:1,1000\"\n");
+  CHECK(store.reload().success);
+  CHECK(containsDiagnostic(store, "animation.duration_ms has no effect"));
+
+  // One duration-based event is enough for the shared duration to reach something.
+  file.write(
+      "[animation]\nduration_ms = 200\ncurve = \"spring:1,1000\"\n\n[animation.workspaces]\ncurve = \"easeout\"\n"
+  );
+  CHECK(store.reload().success);
+  CHECK(!containsDiagnostic(store, "animation.duration_ms has no effect"));
+  CHECK_EQ(store.config().animation.workspaces.durationMs, 200);
+}
+
 UMBRIEL_TEST(overviewWorkspaceWallpaperLoads) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
@@ -1066,8 +1136,7 @@ UMBRIEL_TEST(colorsSectionOwnsEveryColor) {
 
   file.write(
       "[colors]\ninsert_hint = \"#11223344\"\nbackdrop = \"#55667788\"\nshadow = \"#99AABBCC\"\n"
-      "[colors.border]\nfocused = \"#01020304\"\nunfocused = \"#05060708\"\n"
-      "scratchpad_focused = \"#090A0B0C\"\nscratchpad_unfocused = \"#0D0E0F10\"\nouter = \"#11121314\"\n"
+      "[colors.border]\nfocused = \"#01020304\"\nunfocused = \"#05060708\"\nouter = \"#11121314\"\n"
       "[colors.overview]\nbackground_tint = \"#15161718\"\nworkspace_background = \"#191A1B1C\"\n"
       "badge = \"#12345678\"\n"
   );
@@ -1078,13 +1147,48 @@ UMBRIEL_TEST(colorsSectionOwnsEveryColor) {
   CHECK_EQ(colors.shadow[3], 204.0F / 255.0F);
   CHECK_EQ(colors.border.focused[3], 4.0F / 255.0F);
   CHECK_EQ(colors.border.unfocused[0], 5.0F / 255.0F);
-  CHECK_EQ(colors.border.scratchpadFocused[1], 10.0F / 255.0F);
-  CHECK_EQ(colors.border.scratchpadUnfocused[2], 15.0F / 255.0F);
   CHECK_EQ(colors.border.outer[0], 17.0F / 255.0F);
   CHECK_EQ(colors.overview.backgroundTint[1], 22.0F / 255.0F);
   CHECK_EQ(colors.overview.workspaceBackground[2], 27.0F / 255.0F);
   CHECK_EQ(colors.overview.badge[0], 18.0F / 255.0F);
   CHECK_EQ(colors.overview.badge[3], 120.0F / 255.0F);
+}
+
+// Per-window border colors override the global [colors.border] defaults and are read from window rules.
+UMBRIEL_TEST(windowRuleBorderColorsLoad) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write(
+      "[[window_rule]]\nmatch.is_scratchpad = true\n"
+      "border_color_focused = \"#E5C07BFF\"\nborder_color_unfocused = \"#5C4A2AFF\"\n"
+      "border_color_outer = \"#2A2010FF\"\n"
+      "[[window_rule]]\nmatch.app_id = \"^foot$\"\nborder_color_focused = \"#FF6B6BFF\"\n"
+  );
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{2});
+
+  const auto& scratchpad = store.config().windowRules[0];
+  CHECK(scratchpad.matchScratchpad && *scratchpad.matchScratchpad);
+  CHECK(scratchpad.borderColorFocused && (*scratchpad.borderColorFocused)[0] == 229.0F / 255.0F);
+  CHECK(scratchpad.borderColorFocused && (*scratchpad.borderColorFocused)[3] == 1.0F);
+  CHECK(scratchpad.borderColorUnfocused && (*scratchpad.borderColorUnfocused)[1] == 74.0F / 255.0F);
+  CHECK(scratchpad.borderColorOuter && (*scratchpad.borderColorOuter)[2] == 16.0F / 255.0F);
+  CHECK(!containsDiagnostic(store, "unknown key window_rule.border_color_outer"));
+
+  // Each key is independent: a rule that sets only some of them leaves the rest unset.
+  const auto& foot = store.config().windowRules[1];
+  CHECK(foot.borderColorFocused && (*foot.borderColorFocused)[0] == 1.0F);
+  CHECK(!foot.borderColorUnfocused);
+  CHECK(!foot.borderColorOuter);
+
+  // A non-color value is rejected on the same keys.
+  file.write("[[window_rule]]\nborder_color_focused = 12\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  CHECK(!store.config().windowRules[0].borderColorFocused);
+  CHECK(containsDiagnostic(store, "ignoring window_rule.border_color_focused (expected color"));
 }
 
 // Colors are recognized only inside [colors]; anywhere else they are ordinary
@@ -1663,33 +1767,59 @@ UMBRIEL_TEST(windowTearingOverrideLoadsAsAnOptionalBoolean) {
   CHECK(containsDiagnostic(store, "ignoring window_rule.tearing (expected boolean)"));
 }
 
-UMBRIEL_TEST(windowRuleFractionSizingLoadsAndClamps) {
+UMBRIEL_TEST(windowRuleFloatingSizeTablesLoadIndependentAxesAndClamp) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
   store.setRootPath(file.path(), true);
 
   file.write(
-      "[[window_rule]]\nmatch.app_id = \"^utility$\"\ndefault_floating = true\ndefault_width = 0.5\ndefault_height = "
-      "0.6\n"
+      "[[window_rule]]\n"
+      "match.app_id = \"^utility$\"\n"
+      "default_floating = true\n"
+      "default_floating_size = { width = 0.5, height = 0.6 }\n"
+      "default_floating_size_px = { width = 640, height = 480 }\n"
   );
   CHECK(store.reload().success);
   CHECK_EQ(store.config().windowRules.size(), size_t{1});
-  CHECK(store.config().windowRules[0].defaultWidth && *store.config().windowRules[0].defaultWidth == 0.5);
-  CHECK(store.config().windowRules[0].defaultHeight && *store.config().windowRules[0].defaultHeight == 0.6);
+  const auto& rule = store.config().windowRules[0];
+  CHECK(rule.defaultFloatingWidth && *rule.defaultFloatingWidth == 0.5);
+  CHECK(rule.defaultFloatingHeight && *rule.defaultFloatingHeight == 0.6);
+  CHECK(rule.defaultFloatingWidthPx && *rule.defaultFloatingWidthPx == 640);
+  CHECK(rule.defaultFloatingHeightPx && *rule.defaultFloatingHeightPx == 480);
 
-  // Out-of-range fractions clamp into [0.1, 1.0] with a diagnostic, like default_width.
-  file.write("[[window_rule]]\ndefault_width = 3.0\ndefault_height = 0.01\n");
+  // Each axis is optional, and out-of-range fractions clamp independently.
+  file.write("[[window_rule]]\ndefault_floating_size = { width = 3.0, height = 0.01 }\n");
   CHECK(store.reload().success);
-  CHECK(store.config().windowRules[0].defaultWidth && *store.config().windowRules[0].defaultWidth == 1.0);
-  CHECK(store.config().windowRules[0].defaultHeight && *store.config().windowRules[0].defaultHeight == 0.1);
-  CHECK(containsDiagnostic(store, "window_rule.default_width = 3 out of range, clamped to 1"));
-  CHECK(containsDiagnostic(store, "window_rule.default_height = 0.01 out of range, clamped to 0.1"));
+  CHECK(
+      store.config().windowRules[0].defaultFloatingWidth && *store.config().windowRules[0].defaultFloatingWidth == 1.0
+  );
+  CHECK(
+      store.config().windowRules[0].defaultFloatingHeight && *store.config().windowRules[0].defaultFloatingHeight == 0.1
+  );
+  CHECK(containsDiagnostic(store, "window_rule.default_floating_size.width = 3 out of range, clamped to 1"));
+  CHECK(containsDiagnostic(store, "window_rule.default_floating_size.height = 0.01 out of range, clamped to 0.1"));
+
+  file.write("[[window_rule]]\ndefault_floating_size = { width = 0.5 }\n");
+  CHECK(store.reload().success);
+  CHECK(store.config().windowRules[0].defaultFloatingWidth);
+  CHECK(!store.config().windowRules[0].defaultFloatingHeight);
+
+  file.write("[[window_rule]]\ndefault_floating_size = [0.5, 0.6]\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().windowRules[0].defaultFloatingWidth);
+  CHECK(!store.config().windowRules[0].defaultFloatingHeight);
+  CHECK(containsDiagnostic(store, "ignoring window_rule.default_floating_size (expected"));
+
+  file.write("[[window_rule]]\ndefault_floating_width = 0.5\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().windowRules[0].defaultFloatingWidth);
+  CHECK(containsDiagnostic(store, "unknown key window_rule.default_floating_width"));
 
   // Non-numeric values are ignored with a diagnostic.
-  file.write("[[window_rule]]\ndefault_height = \"half\"\n");
+  file.write("[[window_rule]]\ndefault_scrolling_extent = \"half\"\n");
   CHECK(store.reload().success);
-  CHECK(!store.config().windowRules[0].defaultHeight);
-  CHECK(containsDiagnostic(store, "ignoring window_rule.default_height (expected number 0.1-1.0)"));
+  CHECK(!store.config().windowRules[0].defaultScrollingExtent);
+  CHECK(containsDiagnostic(store, "ignoring window_rule.default_scrolling_extent (expected number)"));
 }
 
 UMBRIEL_TEST(outputEnabledFlagParsesAndDefaultsTrue) {
@@ -2014,6 +2144,36 @@ UMBRIEL_TEST(ruleCollectionsAccumulateAcrossIncludesWhilePlainArraysReplace) {
   CHECK(!containsDiagnostic(store, "position"));
 }
 
+// Decoration keys are read from a window rule like every other effect key, so a
+// per-window frame, corner radius, and shadow reach the resolve path.
+UMBRIEL_TEST(windowRuleDecorationKeysAreRead) {
+  const TempConfig file;
+  file.write(
+      "[[window_rule]]\n"
+      "match.app_id = \"^csd-app$\"\n"
+      "border_width = 0\n"
+      "outer_border_width = 6\n"
+      "corner_radius = 0\n"
+      "shadow = false\n"
+  );
+
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+  const umbriel::ConfigReloadResult loaded = store.reload();
+
+  CHECK(loaded.success);
+  CHECK_EQ(store.config().windowRules.size(), size_t{1});
+  if (store.config().windowRules.empty()) {
+    return;
+  }
+  const umbriel::WindowRule& rule = store.config().windowRules.front();
+  CHECK(rule.borderWidth && *rule.borderWidth == 0);
+  CHECK(rule.outerBorderWidth && *rule.outerBorderWidth == 6);
+  CHECK(rule.cornerRadius && *rule.cornerRadius == 0);
+  CHECK(rule.shadow && !*rule.shadow);
+  CHECK(store.diagnostics().empty());
+}
+
 UMBRIEL_TEST(emptyRuleArrayDropsRulesFromIncludes) {
   const TempConfig file;
   file.write("window_rule = []\n[include]\nfiles = [\"" + file.includeName() + "\"]\n");
@@ -2131,6 +2291,7 @@ scroll_factor = { horizontal = 0.8, vertical = 0.6 }
 disable_while_typing = true
 disable_on_external_mouse = true
 click_method = "button_areas"
+tap_button_map = "left_middle_right"
 
 [input.mouse]
 accel_profile = "custom 0.2 0.0 0.5 1.0 2.0"
@@ -2153,6 +2314,7 @@ accel_profile = "flat"
 sensitivity = -0.5
 disable_while_typing = false
 click_method = "clickfinger"
+tap_button_map = "left_right_middle"
 
 [[input.device]]
 name = "Acme Gaming Mouse"
@@ -2186,6 +2348,7 @@ scroll_button_lock = false
   CHECK(input.touchpad.disableWhileTyping == std::optional<bool>(true));
   CHECK(input.touchpad.disableOnExternalMouse == std::optional<bool>(true));
   CHECK(input.touchpad.clickMethod == std::optional(umbriel::ClickMethod::ButtonAreas));
+  CHECK(input.touchpad.tapButtonMap == std::optional(umbriel::TapButtonMap::LeftMiddleRight));
   CHECK_EQ(input.devices.size(), size_t{3});
 
   const auto* keyboard = input.findDevice("Acme Split Keyboard");
@@ -2209,6 +2372,7 @@ scroll_button_lock = false
     CHECK(touchpad->sensitivity == std::optional<double>(-0.5));
     CHECK(touchpad->disableWhileTyping == std::optional<bool>(false));
     CHECK(touchpad->clickMethod == std::optional(umbriel::ClickMethod::ClickFinger));
+    CHECK(touchpad->tapButtonMap == std::optional(umbriel::TapButtonMap::LeftRightMiddle));
   }
 
   const auto* mouse = input.findDevice("Acme Gaming Mouse");
@@ -2343,6 +2507,23 @@ click_method = "button-areas"
   CHECK(!store.config().input.touchpad.clickMethod.has_value());
   CHECK(containsDiagnostic(store, R"(invalid input.touchpad.click_method "button-areas")"));
   CHECK(!containsDiagnostic(store, "unknown key input.touchpad.click_method"));
+}
+
+UMBRIEL_TEST(invalidTapButtonMapIsRejectedAndStillClaimsTheKey) {
+  const TempConfig file;
+  file.write(R"(
+[input.touchpad]
+tap_button_map = "lmr"
+)");
+
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+  const umbriel::ConfigReloadResult result = store.reload();
+
+  CHECK(result.success);
+  CHECK(!store.config().input.touchpad.tapButtonMap.has_value());
+  CHECK(containsDiagnostic(store, R"(invalid input.touchpad.tap_button_map "lmr")"));
+  CHECK(!containsDiagnostic(store, "unknown key input.touchpad.tap_button_map"));
 }
 
 UMBRIEL_TEST(scrollButtonRejectsEvdevCodesAndStillClaimsTheKey) {
@@ -2586,7 +2767,8 @@ scale = 0.7
 
 [animation.windows_out]
 curve = "bouncy"
-style = "slide"
+style = "popin"
+scale = 0.6
 
 [animation.overview]
 enabled = false
@@ -2613,7 +2795,8 @@ blur = true
   CHECK_EQ(animation.windowsIn.style, std::string{"zoom"});
   CHECK_EQ(animation.windowsIn.scale, 0.7);
   CHECK(animation.windowsOut.curve.easing == umbriel::Easing::Spring);
-  CHECK_EQ(animation.windowsOut.style, std::string{"slide"});
+  CHECK_EQ(animation.windowsOut.style, std::string{"popin"});
+  CHECK_EQ(animation.windowsOut.scale, 0.6);
   CHECK(!animation.overview.enabled);
   CHECK_EQ(animation.overview.durationMs, 700);
   CHECK(animation.overview.curve.easing == umbriel::Easing::CustomBezier);

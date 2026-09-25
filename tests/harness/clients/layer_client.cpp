@@ -1,6 +1,7 @@
-// Maps a top exclusive zone, a full-output background layer when the height is zero, or a 200x200 bottom-layer
-// square. It stays mapped until that output closes the layer surface. `keyboard=none|on-demand|exclusive` picks the
-// layer surface's keyboard interactivity, and every keyboard enter and leave the surface receives is logged.
+// Maps a top exclusive zone, a full-output background layer when the height is zero, or a 200x200 bottom-layer or
+// red overlay-layer square. It stays mapped until that output closes the layer surface. `keyboard=none|on-demand|
+// exclusive` picks the layer surface's keyboard interactivity, and every keyboard enter and leave the surface receives
+// is logged. `release-on-escape` drops the interactivity to none when Escape is released.
 
 #include <wayland-client.h>
 
@@ -51,6 +52,8 @@ namespace {
     bool closed = false;
     bool failed = false;
     uint32_t fillColor = 0xFF202020;
+    bool logConfigures = false;
+    bool releaseOnEscape = false;
     uint32_t keyboardInteractivity = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE;
   };
 
@@ -126,6 +129,9 @@ namespace {
     zwlr_layer_surface_v1_ack_configure(layerSurface, serial);
     const int configuredWidth = std::max(1, static_cast<int>(width));
     const int configuredHeight = std::max(1, static_cast<int>(height));
+    if (state.logConfigures) {
+      std::println("configured-size={}x{}", configuredWidth, configuredHeight);
+    }
     if (state.buffer.resource == nullptr
         || state.buffer.width != configuredWidth
         || state.buffer.height != configuredHeight) {
@@ -156,8 +162,15 @@ namespace {
   void keyboardKeymap(void*, wl_keyboard*, uint32_t, int32_t fd, uint32_t) { close(fd); }
   void keyboardEnter(void*, wl_keyboard*, uint32_t, wl_surface*, wl_array*) { std::println("keyboard-enter"); }
   void keyboardLeave(void*, wl_keyboard*, uint32_t, wl_surface*) { std::println("keyboard-leave"); }
-  void keyboardKey(void*, wl_keyboard*, uint32_t, uint32_t, uint32_t key, uint32_t keyState) {
+  void keyboardKey(void* data, wl_keyboard*, uint32_t, uint32_t, uint32_t key, uint32_t keyState) {
     std::println("keyboard-key code={} state={}", key, keyState);
+    auto& state = *static_cast<State*>(data);
+    if (state.releaseOnEscape && key == 1 && keyState == WL_KEYBOARD_KEY_STATE_RELEASED) {
+      zwlr_layer_surface_v1_set_keyboard_interactivity(
+          state.layerSurface, ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE
+      );
+      wl_surface_commit(state.surface);
+    }
   }
   void keyboardModifiers(void*, wl_keyboard*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
   void keyboardRepeatInfo(void*, wl_keyboard*, int32_t, int32_t) {}
@@ -226,9 +239,9 @@ int main(int argc, char** argv) {
   setvbuf(stdout, nullptr, _IOLBF, 0);
   if (argc < 3) {
     std::println(
-        stderr,
-        "usage: layer-client <output> <exclusive-height-or-zero-background> [bottom-layer] "
-        "[keyboard=none|on-demand|exclusive]"
+        "usage: layer-client <output> <exclusive-height-or-zero-background> [bottom-layer|overlay-layer] "
+        "[log-configures] "
+        "[keyboard=none|on-demand|exclusive] [release-on-escape]"
     );
     return EXIT_FAILURE;
   }
@@ -242,27 +255,36 @@ int main(int argc, char** argv) {
   State state;
   // A 200x200 bottom-layer square in the top-left corner, which the overview mirrors into every workspace preview.
   bool bottom = false;
+  bool overlay = false;
   for (int index = 3; index < argc; ++index) {
     const std::string option = argv[index];
     if (option == "bottom-layer") {
       bottom = true;
+    } else if (option == "overlay-layer") {
+      overlay = true;
     } else if (option == "keyboard=none") {
       state.keyboardInteractivity = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE;
     } else if (option == "keyboard=on-demand") {
       state.keyboardInteractivity = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND;
     } else if (option == "keyboard=exclusive") {
       state.keyboardInteractivity = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE;
+    } else if (option == "release-on-escape") {
+      state.releaseOnEscape = true;
+    } else if (option == "log-configures") {
+      state.logConfigures = true;
     } else {
       std::println(stderr, "layer-client: unknown option '{}'", option);
       return EXIT_FAILURE;
     }
   }
 
-  const bool background = !bottom && exclusiveHeight == 0;
+  const bool background = !bottom && !overlay && exclusiveHeight == 0;
   if (background) {
     state.fillColor = 0xFF5577AA;
   } else if (bottom) {
     state.fillColor = 0xFF00FF00;
+  } else if (overlay) {
+    state.fillColor = 0xFFFF0000;
   }
   state.display = wl_display_connect(nullptr);
   if (state.display == nullptr) {
@@ -289,6 +311,8 @@ int main(int argc, char** argv) {
     layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
   } else if (bottom) {
     layer = ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM;
+  } else if (overlay) {
+    layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
   }
   state.surface = wl_compositor_create_surface(state.compositor);
   state.layerSurface = zwlr_layer_shell_v1_get_layer_surface(
@@ -299,13 +323,17 @@ int main(int argc, char** argv) {
     zwlr_layer_surface_v1_set_keyboard_interactivity(state.layerSurface, state.keyboardInteractivity);
   }
   uint32_t anchors = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
-  if (bottom) {
+  if (bottom || overlay) {
     zwlr_layer_surface_v1_set_size(state.layerSurface, 200, 200);
+    if (overlay) {
+      zwlr_layer_surface_v1_set_exclusive_zone(state.layerSurface, -1);
+    }
   } else {
     zwlr_layer_surface_v1_set_size(state.layerSurface, 0, background ? 0U : static_cast<uint32_t>(exclusiveHeight));
     anchors |= ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
     if (background) {
       anchors |= ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+      zwlr_layer_surface_v1_set_exclusive_zone(state.layerSurface, -1);
     } else {
       zwlr_layer_surface_v1_set_exclusive_zone(state.layerSurface, exclusiveHeight);
     }

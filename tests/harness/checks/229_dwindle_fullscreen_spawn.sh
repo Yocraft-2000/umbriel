@@ -179,11 +179,11 @@ wait_for_fullscreen_query \
   '[.surfaces[] | select(.title == "dwindle-fullscreen-target" and .fullscreen)] | length == 1' \
   "target window did not enter fullscreen before the floating moves"
 
-# A move onto the workspace the window already occupies is not an arrival. The primer covers the configure round trip
-# an erroneous exit would take before the client reports it.
+# A move onto the workspace the window already occupies is not an arrival. settle waits for every configure an
+# erroneous exit would send to be acknowledged, so the fullscreen state read after it is final.
 "$UMBRIEL" msg "window-focus:$late_id" > /dev/null
 "$UMBRIEL" msg window-move-to-workspace:2 > /dev/null
-sleep 0.3
+"$UMBRIEL" settle
 state=$("$UMBRIEL" tearing --json)
 if ! jq -e '[.surfaces[] | select(.title == "dwindle-fullscreen-target") | .fullscreen] == [true]' <<< "$state" \
   > /dev/null; then
