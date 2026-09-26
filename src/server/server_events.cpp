@@ -241,6 +241,32 @@ namespace umbriel {
       }
     }
 
+    void applyTapButtonMap(
+        libinput_device* libinputDevice, const wlr_input_device* device, std::optional<TapButtonMap> configured,
+        std::string_view setting
+    ) {
+      if (!configured) {
+        if (libinput_device_config_tap_set_button_map(
+                libinputDevice, libinput_device_config_tap_get_default_button_map(libinputDevice)
+            )
+            != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+          kLog.warn("input: failed to restore the default tap button map for '{}'", deviceName(device));
+        }
+        return;
+      }
+      enum libinput_config_tap_button_map requested = LIBINPUT_CONFIG_TAP_MAP_LRM;
+      switch (*configured) {
+      case TapButtonMap::LeftRightMiddle:
+        break;
+      case TapButtonMap::LeftMiddleRight:
+        requested = LIBINPUT_CONFIG_TAP_MAP_LMR;
+        break;
+      }
+      if (libinput_device_config_tap_set_button_map(libinputDevice, requested) != LIBINPUT_CONFIG_STATUS_SUCCESS) {
+        kLog.warn("input: failed to apply {} to '{}'", setting, deviceName(device));
+      }
+    }
+
     // libinput's on-button-down scrolling: while the configured button is held (or latched, with the lock), motion
     // turns into scroll events and the button itself stops clicking.
     void applyScrollButton(
@@ -443,6 +469,13 @@ namespace umbriel {
               deviceName(device)
           );
         }
+        const bool hasTapMapOverride = override != nullptr && override->tapButtonMap.has_value();
+        const std::optional<TapButtonMap>& tapButtonMap =
+            hasTapMapOverride ? override->tapButtonMap : input.touchpad.tapButtonMap;
+        applyTapButtonMap(
+            libinputDevice, device, tapButtonMap,
+            hasTapMapOverride ? "input.device.tap_button_map" : "input.touchpad.tap_button_map"
+        );
       }
 
       const bool hasClickOverride = override != nullptr && override->clickMethod.has_value();
@@ -717,12 +750,28 @@ namespace umbriel {
 
   // Fires when the underlying GL context is invalidated (GPU reset, VRAM lost after suspend, driver-detected hang).
   // Without this, the renderer keeps issuing GL calls into a dead context: Mesa's context_lost_nop_handler no-ops each
-  // one and spams "[GLES2] GL_CONTEXT_LOST in context lost" ~40k lines/sec, and the desktop never comes back. Rebuild
-  // the renderer and rebind everything.
+  // one and spams "[GLES2] GL_CONTEXT_LOST in context lost" ~40k lines/sec, and the desktop never comes back. Defer
+  // rebuilding until this signal and the failed render call have both unwound.
   void Server::onRendererLost(wl_listener* listener, void* /*data*/) {
     Server* self;
     self = wl_container_of(listener, self, m_rendererLost);
-    self->recreateRenderer();
+    if (self->m_stopping || self->m_rendererRecoveryIdle != nullptr) {
+      return;
+    }
+    self->m_rendererRecoveryIdle =
+        wl_event_loop_add_idle(wl_display_get_event_loop(self->m_display), onRendererRecoveryIdle, self);
+    if (self->m_rendererRecoveryIdle == nullptr) {
+      kLog.error("could not defer renderer recovery, terminating");
+      self->stop();
+    }
+  }
+
+  void Server::onRendererRecoveryIdle(void* data) {
+    auto* self = static_cast<Server*>(data);
+    self->m_rendererRecoveryIdle = nullptr;
+    if (!self->m_stopping) {
+      self->recreateRenderer();
+    }
   }
 
   void Server::recreateRenderer() {
@@ -1290,37 +1339,49 @@ namespace umbriel {
       return;
     }
 
-    cancelModifierTap();
-    m_sessionLocked = true;
-    m_overview->forceClose();
-    if (m_cheatsheet != nullptr) {
-      m_cheatsheet->hide();
+    m_sessionLock = std::make_unique<SessionLock>(*this, lock);
+    m_sessionLock->start();
+  }
+
+  void Server::activateSessionLock(SessionLock* lock) {
+    if (m_sessionLock.get() != lock) {
+      return;
     }
-    if (m_quitConfirm != nullptr) {
-      m_quitConfirm->hide();
-    }
-    m_cursor->resetMode();
-    m_cursor->clearConstraint();
-    m_lockFocusOutput.clear();
-    if (View* focused = View::fromSurface(m_seat->wlr()->keyboard_state.focused_surface)) {
-      if (Workspace* workspace = focused->workspace(); workspace != nullptr && workspace->group() != nullptr) {
-        if (const Output* output = workspace->group()->output(); output != nullptr) {
-          m_lockFocusOutput = output->wlr()->name;
+
+    if (!m_sessionLocked) {
+      m_lockFocusOutput.clear();
+      if (View* focused = View::fromSurface(m_seat->wlr()->keyboard_state.focused_surface)) {
+        if (Workspace* workspace = focused->workspace(); workspace != nullptr && workspace->group() != nullptr) {
+          if (const Output* output = workspace->group()->output(); output != nullptr) {
+            m_lockFocusOutput = output->wlr()->name;
+          }
         }
       }
+
+      m_sessionLocked = true;
+      cancelModifierTap();
+      m_overview->forceClose();
+      if (m_cheatsheet != nullptr) {
+        m_cheatsheet->hide();
+      }
+      if (m_quitConfirm != nullptr) {
+        m_quitConfirm->hide();
+      }
+      m_cursor->resetMode();
+      m_cursor->clearConstraint();
+      clearNormalFocus();
+      updateIdleInhibit();
     }
-    clearNormalFocus();
-    updateIdleInhibit();
+
     updateLockBlank();
     setLockBlankEnabled(true);
     raiseLockTree();
-    m_sessionLock = std::make_unique<SessionLock>(*this, lock);
   }
 
   void Server::unlockSession() {
     m_sessionLocked = false;
     updateIdleInhibit();
-    wlr_scene_node_set_enabled(&m_lockBlank->node, false);
+    setLockBlankEnabled(false);
     // The cursor need not sit on the output that had focus, so restore the
     // remembered one. refocus() then keeps that output's active workspace, which
     // is what makes unlocking on an empty workspace stay there.
@@ -1355,7 +1416,9 @@ namespace umbriel {
     if (layoutBox.width <= 0 || layoutBox.height <= 0) {
       return;
     }
-    wlr_scene_rect_set_color(m_lockBlank, config().colors.backdrop.data());
+    auto color = config().colors.backdrop;
+    color[3] = 1.0F;
+    wlr_scene_rect_set_color(m_lockBlank, color.data());
     wlr_scene_rect_set_size(m_lockBlank, layoutBox.width, layoutBox.height);
     wlr_scene_node_set_position(&m_lockBlank->node, layoutBox.x, layoutBox.y);
   }
@@ -1388,6 +1451,9 @@ namespace umbriel {
     if (m_sessionLocked) {
       updateLockBlank();
       raiseLockTree();
+    }
+    if (m_sessionLock != nullptr) {
+      m_sessionLock->outputsChanged();
     }
     updateOutputManagerConfig();
     refreshSurfaceScales();
@@ -1911,10 +1977,16 @@ namespace umbriel {
       m_scratchpadManager->releaseOutput(output);
     }
 
+    if (m_sessionLock != nullptr) {
+      m_sessionLock->forgetOutput(output->wlr());
+    }
     std::erase_if(m_outputs, [output](const std::unique_ptr<Output>& entry) { return entry.get() == output; });
     markDirty(Dirty::Banner | Dirty::Cheatsheet | Dirty::QuitConfirm);
     if (m_sessionLocked) {
       updateLockBlank();
+    }
+    if (m_sessionLock != nullptr) {
+      m_sessionLock->outputsChanged();
     }
     updateOutputManagerConfig();
     // Scratchpad and pinned views rehome without going through setWorkspace.
@@ -1981,8 +2053,8 @@ namespace umbriel {
         };
         if (view->floating() && outputBox.width > 0 && outputBox.height > 0) {
           home.floatingOutputPosition = {{
-              static_cast<double>(view->sceneTree()->node.x - outputBox.x) / outputBox.width,
-              static_cast<double>(view->sceneTree()->node.y - outputBox.y) / outputBox.height,
+              static_cast<double>(view->layoutTargetX() - outputBox.x) / outputBox.width,
+              static_cast<double>(view->layoutTargetY() - outputBox.y) / outputBox.height,
           }};
         }
         if (member != capture.members.end()) {

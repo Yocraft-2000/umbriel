@@ -11,8 +11,6 @@ namespace umbriel {
       return static_cast<int>(std::lround(from + (to - from) * progress));
     }
 
-    bool rangesOverlap(int aLo, int aHi, int bLo, int bHi) { return aLo < bHi && bLo < aHi; }
-
   } // namespace
 
   wlr_box interpolateBox(const wlr_box& from, const wlr_box& to, double progress) {
@@ -21,14 +19,6 @@ namespace umbriel {
     const int right = lerpEdge(from.x + from.width, to.x + to.width, progress);
     const int bottom = lerpEdge(from.y + from.height, to.y + to.height, progress);
     return {left, top, std::max(0, right - left), std::max(0, bottom - top)};
-  }
-
-  bool boxesOverlap(const wlr_box& a, const wlr_box& b) {
-    if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) {
-      return false;
-    }
-    return rangesOverlap(a.x, a.x + a.width, b.x, b.x + b.width)
-        && rangesOverlap(a.y, a.y + a.height, b.y, b.y + b.height);
   }
 
   bool keepsSeparation(const MotionBox& a, const MotionBox& b) {

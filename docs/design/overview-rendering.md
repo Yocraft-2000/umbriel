@@ -36,9 +36,9 @@ position through `AnimatedValue::settleSpring`, carrying the release velocity
 scaled by the rubber-band derivative at the release point; any other curve runs
 over `duration_ms` from rest. A gesture in flight snaps the value each frame,
 which also stops a settle still running on that output. Settled preview origins
-and gaps use an integral logical-pixel grid. The analytic spring remains in
-control while its position and velocity energy could still cross a pixel
-boundary. Once that complete envelope is strictly below half a logical pixel,
+and gaps use an integral logical-pixel grid (`overview/preview_geometry.h`). The
+analytic spring remains in control while its position and velocity energy could
+still cross a pixel boundary. Once that complete envelope is strictly below half a logical pixel,
 the solver stops at its target. The projected preview already rounds to that
 same target pixel, so stopping is invisible and cannot introduce a faster
 terminal step. Larger release motion and configured bounce remain intact.
@@ -69,6 +69,21 @@ Configured keybinds continue to dispatch during the closing zoom. A later focus
 or workspace selection replaces the card that initiated the close as the
 landing target. Workspace retargets use a separate animation value, so repeated
 navigation cannot extend the zoom deadline.
+
+A spring `curve` runs the opening and closing zoom through
+`AnimatedValue::settleSpring`, and `Overview::tickAnimations` ends it with
+`finishSpringTail` once its remaining motion is under half a logical pixel.
+`Overview::zoomPixelsPerUnit` supplies that scale: half the largest output
+extent per unit of zoom for a close, plus one row step for an open, whose end
+shows the neighbouring rows.
+
+Window shadows and pinned windows fade with `Overview::desktopChromeAlpha`, from
+1 on the desktop to 0 at the first 10% of overview progress. Each card draws a
+copy of its view's shadow node scaled by the zoom, kept in the output's
+`tileShadows` tree when the workspace pools that shadow below its tiles and
+under the card otherwise. Pinned windows, which have no card, stay live over the
+filmstrip through `View::setOverviewOpacity`. A close therefore restores both
+while the zoom is still settling, and the teardown swap changes no pixel.
 
 Unmap is the one transition that cannot remain live because the client buffer
 may disappear immediately. Before removing an unmapped card, the overview

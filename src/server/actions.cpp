@@ -219,10 +219,12 @@ namespace umbriel {
     }
 
     // Move `view` to `target` (possibly on another output), activate the target workspace, and focus the view. Floats
-    // land proportionally via their remembered usable-area fraction.
-    void moveViewToWorkspace(Server& server, View& view, Workspace& target) {
+    // land proportionally via their remembered usable-area fraction. With `follow` clear the window lands on `target`
+    // while the seat stays on the source workspace and the cursor stays where it was.
+    void moveViewToWorkspace(Server& server, View& view, Workspace& target, bool follow = true) {
       Workspace* source = view.workspace();
       const bool workspaceChanged = source != &target;
+      Output* sourceOutput = source != nullptr && source->group() != nullptr ? source->group()->output() : nullptr;
       const bool floating = view.floating();
       std::optional<double> widthFrac;
       bool fullWidth = false;
@@ -241,7 +243,11 @@ namespace umbriel {
       if (floating) {
         view.rememberFloatingPosition();
       }
-      view.moveToWorkspace(&target); // layoutAttach self-guards on tiled()
+      view.moveToWorkspace(&target, true, LayoutAttachOrigin::MovedView); // layoutAttach self-guards on tiled()
+      if (workspaceChanged && !view.tiled()) {
+        // layoutAttach only handles tiled arrivals.
+        target.exitFullscreenForIncomingView(&view);
+      }
       if (widthFrac.has_value()) {
         ScrollingLayout* targetLayout = target.scrollingLayout();
         const int column = targetLayout != nullptr ? targetLayout->columnOf(&view) : -1;
@@ -252,6 +258,18 @@ namespace umbriel {
           }
           target.markArrange(true);
         }
+      }
+      if (!follow) {
+        if (floating) {
+          view.restoreFloatingPosition();
+        }
+        // Detaching the view already handed the source workspace's focus to a replacement, so the seat only follows
+        // that replacement; a source left empty clears the keyboard focus, the way an empty workspace does elsewhere.
+        // The cursor deliberately stays put: nothing travelled with the window.
+        if (workspaceChanged) {
+          server.refocus(sourceOutput);
+        }
+        return;
       }
       target.group()->activate(&target);
       if (floating) {
@@ -286,6 +304,8 @@ namespace umbriel {
       if (column.views.empty()) {
         return false;
       }
+
+      target.exitFullscreenForIncomingView(focused);
 
       const int focusedTargetColumn = target.layout().columnOf(target.focusedView());
       const int targetIndex =
@@ -786,6 +806,25 @@ namespace umbriel {
       return true;
     }
 
+    // The workspace one step from `index`, wrapping around the ends of the
+    // inventory when the output enables cyclic workspaces. Null means the step
+    // leaves the inventory, or that the output owns no workspace at all.
+    Workspace* stepWorkspace(WorkspaceGroup& group, size_t index, int step) {
+      const size_t count = group.workspaceCount();
+      if (count == 0) {
+        return nullptr;
+      }
+      const long long target = static_cast<long long>(index) + step;
+      if (target >= 0 && target < static_cast<long long>(count)) {
+        return group.workspaceAt(static_cast<size_t>(target));
+      }
+      const Output* output = group.output();
+      if (output == nullptr || !output->configuredCyclicWorkspaces()) {
+        return nullptr;
+      }
+      return step < 0 ? group.workspaceAt(count - 1) : group.workspaceAt(0);
+    }
+
     template <int Direction>
     bool actionMoveVerticalOrWorkspace(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       if (Workspace* workspace = windowActionWorkspace(server)) {
@@ -794,12 +833,7 @@ namespace umbriel {
           if (source->group() == nullptr) {
             return true;
           }
-          WorkspaceGroup* group = source->group();
-          const size_t index = source->index();
-          if (Direction < 0 && index == 0) {
-            return true;
-          }
-          Workspace* target = group->workspaceAt(index + static_cast<size_t>(Direction));
+          Workspace* target = stepWorkspace(*source->group(), source->index(), Direction);
           if (target == nullptr || target == source) {
             return true;
           }
@@ -1167,15 +1201,21 @@ namespace umbriel {
           warpToOutputCenter(server, *destination);
         }
       };
-      if (bind.action == KeybindAction::WindowMoveToWorkspace) {
+      if (bind.action == KeybindAction::WindowMoveToWorkspace
+          || bind.action == KeybindAction::WindowMoveToWorkspaceSilent) {
         if (scratchpadHoldsFocus(server)) {
           return true;
         }
+        const bool follow = bind.action == KeybindAction::WindowMoveToWorkspace;
         for (const auto& entry : server.views()) {
           if (entry->mapped() && entry->onActiveWorkspace()) {
-            moveViewToWorkspace(server, *entry, **target);
+            moveViewToWorkspace(server, *entry, **target, follow);
             return true;
           }
+        }
+        if (!follow) {
+          // Nothing to move: no-op, rather than falling through to the workspace switch below.
+          return true;
         }
       }
       if (bind.action == KeybindAction::ColumnMoveToWorkspace) {
@@ -1199,11 +1239,7 @@ namespace umbriel {
       if (group == nullptr) {
         return true;
       }
-      const size_t index = group->active()->index();
-      if (Direction < 0 && index == 0) {
-        return true; // no wrap-around; silent no-op at the first workspace
-      }
-      Workspace* target = group->workspaceAt(index + static_cast<size_t>(Direction));
+      Workspace* target = stepWorkspace(*group, group->active()->index(), Direction);
       if (target == nullptr || target == group->active()) {
         return true;
       }
@@ -1211,23 +1247,18 @@ namespace umbriel {
       return true;
     }
 
-    template <int Direction>
+    template <int Direction, bool Follow>
     bool actionWindowMoveToWorkspaceAdjacent(Server& server, const Keybind& /*bind*/, std::string* /*error*/) {
       Workspace* workspace = windowActionWorkspace(server);
       if (workspace == nullptr || workspace->group() == nullptr) {
         return true;
       }
-      WorkspaceGroup* group = workspace->group();
-      const size_t index = workspace->index();
-      if (Direction < 0 && index == 0) {
-        return true;
-      }
-      Workspace* target = group->workspaceAt(index + static_cast<size_t>(Direction));
+      Workspace* target = stepWorkspace(*workspace->group(), workspace->index(), Direction);
       if (target == nullptr || target == workspace) {
         return true;
       }
       if (View* view = workspace->focusedView()) {
-        moveViewToWorkspace(server, *view, *target);
+        moveViewToWorkspace(server, *view, *target, Follow);
       }
       return true;
     }
@@ -1238,12 +1269,7 @@ namespace umbriel {
       if (source == nullptr || source->group() == nullptr) {
         return true;
       }
-      WorkspaceGroup* group = source->group();
-      const size_t index = source->index();
-      if (Direction < 0 && index == 0) {
-        return true;
-      }
-      Workspace* target = group->workspaceAt(index + static_cast<size_t>(Direction));
+      Workspace* target = stepWorkspace(*source->group(), source->index(), Direction);
       if (target == nullptr || target == source) {
         return true;
       }
@@ -1571,12 +1597,10 @@ namespace umbriel {
 
       // Gesture keeps the seat focus where it is without revealing its column: the restored scroll offset above is
       // what both strips must settle on.
-      if (seatFocus != nullptr && seatFocus->mapped()) {
-        server.focusView(seatFocus, FocusReason::Gesture);
-        maybeWarpCursorToWindow(server, seatFocus);
-      } else if (sourceWs->focusedView() != nullptr) {
-        server.focusView(sourceWs->focusedView(), FocusReason::Gesture);
-        maybeWarpCursorToWindow(server, sourceWs->focusedView());
+      View* seatTarget = seatFocus != nullptr && seatFocus->mapped() ? seatFocus : sourceWs->focusedView();
+      if (seatTarget != nullptr) {
+        server.focusView(seatTarget, FocusReason::Gesture);
+        finishWorkspaceTransfer(server, *seatTarget);
       }
 
       sourceWs->markArrange(true);
@@ -1749,8 +1773,11 @@ namespace umbriel {
         &actionFocusCycle<1>,
         &actionWorkspace,
         &actionWorkspace,
-        &actionWindowMoveToWorkspaceAdjacent<1>,
-        &actionWindowMoveToWorkspaceAdjacent<-1>,
+        &actionWorkspace,
+        &actionWindowMoveToWorkspaceAdjacent<1, false>,
+        &actionWindowMoveToWorkspaceAdjacent<-1, false>,
+        &actionWindowMoveToWorkspaceAdjacent<1, true>,
+        &actionWindowMoveToWorkspaceAdjacent<-1, true>,
         &actionConfigReload,
         &actionKeyboardLayoutNext,
         &actionShortcutsInhibitToggle,

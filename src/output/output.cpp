@@ -4,8 +4,10 @@
 #include "config/resolve.h"
 #include "core/log.h"
 #include "core/tracy.h"
+#include "input/cursor.h"
 #include "input/seat.h"
 #include "layer/layer_surface.h"
+#include "lock/session_lock.h"
 #include "output/frame_schedule.h"
 #include "output/hdr_format.h"
 #include "output/identity.h"
@@ -15,6 +17,7 @@
 #include "scene/config_banner.h"
 #include "scene/node.h"
 #include "scene/quit_confirm.h"
+#include "server/ipc.h"
 #include "server/server.h"
 #include "server/wine_color_manager.h"
 #include "view/view.h"
@@ -84,11 +87,8 @@ namespace umbriel {
     }
     m_popupTree = wlr_scene_tree_create(m_server->shellLayerTree(ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY));
     m_viewRoot = wlr_scene_tree_create(m_server->xdgTree());
-    // Workspace roots are created later by WorkspaceGroup, so this first child remains their structural underlay.
-    m_tiledCloseRoot = wlr_scene_tree_create(m_viewRoot);
     m_fullscreenRoot = wlr_scene_tree_create(m_server->fullscreenTree());
     m_pinnedRoot = wlr_scene_tree_create(m_server->pinnedTree());
-    m_pinnedShadowRoot = wlr_scene_tree_create(m_server->pinnedShadowTree());
     arrangeLayers();
     m_workspaceGroup = std::make_unique<WorkspaceGroup>(*m_server, *this);
   }
@@ -149,6 +149,11 @@ namespace umbriel {
   bool Output::configuredTearingAllowed() const {
     const OutputRule* rule = findOutputRule(config(), identity());
     return rule != nullptr && rule->allowTearing;
+  }
+
+  bool Output::configuredCyclicWorkspaces() const {
+    const OutputRule* rule = findOutputRule(config(), identity());
+    return rule != nullptr && rule->cyclicWorkspaces;
   }
 
   View* Output::tearingCandidate() const {
@@ -586,6 +591,9 @@ namespace umbriel {
     if (m_server->sessionLocked()) {
       m_server->updateLockBlank();
     }
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
+    }
     wlr_output_schedule_frame(m_output);
   }
 
@@ -611,6 +619,9 @@ namespace umbriel {
         "output '{}': {} by output management, power {}", m_output->name, desktopEnabled() ? "enabled" : "disabled",
         m_output->enabled ? "on" : "off"
     );
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
+    }
   }
 
   bool Output::setPowered(bool powered) {
@@ -637,6 +648,9 @@ namespace umbriel {
       }
       wlr_output_schedule_frame(m_output);
       m_server->scheduleDisplacedViewRestore();
+    }
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
     }
     m_server->updateOutputManagerConfig();
     return true;
@@ -707,16 +721,14 @@ namespace umbriel {
       wlr_scene_node_destroy(&m_optimizedBlur->node);
       m_optimizedBlur = nullptr;
     }
-    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot, m_pinnedShadowRoot}) {
+    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot}) {
       if (root != nullptr) {
         wlr_scene_node_destroy(&root->node);
       }
     }
     m_viewRoot = nullptr;
-    m_tiledCloseRoot = nullptr;
     m_fullscreenRoot = nullptr;
     m_pinnedRoot = nullptr;
-    m_pinnedShadowRoot = nullptr;
   }
 
   wlr_scene_tree* Output::layerTree(uint32_t layer) const {
@@ -797,7 +809,7 @@ namespace umbriel {
         .width = outputArea.width,
         .height = outputArea.height,
     };
-    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot, m_pinnedShadowRoot}) {
+    for (wlr_scene_tree* root : {m_viewRoot, m_fullscreenRoot, m_pinnedRoot}) {
       wlr_scene_tree_set_clip(root, &outputBox);
     }
 
@@ -928,6 +940,14 @@ namespace umbriel {
     if (m_server->sessionLocked()) {
       m_server->updateLockBlank();
     }
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputStateChanged(*this);
+    }
+    wlr_output_schedule_frame(m_output);
+  }
+
+  void Output::scheduleFullFrame() {
+    wlr_damage_ring_add_whole(&m_sceneOutput->damage_ring);
     wlr_output_schedule_frame(m_output);
   }
 
@@ -988,8 +1008,7 @@ namespace umbriel {
     }
     timespec now{};
     clock_gettime(CLOCK_MONOTONIC, &now);
-    const uint64_t nowMsec = static_cast<uint64_t>(now.tv_sec) * 1000 + static_cast<uint64_t>(now.tv_nsec) / 1'000'000;
-    m_server->tickAnimations(nowMsec);
+    m_server->tickAnimations(m_server->animationClockMsec());
 
     // Surface commits reset scene-buffer opacity to the protocol alpha. Repair
     // pending rule opacity after every commit listener and before composition.
@@ -1066,7 +1085,14 @@ namespace umbriel {
     // "nothing to render" path, they never commit again -> damage stays clean -> wlr_scene_output_needs_frame returns
     // false forever -> compositor parks in epoll_wait. (Reproducible with any mailbox/FIFO Vulkan game.)
     bool commitFailed = false;
-    if (wlr_scene_output_needs_frame(m_sceneOutput) || m_gammaDirty) {
+    const bool sceneChanged = wlr_scene_output_needs_frame(m_sceneOutput);
+    if (sceneChanged) {
+      // Scene motion under a stationary cursor must reach the client before its next press.
+      if (Cursor* cursor = m_server->cursor()) {
+        cursor->refreshPointerContents(this);
+      }
+    }
+    if (sceneChanged || m_gammaDirty) {
       m_inFrame = true;
       UMBRIEL_ZONE("Output::render");
 
@@ -1143,6 +1169,9 @@ namespace umbriel {
           ) {
             m_tearingFallbackReason = "recovered with regular page flip";
           }
+          if (SessionLock* lock = m_server->sessionLock()) {
+            lock->handleOutputCommit(*this, m_output->commit_seq);
+          }
         } else if (commitTearing) {
           m_tearingFallbackReason = "async page flip commit failed";
         } else if (hasBuffer && m_tearingRecovery.regularCommitPending()) {
@@ -1183,6 +1212,10 @@ namespace umbriel {
       break;
     }
 
+    if (Ipc* ipc = m_server->ipc()) {
+      ipc->notifyOutputFrame(*this);
+    }
+
     // Unconditional: see comment above. Never gate this on commit success.
     wlr_scene_output_send_frame_done(m_sceneOutput, &now);
   }
@@ -1208,12 +1241,18 @@ namespace umbriel {
     if ((event->state->committed & (WLR_OUTPUT_STATE_MODE | WLR_OUTPUT_STATE_ENABLED)) != 0) {
       markDirty(Dirty::LayerArrange | Dirty::Banner | Dirty::Backdrop);
       m_gammaDirty = true;
+      if (SessionLock* lock = m_server->sessionLock()) {
+        lock->handleOutputStateChanged(*this);
+      }
     }
     wlr_output_schedule_frame(m_output);
   }
 
   void Output::handlePresent(void* data) {
     const auto* event = static_cast<const wlr_output_event_present*>(data);
+    if (SessionLock* lock = m_server->sessionLock()) {
+      lock->handleOutputPresent(*this, event->commit_seq, event->presented);
+    }
     if (!m_trackingPresentation || event->commit_seq != m_trackedPresentationCommitSeq) {
       return;
     }

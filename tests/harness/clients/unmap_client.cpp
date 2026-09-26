@@ -19,6 +19,8 @@
 // from stdin, after the child has mapped.
 // FULLSCREEN_ON_STDIN makes `f` request fullscreen and `u` request windowed state.
 // FILL_COLOR=<ARGB> paints the buffer that colour (default 0xFF5577AA), so screenshots can tell windows apart.
+// RESIZE_FILL_COLOR=<ARGB> maps at the first configured size, then redraws at every later configured size in that
+// colour, the way a real client follows its tile.
 
 #include "color-management-v1-client-protocol.h"
 #include "content-type-v1-client-protocol.h"
@@ -34,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <poll.h>
 #include <print>
 #include <sys/mman.h>
@@ -107,6 +110,7 @@ namespace {
     bool requestMaximized = false;
     bool requestMaximizedAfterConfigure = false;
     bool requestMaximizedAfterMap = false;
+    bool requestMaximizedAfterFrame = false;
     bool maximizeRequested = false;
     bool logConfigures = false;
     xdg_toplevel* parentOnFirstConfigure = nullptr;
@@ -130,6 +134,9 @@ namespace {
     bool metadataUpdated = false;
     int tearingHint = -1;
     uint32_t fillColor = 0xFF5577AA;
+    std::optional<uint32_t> resizeFillColor;
+    int configuredWidth = 0;
+    int configuredHeight = 0;
     const char* title = "unmap-client";
     const char* appId = nullptr;
     const char* remapAppId = nullptr;
@@ -353,10 +360,40 @@ namespace {
     return waitForAuxiliaryToplevel(state, window);
   }
 
+  // Sends the restored maximize one compositor dispatch after the mapping commit and before acknowledging the
+  // configure that answers it, the order kitty uses.
+  void maximizeAfterFrameDone(void* data, wl_callback* callback, uint32_t /*time*/) {
+    auto& state = *static_cast<State*>(data);
+    wl_callback_destroy(callback);
+    xdg_toplevel_set_maximized(state.toplevel);
+    wl_surface_commit(state.surface);
+    wl_display_flush(state.display);
+    std::println("maximize-after-frame");
+    std::fflush(stdout);
+  }
+
+  constexpr wl_callback_listener kMaximizeAfterFrameListener = {.done = maximizeAfterFrameDone};
+
   void xdgSurfaceConfigure(void* data, xdg_surface* xdgSurface, uint32_t serial) {
     auto& state = *static_cast<State*>(data);
     xdg_surface_ack_configure(xdgSurface, serial);
+    const bool followSize = state.resizeFillColor
+        && state.configuredWidth > 0
+        && state.configuredHeight > 0
+        && (state.configuredWidth != state.width || state.configuredHeight != state.height);
+    if (followSize) {
+      if (state.mapped) {
+        state.fillColor = *state.resizeFillColor;
+      }
+      state.width = state.configuredWidth;
+      state.height = state.configuredHeight;
+      state.buffer = createBuffer(state, state.width, state.height);
+    }
     if (state.mapped) {
+      if (followSize) {
+        wl_surface_attach(state.surface, state.buffer.resource, 0, 0);
+        wl_surface_damage_buffer(state.surface, 0, 0, state.width, state.height);
+      }
       // Apply later toplevel state transitions, such as leaving fullscreen. Acknowledging the configure without a
       // surface commit leaves the requested state pending forever.
       wl_surface_commit(state.surface);
@@ -387,6 +424,10 @@ namespace {
       wl_surface_commit(state.surface);
       state.maximizeRequested = true;
     }
+    if (state.requestMaximizedAfterFrame && !state.maximizeRequested) {
+      wl_callback_add_listener(wl_display_sync(state.display), &kMaximizeAfterFrameListener, &state);
+      state.maximizeRequested = true;
+    }
     if (state.requestFullscreen && !state.fullscreenRequested) {
       xdg_toplevel_set_fullscreen(state.toplevel, nullptr);
       wl_surface_commit(state.surface);
@@ -402,6 +443,8 @@ namespace {
 
   void toplevelConfigure(void* data, xdg_toplevel*, int32_t width, int32_t height, wl_array* states) {
     auto& state = *static_cast<State*>(data);
+    state.configuredWidth = width;
+    state.configuredHeight = height;
     bool fullscreen = false;
     if (state.logConfigures) {
       std::println("configured-size={}x{}", width, height);
@@ -712,6 +755,7 @@ int main(int argc, char** argv) {
   state.requestMaximized = std::getenv("REQUEST_MAXIMIZED") != nullptr;
   state.requestMaximizedAfterConfigure = std::getenv("REQUEST_MAXIMIZED_AFTER_CONFIGURE") != nullptr;
   state.requestMaximizedAfterMap = std::getenv("REQUEST_MAXIMIZED_AFTER_MAP") != nullptr;
+  state.requestMaximizedAfterFrame = std::getenv("REQUEST_MAXIMIZED_AFTER_FRAME") != nullptr;
   state.logConfigures = std::getenv("LOG_CONFIGURES") != nullptr;
   state.requestFullscreen = std::getenv("REQUEST_FULLSCREEN") != nullptr;
   state.requestHdr = std::getenv("COLOR_HDR") != nullptr;
@@ -739,6 +783,16 @@ int main(int argc, char** argv) {
       return EXIT_FAILURE;
     }
     state.fillColor = static_cast<uint32_t>(value);
+  }
+  if (const char* fill = std::getenv("RESIZE_FILL_COLOR")) {
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long value = std::strtoul(fill, &end, 0);
+    if (*fill == '\0' || end == nullptr || *end != '\0' || errno != 0 || value > 0xFFFFFFFFUL) {
+      std::println(stderr, "unmap-client: RESIZE_FILL_COLOR must be a 32-bit ARGB value");
+      return EXIT_FAILURE;
+    }
+    state.resizeFillColor = static_cast<uint32_t>(value);
   }
   if (argc > 2) {
     state.width = std::max(1, std::atoi(argv[2]));

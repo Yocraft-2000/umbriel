@@ -6,7 +6,6 @@
 #include <span>
 #include <vector>
 
-using umbriel::boxesOverlap;
 using umbriel::interpolateBox;
 using umbriel::keepsSeparation;
 using umbriel::MotionBox;
@@ -17,6 +16,14 @@ namespace {
 
   bool sameBox(const wlr_box& a, const wlr_box& b) {
     return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+  }
+
+  // True when the interiors intersect; touching edges do not count.
+  bool overlaps(const wlr_box& a, const wlr_box& b) {
+    if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) {
+      return false;
+    }
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
   }
 
   // The largest gap separating two boxes along one axis; negative when they overlap on both.
@@ -32,7 +39,7 @@ namespace {
         for (size_t j = i + 1; j < members.size(); ++j) {
           const wlr_box a = interpolateBox(members[i].from, members[i].to, progress);
           const wlr_box b = interpolateBox(members[j].from, members[j].to, progress);
-          CHECK(!boxesOverlap(a, b));
+          CHECK(!overlaps(a, b));
           CHECK(separation(a, b) >= minGap);
         }
       }
@@ -72,13 +79,6 @@ UMBRIEL_TEST(interpolateBoxEdgesMoveMonotonically) {
     lastLeft = box.x;
     lastRight = box.x + box.width;
   }
-}
-
-UMBRIEL_TEST(boxesOverlapIgnoresTouchingEdges) {
-  CHECK(!boxesOverlap({0, 0, 10, 10}, {10, 0, 10, 10}));
-  CHECK(!boxesOverlap({0, 0, 10, 10}, {0, 10, 10, 10}));
-  CHECK(boxesOverlap({0, 0, 10, 10}, {9, 9, 10, 10}));
-  CHECK(!boxesOverlap({0, 0, 0, 10}, {0, 0, 10, 10}));
 }
 
 UMBRIEL_TEST(establishedColumnsStaySeparateDuringInsertionReflow) {

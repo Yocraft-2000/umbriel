@@ -49,12 +49,8 @@ namespace umbriel {
     // is what keeps a scrolled or animating view from rendering on, or entering, a neighbouring output. Positioned at
     // the layout origin, so root-local coordinates are layout coordinates.
     [[nodiscard]] wlr_scene_tree* viewRoot() const { return m_viewRoot; }
-    // Ordinary tiled close snapshots live below every workspace tree. Their captured windows_out canvas remains
-    // stable while live survivors reflow over it.
-    [[nodiscard]] wlr_scene_tree* tiledCloseRoot() const { return m_tiledCloseRoot; }
     [[nodiscard]] wlr_scene_tree* fullscreenRoot() const { return m_fullscreenRoot; }
     [[nodiscard]] wlr_scene_tree* pinnedRoot() const { return m_pinnedRoot; }
-    [[nodiscard]] wlr_scene_tree* pinnedShadowRoot() const { return m_pinnedShadowRoot; }
     // Full logical box at the live layout origin, or the last arranged origin while temporarily removed.
     [[nodiscard]] wlr_box layoutBox() const;
     [[nodiscard]] wlr_box usableArea() const;
@@ -89,6 +85,8 @@ namespace umbriel {
     [[nodiscard]] float configuredSdrWhite() const;
     [[nodiscard]] bool configuredDirectScanoutEnabled() const;
     [[nodiscard]] bool configuredTearingAllowed() const;
+    // Whether a workspace step wraps around the ends of this output's inventory.
+    [[nodiscard]] bool configuredCyclicWorkspaces() const;
     [[nodiscard]] bool tearingRequested() const;
     [[nodiscard]] bool lastCommitTearing() const { return m_lastCommitTearing; }
     [[nodiscard]] const std::optional<uint32_t>& lastPresentationFlags() const { return m_lastPresentationFlags; }
@@ -108,6 +106,7 @@ namespace umbriel {
     void updateHdr();
     void forgetHdrView(const View* view);
     void markBlurBackgroundDirty();
+    void scheduleFullFrame();
     void handleExternalConfigChange();
     // Tell one surface this output's scale (fractional + integer preferred buffer scale). Both wlroots calls dedup
     // internally, so re-notifying is free. Shaped as a wlr_surface_iterator_func_t so shell for_each helpers can walk a
@@ -151,10 +150,8 @@ namespace umbriel {
     wlr_scene_tree* m_layerTrees[kLayerCount]{};
     wlr_scene_tree* m_popupTree = nullptr;
     wlr_scene_tree* m_viewRoot = nullptr;
-    wlr_scene_tree* m_tiledCloseRoot = nullptr;
     wlr_scene_tree* m_fullscreenRoot = nullptr;
     wlr_scene_tree* m_pinnedRoot = nullptr;
-    wlr_scene_tree* m_pinnedShadowRoot = nullptr;
     wlr_scene_optimized_blur* m_optimizedBlur = nullptr;
     std::unique_ptr<WorkspaceGroup> m_workspaceGroup;
     wlr_box m_localUsableArea{};
