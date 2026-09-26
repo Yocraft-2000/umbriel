@@ -3227,6 +3227,8 @@ namespace umbriel {
     if (m_workspace != nullptr && m_workspace->focusedView() == this) {
       View* replacement = m_workspace->focusReplacementForRemoval(this);
       if (replacement != nullptr) {
+        // The column focus came from is leaving the strip, so the survivor is fitted into view instead of centered.
+        m_workspace->forgetFocusSide();
         if (m_workspace->active() && !m_server->sessionLocked()) {
           m_server->focusView(replacement, FocusReason::Directional);
         } else {

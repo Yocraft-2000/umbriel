@@ -726,11 +726,34 @@ namespace umbriel {
     revealColumn(columnIndex, viewportPrimary, alwaysCentersFocus());
   }
 
-  void ScrollingLayout::activateColumn(int columnIndex, int viewportPrimary) {
+  // `previousIndex` is where the column sat before it moved, which is the side focus came from. A move keeps focus, so
+  // OnOverflow cannot read an index that no longer holds the column. -1 leaves the side as it was.
+  void ScrollingLayout::activateColumn(int columnIndex, int viewportPrimary, int previousIndex) {
+    if (previousIndex >= 0 && previousIndex < static_cast<int>(m_columns.size()) && previousIndex != columnIndex) {
+      m_lastFocusedColumn = previousIndex;
+    }
     revealColumn(columnIndex, viewportPrimary, shouldCenterFocusedColumn(columnIndex, viewportPrimary));
     if (columnIndex >= 0) {
       m_lastFocusedColumn = columnIndex;
     }
+  }
+
+  // Re-runs the centering decision for a column whose extent just changed, so a width change is judged by the geometry it
+  // produced. Focus did not move, so the column it has to share the viewport with stands in for the missing side.
+  void ScrollingLayout::reevaluateColumn(int columnIndex, int viewportPrimary) {
+    const int columnCount = static_cast<int>(m_columns.size());
+    if (columnIndex < 0 || columnIndex >= columnCount) {
+      return;
+    }
+    m_lastFocusedColumn = columnIndex + 1 < columnCount ? columnIndex + 1 : columnIndex - 1;
+    const bool center = shouldCenterFocusedColumn(columnIndex, viewportPrimary);
+    // A pair that fits again makes an earlier centering stale, and the fit would keep it, since the column is already
+    // fully visible. Only OnOverflow has an opinion here, so only it gives the rest up.
+    if (!center && m_config->scrolling.centerFocused == CenterFocusedColumn::OnOverflow) {
+      m_centeredRest = false;
+    }
+    revealColumn(columnIndex, viewportPrimary, center);
+    m_lastFocusedColumn = columnIndex;
   }
 
   void ScrollingLayout::snapVisible(int columnIndex, int viewportPrimary) {

@@ -2031,6 +2031,7 @@ namespace umbriel {
     if (workspace != nullptr && workspace->focusedView() == view) {
       View* replacement = workspace->focusReplacementForRemoval(view);
       if (replacement != nullptr) {
+        workspace->forgetFocusSide();
         if (workspace->active()) {
           m_server->focusView(replacement, FocusReason::Startup);
         } else {

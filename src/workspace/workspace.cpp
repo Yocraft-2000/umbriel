@@ -276,6 +276,9 @@ namespace umbriel {
     if (m_focusedView == view) {
       m_focusedView = replacement;
     }
+    if (replacement != nullptr) {
+      forgetFocusSide();
+    }
     // Re-anchor the strip on whatever is focused now, the way every other focus-moving operation does. Activating an
     // adjacent column and fitting the view prevents the old scroll offset from leaving a survivor cut off at the left
     // edge while empty space opens on the right.
@@ -1352,7 +1355,7 @@ namespace umbriel {
       return false;
     }
     m_layout->moveColumn(current, target);
-    ensureFocusedVisible();
+    revealMovedFocusedColumn(current);
     markArrange();
     return true;
   }
@@ -1400,7 +1403,7 @@ namespace umbriel {
       return false;
     }
     m_layout->moveColumn(current, 0);
-    ensureFocusedVisible();
+    revealMovedFocusedColumn(current);
     markArrange();
     return true;
   }
@@ -1415,7 +1418,7 @@ namespace umbriel {
       return false;
     }
     m_layout->moveColumn(current, last);
-    ensureFocusedVisible();
+    revealMovedFocusedColumn(current);
     markArrange();
     return true;
   }
@@ -1452,7 +1455,7 @@ namespace umbriel {
       return false;
     }
     wlr_xdg_toplevel_set_maximized(m_focusedView->toplevel(), false);
-    ensureFocusedVisible();
+    reevaluateFocusedColumn();
     markArrange();
     return true;
   }
@@ -1493,7 +1496,7 @@ namespace umbriel {
       return false;
     }
     wlr_xdg_toplevel_set_maximized(m_focusedView->toplevel(), false);
-    ensureFocusedVisible();
+    reevaluateFocusedColumn();
     markArrange();
     return true;
   }
@@ -1595,7 +1598,7 @@ namespace umbriel {
     const double travel = outwardNegative ? -pixels : pixels;
     session->applyDelta(horizontal ? travel : 0.0, horizontal ? 0.0 : travel, usable);
     wlr_xdg_toplevel_set_maximized(view->toplevel(), false);
-    ensureFocusedVisible();
+    reevaluateFocusedColumn();
     markArrange();
     return true;
   }
@@ -1622,7 +1625,7 @@ namespace umbriel {
     }
     const bool fullWidth = m_layout->toggleFullWidth(column);
     wlr_xdg_toplevel_set_maximized(m_focusedView->toplevel(), fullWidth);
-    ensureFocusedVisible();
+    reevaluateFocusedColumn();
     markArrange();
     return true;
   }
@@ -1712,6 +1715,28 @@ namespace umbriel {
       return;
     }
     scrolling->activateColumn(scrolling->columnOf(m_focusedView), scrollViewportExtent());
+  }
+
+  void Workspace::reevaluateFocusedColumn() {
+    ScrollingLayout* scrolling = scrollingLayout();
+    if (scrolling == nullptr || m_group == nullptr || m_group->output() == nullptr) {
+      return;
+    }
+    scrolling->reevaluateColumn(scrolling->columnOf(m_focusedView), scrollViewportExtent());
+  }
+
+  void Workspace::revealMovedFocusedColumn(int previousColumn) {
+    ScrollingLayout* scrolling = scrollingLayout();
+    if (scrolling == nullptr || m_group == nullptr || m_group->output() == nullptr) {
+      return;
+    }
+    scrolling->activateColumn(scrolling->columnOf(m_focusedView), scrollViewportExtent(), previousColumn);
+  }
+
+  void Workspace::forgetFocusSide() {
+    if (ScrollingLayout* scrolling = scrollingLayout()) {
+      scrolling->forgetFocusSide();
+    }
   }
 
   void Workspace::snapVisible(const View* view) {

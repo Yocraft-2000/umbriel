@@ -60,7 +60,10 @@ namespace umbriel {
     // while the lane still exists.
     [[nodiscard]] double scrollShiftForColumnRemoval(int columnIndex, int viewportPrimary) const;
     void ensureVisible(int columnIndex, int viewportPrimary);
-    void activateColumn(int columnIndex, int viewportPrimary);
+    void activateColumn(int columnIndex, int viewportPrimary, int previousIndex = -1);
+    void forgetFocusSide() { m_lastFocusedColumn = -1; }
+    // Re-applies the centering policy to a column whose extent just changed.
+    void reevaluateColumn(int columnIndex, int viewportPrimary);
     void snapVisible(int columnIndex, int viewportPrimary);
     [[nodiscard]] double scrollAmountToEnsureVisible(int columnIndex, int viewportPrimary) const;
     void arrange(const wlr_box& usable) override;

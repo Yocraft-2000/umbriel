@@ -129,6 +129,11 @@ When focus moves to a hidden column, Umbriel scrolls just far enough to reveal
 it. Dragged windows show an insertion preview and can be dropped into a new or
 existing column.
 
+With `center_focused = "on_overflow"`, a column is centered when it and the
+column next to it cannot share the viewport, and a width change that makes them
+fit returns it to the edge. Moving, closing or resizing the focused column runs
+the same rule again.
+
 Closing a focused column moves focus to the nearest surviving column. When that
 column contains stacked windows, Umbriel restores its most recently focused
 member instead of always selecting its first row.
