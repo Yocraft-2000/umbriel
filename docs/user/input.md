@@ -112,6 +112,7 @@ settings are reported in the log.
 | --- | --- |
 | `tap` | Enable tap-to-click. |
 | `natural_scroll` | Reverse scrolling and three-finger gesture direction. |
+| `left_handed` | Swap the primary and secondary buttons. |
 | `accel_profile` | Use `"flat"`, `"adaptive"`, or a custom acceleration curve. |
 | `sensitivity` | Pointer speed from -1.0 to 1.0. |
 | `scroll_factor` | Application scroll multiplier from 0.1 to 10.0. |
@@ -144,7 +145,8 @@ scroll_wheel_step = 60
 ```
 
 `sensitivity` ranges from -1.0 to 1.0. `scroll_wheel_step` accepts 1 to 1000
-logical pixels per layout-scroll action.
+logical pixels per layout-scroll action. `left_handed` swaps the primary and
+secondary buttons; omit it to preserve the device default.
 
 Omitting `accel_profile` preserves the device default. A custom libinput curve
 uses this form:
