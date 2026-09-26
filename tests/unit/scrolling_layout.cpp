@@ -1031,9 +1031,10 @@ UMBRIEL_TEST(onOverflowCentersAMovedColumn) {
   CHECK(fixture.layout.centeredRest());
 }
 
-// Closing a window hands focus to a neighbor, but the column focus came from is leaving the strip, so there is no side
-// left to measure: the pair would be the one about to stop existing. The survivor is fitted instead of centered.
-UMBRIEL_TEST(onOverflowFitsTheReplacementOfAClosedColumn) {
+// Closing the focused column leaves no side of its own, so the survivor inherits the side the dying column was on and is
+// judged against the column that took its place. The reveal focus triggers cannot do that while the dying column is still
+// in the layout, so it only fits the survivor, and the removal re-judges it on the geometry it leaves.
+UMBRIEL_TEST(onOverflowJudgesTheSurvivorOfAClosedColumnAgainstItsReplacement) {
   Fixture fixture;
   fixture.config.scrolling.centerFocused = CenterFocusedColumn::OnOverflow;
   fixture.addColumns(3);
@@ -1044,13 +1045,19 @@ UMBRIEL_TEST(onOverflowFitsTheReplacementOfAClosedColumn) {
   // Focusing column 1 centers it: 700 + gap + 700 overruns the 1260 viewport.
   fixture.layout.activateColumn(0, kViewport);
   fixture.layout.activateColumn(1, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), 432.0);
 
-  // Closing column 1: focus falls to column 0 and the side is forgotten, so column 0 lands flush left.
-  fixture.layout.forgetFocusSide();
+  // Closing column 1: focus falls to column 0, which only gets fitted while column 1 is still in the layout.
+  fixture.layout.noteRemovalOfFocusedColumn(1);
   fixture.layout.activateColumn(0, kViewport);
-
   CHECK_EQ(fixture.layout.scroll(), 0.0);
   CHECK(!fixture.layout.centeredRest());
+
+  // Column 2 took the removed column's place, and 700 + gap + 700 still overruns the viewport.
+  fixture.layout.removeView(stub(1));
+  fixture.layout.reevaluateAfterRemoval(0, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), -280.0);
+  CHECK(fixture.layout.centeredRest());
 }
 
 // A width change has to be judged by the geometry it produced, not by the one the last focus step saw, or the focused
@@ -1093,6 +1100,41 @@ UMBRIEL_TEST(onOverflowRecenterAfterTheLastFocusedColumnWidens) {
 
   CHECK_EQ(fixture.layout.scroll(), 356.0);
   CHECK(fixture.layout.centeredRest());
+}
+
+// A width change is judged by the pair the focus move was judged by, not by a neighbor picked at resize time: with
+// three columns in the way, the pair that overflows is the one focus came from.
+UMBRIEL_TEST(onOverflowMeasuresTheSideFocusCameFromAfterAWidthChange) {
+  Fixture fixture;
+  fixture.config.scrolling.centerFocused = CenterFocusedColumn::OnOverflow;
+  fixture.addColumns(3);
+  CHECK(fixture.layout.setWidthFromPixels(0, kViewport, 800));
+  CHECK(fixture.layout.setWidthFromPixels(1, kViewport, 400));
+  CHECK(fixture.layout.setWidthFromPixels(2, kViewport, 500));
+
+  // 800 + gap + 400 fits, so focusing column 1 from column 0 leaves it flush right.
+  fixture.layout.activateColumn(0, kViewport);
+  fixture.layout.activateColumn(1, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), 0.0);
+
+  // 800 + gap + 500 overruns the viewport while the pair with column 2 still fits, so the focused column centers on the
+  // side focus came from.
+  CHECK(fixture.layout.setWidthFromPixels(1, kViewport, 500));
+  fixture.layout.reevaluateColumn(1, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), 432.0);
+  CHECK(fixture.layout.centeredRest());
+
+  // The side is remembered, so the next change is judged by the same pair rather than by a new one.
+  CHECK(fixture.layout.setWidthFromPixels(1, kViewport, 700));
+  fixture.layout.reevaluateColumn(1, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), 532.0);
+  CHECK(fixture.layout.centeredRest());
+
+  // Back to a pair that fits: the two go back side by side at the edge focus came from, where the focus move left them.
+  CHECK(fixture.layout.setWidthFromPixels(1, kViewport, 400));
+  fixture.layout.reevaluateColumn(1, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), 0.0);
+  CHECK(!fixture.layout.centeredRest());
 }
 
 // A rest under Never is the user's own, so a width change must not undo a column-center.

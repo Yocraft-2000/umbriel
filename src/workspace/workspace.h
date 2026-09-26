@@ -183,9 +183,9 @@ namespace umbriel {
     // Re-applies the centering policy after the focused column's extent changed, instead of only fitting it.
     void reevaluateFocusedColumn();
     void revealMovedFocusedColumn(int previousColumn);
-    // A removal hands focus to a survivor, and the column focus came from is leaving: there is no side for OnOverflow to
-    // measure, so the reveal fits instead of centering.
-    void forgetFocusSide();
+    // A removal hands focus to a survivor while the column focus came from is leaving, so the reveal that follows can
+    // only fit: the removal itself is what judges the pair.
+    void noteRemovalOfFocusedColumn(int columnIndex);
     void snapVisible(const View* view);
     [[nodiscard]] double scrollFractionToReveal(const View* view) const;
     void applyVisibility();

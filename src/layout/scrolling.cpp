@@ -244,6 +244,9 @@ namespace umbriel {
       m_centeredRest = false;
     }
     m_lastFocusedColumn = -1;
+    m_focusSide = FocusSide::None;
+    m_removedFocusedColumn = -1;
+    m_pendingRemovalReevaluate = false;
     m_lastAvailableCross = 0;
     return true;
   }
@@ -562,8 +565,36 @@ namespace umbriel {
     }
     if (column.views.empty()) {
       m_columns.erase(m_columns.begin() + columnIndex);
+      if (m_removedFocusedColumn == columnIndex) {
+        m_pendingRemovalReevaluate = true;
+      }
+    } else if (m_removedFocusedColumn == columnIndex) {
+      // A row left a stacked column standing, so no survivor inherits the side and the strip keeps its resting place.
+      m_removedFocusedColumn = -1;
     }
     std::erase_if(m_targets, [view](const Target& target) { return target.view == view; });
+  }
+
+  // The dying column is still in the layout here, so a reveal now would judge a pair containing the column about to
+  // disappear. Forgetting the side is all that buys; the detach judges the pair on the geometry the removal leaves.
+  void ScrollingLayout::noteRemovalOfFocusedColumn(int columnIndex) {
+    if (columnIndex < 0) {
+      return;
+    }
+    m_removedFocusedColumn = columnIndex;
+    m_focusSide = FocusSide::None;
+    m_lastFocusedColumn = -1;
+  }
+
+  void ScrollingLayout::reevaluateAfterRemoval(int columnIndex, int viewportPrimary) {
+    if (!m_pendingRemovalReevaluate || columnIndex < 0) {
+      return;
+    }
+    m_pendingRemovalReevaluate = false;
+    // The survivor inherits the side the removed column was on, as a focus move off that column would have had.
+    m_focusSide = m_removedFocusedColumn > columnIndex ? FocusSide::FromRight : FocusSide::FromLeft;
+    m_removedFocusedColumn = -1;
+    reevaluateColumn(columnIndex, viewportPrimary);
   }
 
   void ScrollingLayout::moveColumn(int from, int to) {
@@ -620,37 +651,55 @@ namespace umbriel {
     return m_config->scrolling.centerFocused == CenterFocusedColumn::Always;
   }
 
-  bool ScrollingLayout::shouldCenterFocusedColumn(int columnIndex, int viewportPrimary) const {
+  bool ScrollingLayout::shouldCenterFocusedColumn(int columnIndex, int viewportPrimary, FocusSide side) const {
     switch (m_config->scrolling.centerFocused) {
     case CenterFocusedColumn::Always:
       return true;
     case CenterFocusedColumn::OnOverflow:
-      return shouldCenterOnOverflow(columnIndex, viewportPrimary);
+      return shouldCenterOnOverflow(columnIndex, viewportPrimary, side);
     case CenterFocusedColumn::Never:
       break;
     }
     return false;
   }
 
+  ScrollingLayout::FocusSide ScrollingLayout::focusSideFrom(int columnIndex) const {
+    if (m_lastFocusedColumn < 0 || m_lastFocusedColumn >= static_cast<int>(m_columns.size()) ||
+        m_lastFocusedColumn == columnIndex) {
+      return FocusSide::None;
+    }
+    return m_lastFocusedColumn > columnIndex ? FocusSide::FromRight : FocusSide::FromLeft;
+  }
+
   // Centers the column focus is moving to when it and the column on the side focus came from cannot share the
   // viewport. The reference is the immediate neighbor, not the previously focused column, so a jump across the strip
   // is judged by the same pair spacing as a step.
-  bool ScrollingLayout::shouldCenterOnOverflow(int columnIndex, int viewportPrimary) const {
+  bool ScrollingLayout::shouldCenterOnOverflow(int columnIndex, int viewportPrimary, FocusSide side) const {
     const int columnCount = static_cast<int>(m_columns.size());
-    if (columnIndex < 0 || columnIndex >= columnCount) {
+    if (columnIndex < 0 || columnIndex >= columnCount || side == FocusSide::None) {
       return false;
     }
-    if (m_lastFocusedColumn < 0 || m_lastFocusedColumn >= columnCount || m_lastFocusedColumn == columnIndex) {
-      return false;
-    }
-    const int neighbor =
-        m_lastFocusedColumn > columnIndex ? std::min(columnIndex + 1, columnCount - 1) : std::max(columnIndex - 1, 0);
+    const int neighbor = focusNeighbor(columnIndex, side);
     // Leading edge of the first column to trailing edge of the second, so the pair's own widths both count.
     const int first = std::min(columnIndex, neighbor);
     const int last = std::max(columnIndex, neighbor);
     const int span =
         columnX(last, viewportPrimary) - columnX(first, viewportPrimary) + columnWidth(last, viewportPrimary);
     return span > viewportPrimary;
+  }
+
+  int ScrollingLayout::focusNeighbor(int columnIndex, FocusSide side) const {
+    const int columnCount = static_cast<int>(m_columns.size());
+    return side == FocusSide::FromRight ? std::min(columnIndex + 1, columnCount - 1) : std::max(columnIndex - 1, 0);
+  }
+
+  double ScrollingLayout::pairScroll(int columnIndex, int viewportPrimary, int neighbor) const {
+    const double max = static_cast<double>(std::max(0, totalWidth(viewportPrimary) - viewportPrimary));
+    const int x = columnX(neighbor, viewportPrimary);
+    const double edge = neighbor < columnIndex ? static_cast<double>(x)
+                                               : static_cast<double>(x + columnWidth(neighbor, viewportPrimary)) -
+                                                     static_cast<double>(viewportPrimary);
+    return std::clamp(edge, 0.0, max);
   }
 
   double
@@ -691,7 +740,7 @@ namespace umbriel {
     if (viewportPrimary <= 0) {
       return 0.0;
     }
-    const bool centered = shouldCenterFocusedColumn(columnIndex, viewportPrimary);
+    const bool centered = shouldCenterFocusedColumn(columnIndex, viewportPrimary, focusSideFrom(columnIndex));
     return std::abs(targetScrollForEnsureVisible(columnIndex, viewportPrimary, centered) - m_scroll)
         / static_cast<double>(viewportPrimary);
   }
@@ -732,27 +781,35 @@ namespace umbriel {
     if (previousIndex >= 0 && previousIndex < static_cast<int>(m_columns.size()) && previousIndex != columnIndex) {
       m_lastFocusedColumn = previousIndex;
     }
-    revealColumn(columnIndex, viewportPrimary, shouldCenterFocusedColumn(columnIndex, viewportPrimary));
+    m_focusSide = focusSideFrom(columnIndex);
+    revealColumn(columnIndex, viewportPrimary, shouldCenterFocusedColumn(columnIndex, viewportPrimary, m_focusSide));
     if (columnIndex >= 0) {
       m_lastFocusedColumn = columnIndex;
     }
   }
 
-  // Re-runs the centering decision for a column whose extent just changed, so a width change is judged by the geometry it
-  // produced. Focus did not move, so the column it has to share the viewport with stands in for the missing side.
+  // Re-runs the centering decision for a column whose extent just changed, so a width change is judged by the geometry
+  // it produced. The pair is the one the last activation used, focus having not moved since; with none to remember, the
+  // column after it stands in for the missing side.
   void ScrollingLayout::reevaluateColumn(int columnIndex, int viewportPrimary) {
     const int columnCount = static_cast<int>(m_columns.size());
     if (columnIndex < 0 || columnIndex >= columnCount) {
       return;
     }
-    m_lastFocusedColumn = columnIndex + 1 < columnCount ? columnIndex + 1 : columnIndex - 1;
-    const bool center = shouldCenterFocusedColumn(columnIndex, viewportPrimary);
-    // A pair that fits again makes an earlier centering stale, and the fit would keep it, since the column is already
-    // fully visible. Only OnOverflow has an opinion here, so only it gives the rest up.
-    if (!center && m_config->scrolling.centerFocused == CenterFocusedColumn::OnOverflow) {
+    const FocusSide side = m_focusSide == FocusSide::None
+                               ? (columnIndex + 1 < columnCount ? FocusSide::FromRight : FocusSide::FromLeft)
+                               : m_focusSide;
+    const bool center = shouldCenterFocusedColumn(columnIndex, viewportPrimary, side);
+    if (center) {
+      revealColumn(columnIndex, viewportPrimary, center);
+    } else if (m_config->scrolling.centerFocused == CenterFocusedColumn::OnOverflow && m_centeredRest) {
+      // The pair fits again, which makes an earlier centering stale, and a plain fit would keep it since the column is
+      // already fully visible. Show the pair at the edge it reads from, which is where the focus move left the strip.
       m_centeredRest = false;
+      m_scroll = pairScroll(columnIndex, viewportPrimary, focusNeighbor(columnIndex, side));
+    } else {
+      revealColumn(columnIndex, viewportPrimary, false);
     }
-    revealColumn(columnIndex, viewportPrimary, center);
     m_lastFocusedColumn = columnIndex;
   }
 

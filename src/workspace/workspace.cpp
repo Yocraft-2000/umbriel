@@ -276,12 +276,9 @@ namespace umbriel {
     if (m_focusedView == view) {
       m_focusedView = replacement;
     }
-    if (replacement != nullptr) {
-      forgetFocusSide();
-    }
-    // Re-anchor the strip on whatever is focused now, the way every other focus-moving operation does. Activating an
-    // adjacent column and fitting the view prevents the old scroll offset from leaving a survivor cut off at the left
-    // edge while empty space opens on the right.
+    // Re-anchor the strip on whatever is focused now, the way every other focus-moving operation does. Fitting the
+    // survivor prevents the old scroll offset from leaving it cut off at the left edge while empty space opens on the
+    // right. detachFromLayout has already judged it when the focused column was the one that left.
     ensureFocusedVisible();
     markArrange();
     if (reconcile) {
@@ -553,6 +550,11 @@ namespace umbriel {
     view->endLayoutMotion();
     if (scrolling != nullptr && shift != 0.0) {
       scrolling->setScroll(scrolling->scroll() - shift);
+    }
+    if (scrolling != nullptr) {
+      // The column that just left may have been the focused one. Its survivor is judged now, against the column that
+      // took its place, which is the first moment that pair can be measured.
+      scrolling->reevaluateAfterRemoval(scrolling->columnOf(m_focusedView), scrollViewportExtent());
     }
   }
 
@@ -1733,9 +1735,9 @@ namespace umbriel {
     scrolling->activateColumn(scrolling->columnOf(m_focusedView), scrollViewportExtent(), previousColumn);
   }
 
-  void Workspace::forgetFocusSide() {
+  void Workspace::noteRemovalOfFocusedColumn(int columnIndex) {
     if (ScrollingLayout* scrolling = scrollingLayout()) {
-      scrolling->forgetFocusSide();
+      scrolling->noteRemovalOfFocusedColumn(columnIndex);
     }
   }
 

@@ -130,9 +130,10 @@ it. Dragged windows show an insertion preview and can be dropped into a new or
 existing column.
 
 With `center_focused = "on_overflow"`, a column is centered when it and the
-column next to it cannot share the viewport, and a width change that makes them
-fit returns it to the edge. Moving, closing or resizing the focused column runs
-the same rule again.
+neighbor focus came from cannot share the viewport, and a width change that
+makes them fit puts the pair back side by side at the edge focus came from.
+Closing the focused column runs the same rule with the column that took its
+place. Moving or resizing the focused column does too.
 
 Closing a focused column moves focus to the nearest surviving column. When that
 column contains stacked windows, Umbriel restores its most recently focused
