@@ -278,7 +278,7 @@ namespace umbriel {
     }
     // Re-anchor the strip on whatever is focused now, the way every other focus-moving operation does. Fitting the
     // survivor prevents the old scroll offset from leaving it cut off at the left edge while empty space opens on the
-    // right. detachFromLayout has already judged it when the focused column was the one that left.
+    // right.
     ensureFocusedVisible();
     markArrange();
     if (reconcile) {

@@ -123,7 +123,8 @@ namespace umbriel {
     [[nodiscard]] int focusNeighbor(int columnIndex, FocusSide side) const;
     // Scroll putting `columnIndex` and `neighbor` side by side at the edge `neighbor` sits on, for a pair known to fit.
     [[nodiscard]] double pairScroll(int columnIndex, int viewportPrimary, int neighbor) const;
-    // Shared body of ensureVisible and activateColumn: they differ only in which centering policy applies.
+    // Shared body of ensureVisible, activateColumn and reevaluateColumn: they differ only in which centering policy
+    // applies.
     void revealColumn(int columnIndex, int viewportPrimary, bool center);
     [[nodiscard]] bool vertical() const;
     void syncHeightWeights(Column& column);
