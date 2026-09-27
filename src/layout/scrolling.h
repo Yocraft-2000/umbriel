@@ -136,6 +136,8 @@ namespace umbriel {
     std::vector<Target> m_targets;
     double m_scroll = 0;
     bool m_centeredRest = false;
+    // Whether that rest came from the centering policy rather than from a column-center the user asked for.
+    bool m_policyCenteredRest = false;
     // Column the last activation focused, so CenterFocusedColumn::OnOverflow knows which side focus came from.
     int m_lastFocusedColumn = -1;
     // Side that activation came from, so a later width change judges the pair the focus move was judged by.

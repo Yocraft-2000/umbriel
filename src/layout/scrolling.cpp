@@ -248,6 +248,7 @@ namespace umbriel {
     m_focusSide = FocusSide::None;
     m_removedFocusedColumn = -1;
     m_pendingRemovalReevaluate = false;
+    m_policyCenteredRest = false;
     m_lastAvailableCross = 0;
     return true;
   }
@@ -293,6 +294,7 @@ namespace umbriel {
       m_scroll = std::clamp(restored, 0.0, static_cast<double>(maxScroll(viewportPrimary)));
       m_centeredRest = false;
     }
+    m_policyCenteredRest = false;
     m_pendingViewportSnapshot = nullptr;
     m_pendingViewportAnchor = nullptr;
     m_pendingViewportComplete = false;
@@ -618,6 +620,7 @@ namespace umbriel {
   void ScrollingLayout::setScroll(double scroll, bool centeredRest) {
     m_scroll = scroll;
     m_centeredRest = centeredRest;
+    m_policyCenteredRest = false;
   }
 
   bool ScrollingLayout::centerColumn(int columnIndex, int viewportPrimary) {
@@ -774,6 +777,8 @@ namespace umbriel {
   void ScrollingLayout::revealColumn(int columnIndex, int viewportPrimary, bool center) {
     const double target = targetScrollForEnsureVisible(columnIndex, viewportPrimary, center, false);
     m_centeredRest = center || (m_centeredRest && target == m_scroll);
+    // A rest the user asked for with column-center outlives a re-judgment, so keep track of who asked for this one.
+    m_policyCenteredRest = m_centeredRest && (center || m_policyCenteredRest);
     m_scroll = target;
   }
 
@@ -807,11 +812,12 @@ namespace umbriel {
         : m_focusSide;
     const bool center = shouldCenterFocusedColumn(columnIndex, viewportPrimary, side);
     if (center) {
-      revealColumn(columnIndex, viewportPrimary, center);
-    } else if (m_config->scrolling.centerFocused == CenterFocusedColumn::OnOverflow && m_centeredRest) {
-      // The pair fits again, which makes an earlier centering stale, and a plain fit would keep it since the column is
-      // already fully visible. Show the pair at the edge it reads from, which is where the focus move left the strip.
+      revealColumn(columnIndex, viewportPrimary, true);
+    } else if (m_config->scrolling.centerFocused == CenterFocusedColumn::OnOverflow && m_policyCenteredRest) {
+      // The pair fits again, so a centering the policy made is stale. A plain fit would keep it, the column being fully
+      // visible already: put the pair back at the edge it reads from, where the focus move left the strip.
       m_centeredRest = false;
+      m_policyCenteredRest = false;
       m_scroll = pairScroll(columnIndex, viewportPrimary, focusNeighbor(columnIndex, side));
     } else {
       revealColumn(columnIndex, viewportPrimary, false);
@@ -822,6 +828,7 @@ namespace umbriel {
   void ScrollingLayout::snapVisible(int columnIndex, int viewportPrimary) {
     const bool centered = alwaysCentersFocus();
     m_centeredRest = centered;
+    m_policyCenteredRest = false;
     m_scroll = targetScrollForEnsureVisible(columnIndex, viewportPrimary, centered, true);
   }
 

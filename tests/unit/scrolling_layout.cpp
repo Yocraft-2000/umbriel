@@ -1167,6 +1167,32 @@ UMBRIEL_TEST(onOverflowMeasuresTheSideFocusCameFromAfterAWidthChange) {
   CHECK(!fixture.layout.centeredRest());
 }
 
+// A column-center is the user's own, so OnOverflow gives up only the rest it took itself: a width change that keeps the
+// pair fitting must leave a manual centering where it is.
+UMBRIEL_TEST(onOverflowKeepsAManualCenteredRestAcrossAWidthChange) {
+  Fixture fixture;
+  fixture.config.scrolling.centerFocused = CenterFocusedColumn::OnOverflow;
+  fixture.addColumns(3);
+  CHECK(fixture.layout.setWidthFromPixels(0, kViewport, 700));
+  CHECK(fixture.layout.setWidthFromPixels(1, kViewport, 300));
+  CHECK(fixture.layout.setWidthFromPixels(2, kViewport, 700));
+
+  // 700 + gap + 300 fits, so focusing column 0 from column 1 leaves it flush left.
+  fixture.layout.activateColumn(1, kViewport);
+  fixture.layout.activateColumn(0, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), 0.0);
+
+  CHECK(fixture.layout.centerColumn(0, kViewport));
+  const double centered = fixture.layout.scroll();
+  CHECK(centered < 0.0);
+
+  // 800 + gap + 300 fits too, so there is no pair to judge and no centering of the policy's to take back.
+  CHECK(fixture.layout.setWidthFromPixels(0, kViewport, 800));
+  fixture.layout.reevaluateColumn(0, kViewport);
+  CHECK_EQ(fixture.layout.scroll(), centered);
+  CHECK(fixture.layout.centeredRest());
+}
+
 // A rest under Never is the user's own, so a width change must not undo a column-center.
 UMBRIEL_TEST(neverKeepsACenteredRestAcrossAWidthChange) {
   Fixture fixture;
