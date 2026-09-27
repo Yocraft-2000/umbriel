@@ -664,8 +664,9 @@ namespace umbriel {
   }
 
   ScrollingLayout::FocusSide ScrollingLayout::focusSideFrom(int columnIndex) const {
-    if (m_lastFocusedColumn < 0 || m_lastFocusedColumn >= static_cast<int>(m_columns.size()) ||
-        m_lastFocusedColumn == columnIndex) {
+    if (m_lastFocusedColumn < 0
+        || m_lastFocusedColumn >= static_cast<int>(m_columns.size())
+        || m_lastFocusedColumn == columnIndex) {
       return FocusSide::None;
     }
     return m_lastFocusedColumn > columnIndex ? FocusSide::FromRight : FocusSide::FromLeft;
@@ -696,9 +697,9 @@ namespace umbriel {
   double ScrollingLayout::pairScroll(int columnIndex, int viewportPrimary, int neighbor) const {
     const double max = static_cast<double>(std::max(0, totalWidth(viewportPrimary) - viewportPrimary));
     const int x = columnX(neighbor, viewportPrimary);
-    const double edge = neighbor < columnIndex ? static_cast<double>(x)
-                                               : static_cast<double>(x + columnWidth(neighbor, viewportPrimary)) -
-                                                     static_cast<double>(viewportPrimary);
+    const double edge = neighbor < columnIndex
+        ? static_cast<double>(x)
+        : static_cast<double>(x + columnWidth(neighbor, viewportPrimary)) - static_cast<double>(viewportPrimary);
     return std::clamp(edge, 0.0, max);
   }
 
@@ -797,8 +798,8 @@ namespace umbriel {
       return;
     }
     const FocusSide side = m_focusSide == FocusSide::None
-                               ? (columnIndex + 1 < columnCount ? FocusSide::FromRight : FocusSide::FromLeft)
-                               : m_focusSide;
+        ? (columnIndex + 1 < columnCount ? FocusSide::FromRight : FocusSide::FromLeft)
+        : m_focusSide;
     const bool center = shouldCenterFocusedColumn(columnIndex, viewportPrimary, side);
     if (center) {
       revealColumn(columnIndex, viewportPrimary, center);

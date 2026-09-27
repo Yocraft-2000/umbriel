@@ -1009,8 +1009,8 @@ UMBRIEL_TEST(onOverflowMeasuresTheRightHandColumnWhenFocusMovesLeft) {
   CHECK(fixture.layout.centeredRest());
 }
 
-// A move keeps focus on the window and only changes its index, so OnOverflow needs the index the column came from. Without
-// it the move falls back to a fit and the moved column stays off center.
+// A move keeps focus on the window and only changes its index, so OnOverflow needs the index the column came from.
+// Without it the move falls back to a fit and the moved column stays off center.
 UMBRIEL_TEST(onOverflowCentersAMovedColumn) {
   Fixture fixture;
   fixture.config.scrolling.centerFocused = CenterFocusedColumn::OnOverflow;
@@ -1031,9 +1031,9 @@ UMBRIEL_TEST(onOverflowCentersAMovedColumn) {
   CHECK(fixture.layout.centeredRest());
 }
 
-// Closing the focused column leaves no side of its own, so the survivor inherits the side the dying column was on and is
-// judged against the column that took its place. The reveal focus triggers cannot do that while the dying column is still
-// in the layout, so it only fits the survivor, and the removal re-judges it on the geometry it leaves.
+// Closing the focused column leaves no side of its own, so the survivor inherits the side the dying column was on and
+// is judged against the column that took its place. The reveal focus triggers cannot do that while the dying column is
+// still in the layout, so it only fits the survivor, and the removal re-judges it on the geometry it leaves.
 UMBRIEL_TEST(onOverflowJudgesTheSurvivorOfAClosedColumnAgainstItsReplacement) {
   Fixture fixture;
   fixture.config.scrolling.centerFocused = CenterFocusedColumn::OnOverflow;
@@ -1061,8 +1061,8 @@ UMBRIEL_TEST(onOverflowJudgesTheSurvivorOfAClosedColumnAgainstItsReplacement) {
 }
 
 // A width change has to be judged by the geometry it produced, not by the one the last focus step saw, or the focused
-// column stays uncentered until focus happens to leave and come back. Once the pair fits again the centered rest has to go
-// with it, which the fit alone would not do: the column is already fully visible.
+// column stays uncentered until focus happens to leave and come back. Once the pair fits again the centered rest has to
+// go with it, which the fit alone would not do: the column is already fully visible.
 UMBRIEL_TEST(onOverflowFollowsTheFocusedColumnWidth) {
   Fixture fixture;
   fixture.config.scrolling.centerFocused = CenterFocusedColumn::OnOverflow;
