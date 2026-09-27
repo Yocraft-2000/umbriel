@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 // wlr_box and WLR_EDGE_* only. Layout geometry must not pull src/wlr.h, which
 // drags SceneFX and the renderer into a translation unit that does arithmetic.
@@ -587,13 +588,17 @@ namespace umbriel {
   }
 
   void ScrollingLayout::reevaluateAfterRemoval(int columnIndex, int viewportPrimary) {
-    if (!m_pendingRemovalReevaluate || columnIndex < 0) {
+    if (!m_pendingRemovalReevaluate) {
       return;
     }
+    // One-shot even when focus passed to a floating survivor, so a later unrelated removal cannot replay it.
     m_pendingRemovalReevaluate = false;
+    const int removed = std::exchange(m_removedFocusedColumn, -1);
+    if (columnIndex < 0) {
+      return;
+    }
     // The survivor inherits the side the removed column was on, as a focus move off that column would have had.
-    m_focusSide = m_removedFocusedColumn > columnIndex ? FocusSide::FromRight : FocusSide::FromLeft;
-    m_removedFocusedColumn = -1;
+    m_focusSide = removed > columnIndex ? FocusSide::FromRight : FocusSide::FromLeft;
     reevaluateColumn(columnIndex, viewportPrimary);
   }
 
