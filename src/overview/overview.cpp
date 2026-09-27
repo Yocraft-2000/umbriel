@@ -2731,11 +2731,13 @@ namespace umbriel {
       m_navigationScale = OverviewNavigation::travelScale(viewport, settledZoom(), factor, travel.viewport);
       m_navigationStarted = true;
     }
+    const double maximum = static_cast<double>(scrolling->maxScroll(workspace->scrollViewportExtent()));
+    // Centering an edge column parks the strip past the last column, so the band opens onto the scroll the gesture
+    // started from: the fingers bring the strip back in, not the pan's first frame.
     scrolling->setScroll(
         GesturePhysics::rubberBand(
-            m_navigationStart + m_navigation.position() * m_navigationScale, 0.0,
-            static_cast<double>(scrolling->maxScroll(workspace->scrollViewportExtent())),
-            viewport * GesturePhysics::kOverscrollLimit
+            m_navigationStart + m_navigation.position() * m_navigationScale, std::min(0.0, m_navigationStart),
+            std::max(maximum, m_navigationStart), viewport * GesturePhysics::kOverscrollLimit
         )
     );
     workspace->markArrange(false);
@@ -2835,7 +2837,8 @@ namespace umbriel {
       bestColumn = index;
     }
     View* target = workspace->focusedView();
-    if (bestColumn >= 0 && (target == nullptr || scrolling->columnOf(target) != bestColumn)) {
+    const bool focusMoved = bestColumn >= 0 && (target == nullptr || scrolling->columnOf(target) != bestColumn);
+    if (focusMoved) {
       const auto& views = scrolling->columns()[static_cast<size_t>(bestColumn)].views;
       target = views.empty() ? nullptr : views.front();
     }
@@ -2848,6 +2851,13 @@ namespace umbriel {
       } else {
         workspace->setFocusedView(target);
       }
+    }
+    // The pan chose the column, so the centering policy says where it rests. A pan back on the focused column has no
+    // side to derive, so the last focus move's pair is judged instead.
+    if (focusMoved) {
+      workspace->activateFocusedColumn();
+    } else {
+      workspace->reevaluateFocusedColumn();
     }
     workspace->markArrange(true);
   }

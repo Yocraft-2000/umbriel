@@ -130,4 +130,14 @@ UMBRIEL_TEST(theOverviewSettlesOnTheSideTheProjectionPointsTo) {
   CHECK_EQ(pastEnd.target, 1);
 }
 
+UMBRIEL_TEST(theBandHoldsThePositionTheGestureStartedFrom) {
+  const double limit = GesturePhysics::kOverscrollLimit;
+  // Centering an edge column parks the strip past the last column, on purpose. A gesture starting from that rest has to
+  // be able to stay there, or its first frame snaps the strip back into range.
+  CHECK_EQ(GesturePhysics::rubberBand(1.2, 0.0, 1.2, limit), 1.2);
+  CHECK_EQ(GesturePhysics::rubberBand(-0.2, -0.2, 1.0, limit), -0.2);
+  CHECK(GesturePhysics::rubberBand(1.4, 0.0, 1.2, limit) > 1.2);
+  CHECK(GesturePhysics::rubberBand(1.1, 0.0, 1.2, limit) < 1.2);
+}
+
 int main() { return RUN_TESTS(); }
