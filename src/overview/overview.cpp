@@ -2731,7 +2731,7 @@ namespace umbriel {
       m_navigationScale = OverviewNavigation::travelScale(viewport, settledZoom(), factor, travel.viewport);
       m_navigationStarted = true;
     }
-    const double maximum = static_cast<double>(scrolling->maxScroll(workspace->scrollViewportExtent()));
+    const auto maximum = static_cast<double>(scrolling->maxScroll(workspace->scrollViewportExtent()));
     // Centering an edge column parks the strip past the last column, so the band opens onto the scroll the gesture
     // started from: the fingers bring the strip back in, not the pan's first frame.
     scrolling->setScroll(
