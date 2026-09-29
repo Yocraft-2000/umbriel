@@ -787,7 +787,7 @@ namespace umbriel {
   }
 
   // `previousIndex` is where the column sat before it moved, which is the side focus came from. A move keeps focus, so
-  // OnOverflow cannot read an index that no longer holds the column. -1 leaves the side as it was.
+  // OnOverflow cannot read an index that no longer holds the column. -1 derives the side from the last focused column.
   void ScrollingLayout::activateColumn(int columnIndex, int viewportPrimary, int previousIndex) {
     if (previousIndex >= 0 && previousIndex < static_cast<int>(m_columns.size()) && previousIndex != columnIndex) {
       m_lastFocusedColumn = previousIndex;
