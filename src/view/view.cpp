@@ -3785,9 +3785,7 @@ namespace umbriel {
         m_workspace->layout().toggleFullWidth(column);
       }
       wlr_xdg_toplevel_set_maximized(m_toplevel, maximized);
-      if (maximized) {
-        m_workspace->ensureFocusedVisible();
-      }
+      m_workspace->reevaluateFocusedColumn();
       m_workspace->markArrange(animate);
       updateForeignState();
       return;
