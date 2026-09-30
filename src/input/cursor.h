@@ -150,10 +150,16 @@ namespace umbriel {
     void applyConfig();
     // Discard partial notches when compositor-owned wheel input changes context.
     void resetWheelAccumulation();
+    // Data-device drags can scroll a scrolling workspace while held at its
+    // primary-axis edge. Seat owns the drag lifecycle; Cursor owns its pointer
+    // position and timer-driven motion.
+    void handleDataDragStarted();
+    void handleDataDragEnded();
     void setCursorSurface(wlr_surface* surface, int32_t hotspotX, int32_t hotspotY);
     void setXcursor(const char* name);
     bool beginMove(View* view, uint32_t button);
     bool beginResize(View* view, uint32_t edges, uint32_t button);
+    // A null seat client is an X11 move/resize request, which carries no serial.
     void beginClientMove(View* view, wlr_seat_client* seatClient, uint32_t serial);
     void beginClientResize(View* view, wlr_seat_client* seatClient, uint32_t serial, uint32_t edges);
     void resetMode();
@@ -293,11 +299,18 @@ namespace umbriel {
     void cancelHotCorner();
     [[nodiscard]] const Keybind* hotCornerAction(size_t* index = nullptr) const;
     static int onHotCornerTimer(void* data);
+    [[nodiscard]] Workspace* dataDragEdgeScrollTarget(double* speed) const;
+    void updateDataDragEdgeScroll();
+    void cancelDataDragEdgeScroll();
+    static int onDataDragEdgeScrollTimer(void* data);
+    int handleDataDragEdgeScrollTimer();
     void setActiveConstraint(wlr_pointer_constraint_v1* constraint);
     void updateConstraintForSurface(wlr_surface* surface);
     [[nodiscard]] bool constraintSurfaceActive() const;
     void warpToConstraintHint(wlr_pointer_constraint_v1* constraint);
     [[nodiscard]] bool confineDelta(double* dx, double* dy) const;
+    // Surface-local units per layout unit in `surface`: above 1 for an X11 window drawn at native resolution.
+    [[nodiscard]] double surfaceScale(wlr_surface* surface) const;
     TabletToolState* toolState(wlr_tablet_tool* tool);
     void setToolEmulating(TabletToolState* state, bool emulating);
     void processTabletMotion(uint32_t timeMsec, double oldX, double oldY, TabletToolState* state, wlr_tablet* tablet);
@@ -337,6 +350,11 @@ namespace umbriel {
     std::string m_clientCursorShape;
     wl_event_source* m_hideTimer = nullptr;
     wl_event_source* m_hotCornerTimer = nullptr;
+    wl_event_source* m_dataDragEdgeScrollTimer = nullptr;
+    Workspace* m_dataDragEdgeScrollWorkspace = nullptr;
+    double m_dataDragEdgeScrollSpeed = 0;
+    uint32_t m_dataDragEdgeScrollLastMsec = 0;
+    bool m_dataDragEdgeScrollPending = false;
     bool m_hotCornerPending = false;
     bool m_hotCornerTriggered = false;
     size_t m_hotCornerIndex = 4;

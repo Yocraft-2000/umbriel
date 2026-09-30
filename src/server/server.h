@@ -109,6 +109,7 @@ namespace umbriel {
   // wlroots' scene helper only walks enabled scene nodes, so a hidden view otherwise never receives another frame_done
   // and a client that gates its game/network loop on the frame callback stalls. 10 Hz keeps such loops alive cheaply.
   inline constexpr int kBackgroundFrameIntervalMs = 100;
+  inline constexpr std::string_view kLaunchTokenEnvironment = "UMBRIEL_LAUNCH_TOKEN";
 
   // The pid of the process owning a surface's Wayland connection, or -1 when the surface has no client or the kernel
   // cannot represent that pid in the compositor's pid namespace.
@@ -120,7 +121,7 @@ namespace umbriel {
   class Cursor;
   class BackendManager;
   class FocusManager;
-  class XwaylandSupervisor;
+  class Xwayland;
   class ConfigWatcher;
   class InputMethodRelay;
   class Gestures;
@@ -135,6 +136,7 @@ namespace umbriel {
   class View;
   class Workspace;
   class WorkspaceGroup;
+  struct WorkspaceLaunchAnchor;
   class ScratchpadManager;
   class ConfigBanner;
   class Cheatsheet;
@@ -157,6 +159,9 @@ namespace umbriel {
     [[nodiscard]] bool stopping() const { return m_stopping; }
 
     [[nodiscard]] wl_display* display() const { return m_display; }
+    [[nodiscard]] wlr_compositor* compositor() const { return m_compositor; }
+    // Null when general.xwayland is off or the Xwayland server could not be created.
+    [[nodiscard]] Xwayland* xwayland() const { return m_xwayland.get(); }
     [[nodiscard]] wlr_backend* backend() const { return m_backend; }
     [[nodiscard]] wlr_session* session() const { return m_session; }
     [[nodiscard]] wlr_renderer* renderer() const { return m_renderer; }
@@ -195,6 +200,8 @@ namespace umbriel {
     // Above top panels, below overlay/lock (fullscreen xdg views).
     [[nodiscard]] wlr_scene_tree* fullscreenTree() const { return m_fullscreenTree; }
     [[nodiscard]] wlr_scene_tree* pinnedTree() const { return m_pinnedTree; }
+    // Override-redirect X11 windows (menus, tooltips, drag icons), above every window.
+    [[nodiscard]] wlr_scene_tree* xwaylandUnmanagedTree() const { return m_xwaylandUnmanagedTree; }
     [[nodiscard]] wlr_scene_tree* imPopupTree() const { return m_imPopupTree; }
     [[nodiscard]] wlr_scene_tree* lockTree() const { return m_lockTree; }
     [[nodiscard]] wlr_scene_tree* shellLayerTree(uint32_t layer) const;
@@ -291,7 +298,8 @@ namespace umbriel {
     [[nodiscard]] std::span<const std::unique_ptr<View>> views() const { return m_registry.all(); }
     [[nodiscard]] ViewRegistry& registry() { return m_registry; }
     [[nodiscard]] std::span<const std::unique_ptr<LayerSurface>> layerSurfaces() const { return m_layerSurfaces; }
-    [[nodiscard]] bool isXwaylandSurface(const wlr_surface* surface) const;
+    // Registers a view created for a new toplevel of either shell role.
+    View& adoptView(std::unique_ptr<View> view);
 
     // Runs a parsed action. Shared by the keybind path and the IPC `msg` command.
     bool executeKeybindAction(const Keybind& bind, std::string* error = nullptr, bool* cooldownBlocked = nullptr);
@@ -509,6 +517,8 @@ namespace umbriel {
     void spawnCommand(const char* command, const char* description, bool withActivationToken, SpawnClass spawnClass);
 
     void trackActivationToken(wlr_xdg_activation_token_v1* token, bool compositorIssued);
+    void assignLaunchOriginFromEnvironment(View& view);
+    bool claimLaunchOrigin(View& view, wlr_xdg_activation_token_v1* token);
 
     void addOutput(wlr_output* output);
     void addKeyboard(wlr_input_device* device);
@@ -608,9 +618,15 @@ namespace umbriel {
       wl_listener destroy{};
     };
     struct ActivationTokenWatch {
+      Server* server = nullptr;
       std::chrono::steady_clock::time_point createdAt;
       bool compositorIssued = false;
       bool inputBacked = false;
+      bool launchClaimed = false;
+      std::shared_ptr<WorkspaceLaunchAnchor> launchWorkspace;
+      std::string tokenName;
+      std::string launchOutputName;
+      std::string launchWorkspaceId;
       wl_listener destroy{};
     };
 
@@ -670,6 +686,7 @@ namespace umbriel {
     wlr_scene_tree* m_effectLightTree = nullptr;
     wlr_scene_tree* m_fullscreenTree = nullptr;
     wlr_scene_tree* m_pinnedTree = nullptr;
+    wlr_scene_tree* m_xwaylandUnmanagedTree = nullptr;
     wlr_scene_tree* m_imPopupTree = nullptr;
     wlr_scene_tree* m_lockTree = nullptr;
     wlr_scene_rect* m_lockBlank = nullptr;
@@ -796,7 +813,7 @@ namespace umbriel {
     ApplicationScopeEnvironmentArguments m_applicationScopeEnvironmentArguments;
     uint64_t m_nextApplicationScopeId = 1;
 
-    std::unique_ptr<XwaylandSupervisor> m_xwayland;
+    std::unique_ptr<Xwayland> m_xwayland;
     wl_event_source* m_backgroundFrameTimer = nullptr;
     // One-shot refresh when dynamic startup rules expire.
     wl_event_source* m_startupRulesTimer = nullptr;

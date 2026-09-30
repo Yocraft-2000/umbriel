@@ -7,6 +7,7 @@ unit_tests = [
   ['presented-crop', ['unit/presented_crop.cpp'], []],
   ['scene-node', ['unit/scene_node.cpp'], []],
   ['scene-clip', ['unit/scene_clip.cpp'], [wayland_server_dep]],
+  ['xwayland-outputs', ['unit/xwayland_outputs.cpp'], [umbriel_core_dep]],
   ['presentation', ['unit/presentation.cpp'], [umbriel_core_dep]],
   ['animation', ['unit/animation.cpp'], [umbriel_core_dep]],
   ['application-scope', ['unit/application_scope.cpp'], [umbriel_core_dep], [], ['-Wl,--wrap=umbrielCloseRange']],
@@ -155,7 +156,11 @@ input_method_client = executable(
 # Harness helper that owns a mapped surface and initiates a data-device drag.
 drag_client = executable(
   'drag-client',
-  ['harness/clients/drag_client.cpp', layer_shell_client_h, layer_shell_client_c, xdg_shell_client_c],
+  [
+    'harness/clients/drag_client.cpp',
+    layer_shell_client_h, layer_shell_client_c,
+    xdg_shell_client_h, xdg_shell_client_c,
+  ],
   dependencies: [wayland_client_dep],
 )
 

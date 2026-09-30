@@ -16,8 +16,8 @@
 #include "scene/hint_rect.h"
 #include "scene/quit_confirm.h"
 #include "server/server.h"
+#include "view/size_hints.h"
 #include "view/view.h"
-#include "view/xdg_size.h"
 // clang-format off
 #include <algorithm>
 #include <cmath>
@@ -27,12 +27,18 @@
 #include "wlr/util/edges.h"
 #include "workspace/scratchpad.h"
 #include "workspace/workspace.h"
+#include "xwayland/xwayland.h"
 
 namespace umbriel {
 
   namespace {
     constexpr Logger kLog("cursor");
     constexpr double kHotCornerExtent = 8.0;
+    constexpr double kDataDragEdgeScrollTrigger = 30.0;
+    constexpr double kDataDragEdgeScrollMaxSpeed = 1500.0;
+    constexpr int kDataDragEdgeScrollDelayMs = 100;
+    constexpr int kDataDragEdgeScrollTickMs = 16;
+    constexpr uint32_t kDataDragEdgeScrollMaxElapsedMs = 50;
 
     // Panels (top/overlay) keep working inside the overview. Background- and bottom-layer surfaces are part of the
     // inert backdrop behind the filmstrip, so their clicks belong to the overview instead.
@@ -63,7 +69,10 @@ namespace umbriel {
       return factor ? (vertical ? factor->vertical : factor->horizontal).value_or(1.0) : 1.0;
     }
 
-    bool surfaceLocalCoordinates(wlr_scene* scene, wlr_surface* target, double lx, double ly, double* sx, double* sy) {
+    // `scale` is the surface-local units per layout unit in `target`.
+    bool surfaceLocalCoordinates(
+        wlr_scene* scene, wlr_surface* target, double scale, double lx, double ly, double* sx, double* sy
+    ) {
       if (target == nullptr) {
         return false;
       }
@@ -95,8 +104,8 @@ namespace umbriel {
       if (!position.found) {
         return false;
       }
-      *sx = lx - position.x;
-      *sy = ly - position.y;
+      *sx = (lx - position.x) * scale;
+      *sy = (ly - position.y) * scale;
       return true;
     }
 
@@ -149,6 +158,9 @@ namespace umbriel {
   }
 
   Cursor::~Cursor() {
+    if (m_dataDragEdgeScrollTimer != nullptr) {
+      wl_event_source_remove(m_dataDragEdgeScrollTimer);
+    }
     if (m_hotCornerTimer != nullptr) {
       wl_event_source_remove(m_hotCornerTimer);
     }
@@ -182,6 +194,9 @@ namespace umbriel {
   void Cursor::attachInputDevice(wlr_input_device* device) { wlr_cursor_attach_input_device(m_cursor, device); }
   void Cursor::resetWheelAccumulation() { m_wheelAccum[0] = m_wheelAccum[1] = 0; }
 
+  void Cursor::handleDataDragStarted() { updateDataDragEdgeScroll(); }
+  void Cursor::handleDataDragEnded() { cancelDataDragEdgeScroll(); }
+
   void Cursor::applyConfig() {
     const Config::Input::Cursor& configured = config().input.cursor;
     updateHideTimer();
@@ -206,6 +221,10 @@ namespace umbriel {
       setXcursor(m_activeXcursorName.c_str());
     } else if (m_server->seat()->wlr()->pointer_state.focused_surface == nullptr) {
       setXcursor("default");
+    }
+    // Xwayland's default cursor is a buffer of the manager's image, so it moves over before the old manager dies.
+    if (Xwayland* xwayland = m_server->xwayland()) {
+      xwayland->applyCursor(manager);
     }
     wlr_xcursor_manager_destroy(oldManager);
   }
@@ -333,7 +352,7 @@ namespace umbriel {
         && focused->mapped()
         && focused->onActiveWorkspace()
         && focused->currentOutput() == umbrielOutput
-        && (focused->layoutFullscreen() || focused->toplevel()->current.fullscreen)) {
+        && (focused->layoutFullscreen() || focused->currentFullscreen())) {
       return nullptr;
     }
     if (cornerIndex != nullptr) {
@@ -397,6 +416,140 @@ namespace umbriel {
       Keybind triggered = *action;
       cursor->m_server->executeKeybindAction(triggered);
     }
+    return 0;
+  }
+
+  Workspace* Cursor::dataDragEdgeScrollTarget(double* speed) const {
+    *speed = 0;
+    if (m_server->sessionLocked()
+        || m_server->seat()->wlr()->drag == nullptr
+        || (m_server->overview() != nullptr && m_server->overview()->active())) {
+      return nullptr;
+    }
+
+    wlr_output* wlrOutput = wlr_output_layout_output_at(m_server->outputLayout(), m_cursor->x, m_cursor->y);
+    Output* output = m_server->outputFromWlr(wlrOutput);
+    WorkspaceGroup* group = output != nullptr ? output->workspaceGroup() : nullptr;
+    Workspace* workspace = group != nullptr ? group->active() : nullptr;
+    ScrollingLayout* scrolling = workspace != nullptr ? workspace->scrollingLayout() : nullptr;
+    if (scrolling == nullptr || scrolling->columns().empty()) {
+      return nullptr;
+    }
+
+    const wlr_box area = workspace->usableArea();
+    const bool vertical = workspace->scrollingVertical();
+    const double origin = vertical ? area.y : area.x;
+    const double extent = vertical ? area.height : area.width;
+    if (extent <= 0) {
+      return nullptr;
+    }
+    const double trigger = std::min(kDataDragEdgeScrollTrigger, extent / 2.0);
+    const double position = vertical ? m_cursor->y : m_cursor->x;
+    if (position < origin + trigger) {
+      *speed = -kDataDragEdgeScrollMaxSpeed * std::clamp((origin + trigger - position) / trigger, 0.0, 1.0);
+    } else if (position > origin + extent - trigger) {
+      *speed = kDataDragEdgeScrollMaxSpeed * std::clamp((position - (origin + extent - trigger)) / trigger, 0.0, 1.0);
+    }
+    if (*speed == 0) {
+      return nullptr;
+    }
+
+    const double oldScroll = scrolling->scroll();
+    const auto maximum = static_cast<double>(scrolling->maxScroll(workspace->scrollViewportExtent()));
+    if (maximum <= 0) {
+      return nullptr;
+    }
+    if ((*speed < 0 && oldScroll <= 0) || (*speed > 0 && oldScroll >= maximum)) {
+      return nullptr;
+    }
+    return workspace;
+  }
+
+  void Cursor::updateDataDragEdgeScroll() {
+    double speed = 0;
+    Workspace* workspace = dataDragEdgeScrollTarget(&speed);
+    const int direction = (speed > 0) - (speed < 0);
+    const int previousDirection = (m_dataDragEdgeScrollSpeed > 0) - (m_dataDragEdgeScrollSpeed < 0);
+    if (workspace == nullptr) {
+      cancelDataDragEdgeScroll();
+      return;
+    }
+    if (workspace == m_dataDragEdgeScrollWorkspace && direction == previousDirection) {
+      m_dataDragEdgeScrollSpeed = speed;
+      return;
+    }
+    if (m_dataDragEdgeScrollTimer == nullptr) {
+      m_dataDragEdgeScrollTimer =
+          wl_event_loop_add_timer(wl_display_get_event_loop(m_server->display()), onDataDragEdgeScrollTimer, this);
+      if (m_dataDragEdgeScrollTimer == nullptr) {
+        return;
+      }
+    }
+    m_dataDragEdgeScrollWorkspace = workspace;
+    m_dataDragEdgeScrollSpeed = speed;
+    m_dataDragEdgeScrollLastMsec = 0;
+    m_dataDragEdgeScrollPending = true;
+    wl_event_source_timer_update(m_dataDragEdgeScrollTimer, kDataDragEdgeScrollDelayMs);
+  }
+
+  void Cursor::cancelDataDragEdgeScroll() {
+    if (m_dataDragEdgeScrollTimer != nullptr) {
+      wl_event_source_timer_update(m_dataDragEdgeScrollTimer, 0);
+    }
+    m_dataDragEdgeScrollWorkspace = nullptr;
+    m_dataDragEdgeScrollSpeed = 0;
+    m_dataDragEdgeScrollLastMsec = 0;
+    m_dataDragEdgeScrollPending = false;
+  }
+
+  int Cursor::onDataDragEdgeScrollTimer(void* data) {
+    return static_cast<Cursor*>(data)->handleDataDragEdgeScrollTimer();
+  }
+
+  int Cursor::handleDataDragEdgeScrollTimer() {
+    double speed = 0;
+    Workspace* workspace = dataDragEdgeScrollTarget(&speed);
+    const int direction = (speed > 0) - (speed < 0);
+    const int activeDirection = (m_dataDragEdgeScrollSpeed > 0) - (m_dataDragEdgeScrollSpeed < 0);
+    if (workspace == nullptr) {
+      cancelDataDragEdgeScroll();
+      return 0;
+    }
+    if (workspace != m_dataDragEdgeScrollWorkspace || direction != activeDirection) {
+      updateDataDragEdgeScroll();
+      return 0;
+    }
+    m_dataDragEdgeScrollSpeed = speed;
+
+    const uint32_t now = monotonicMsec();
+    if (m_dataDragEdgeScrollPending) {
+      m_dataDragEdgeScrollPending = false;
+      m_dataDragEdgeScrollLastMsec = now;
+      wl_event_source_timer_update(m_dataDragEdgeScrollTimer, kDataDragEdgeScrollTickMs);
+      return 0;
+    }
+
+    const uint32_t elapsed = std::min(now - m_dataDragEdgeScrollLastMsec, kDataDragEdgeScrollMaxElapsedMs);
+    m_dataDragEdgeScrollLastMsec = now;
+    if (elapsed == 0) {
+      wl_event_source_timer_update(m_dataDragEdgeScrollTimer, kDataDragEdgeScrollTickMs);
+      return 0;
+    }
+    ScrollingLayout* scrolling = workspace->scrollingLayout();
+    if (scrolling == nullptr) {
+      cancelDataDragEdgeScroll();
+      return 0;
+    }
+    const auto maximum = static_cast<double>(scrolling->maxScroll(workspace->scrollViewportExtent()));
+    const double oldScroll = scrolling->scroll();
+    const double nextScroll = std::clamp(oldScroll + speed * static_cast<double>(elapsed) / 1000.0, 0.0, maximum);
+    if (nextScroll == oldScroll) {
+      cancelDataDragEdgeScroll();
+      return 0;
+    }
+    scrolling->setScroll(nextScroll);
+    workspace->markArrange(false);
+    wl_event_source_timer_update(m_dataDragEdgeScrollTimer, kDataDragEdgeScrollTickMs);
     return 0;
   }
 
@@ -617,7 +770,7 @@ namespace umbriel {
         return false;
       }
       if (session->unmaximizeOnBegin()) {
-        wlr_xdg_toplevel_set_maximized(view->toplevel(), false);
+        view->setMaximizedState(false);
       }
       m_grab = TiledResizeGrab{
           .view = view,
@@ -640,7 +793,7 @@ namespace umbriel {
       view->setMaximizedToEdges(false, false);
     }
 
-    const wlr_box& geometry = view->toplevel()->base->geometry;
+    const wlr_box& geometry = view->geometryBox();
     const double borderX =
         (view->sceneTree()->node.x + geometry.x) + ((edges & WLR_EDGE_RIGHT) != 0 ? geometry.width : 0);
     const double borderY =
@@ -663,17 +816,23 @@ namespace umbriel {
 
   std::optional<uint32_t>
   Cursor::clientPointerGrabButton(const View* view, wlr_seat_client* seatClient, uint32_t serial) const {
-    if (view == nullptr || seatClient == nullptr || !isPassthrough()) {
+    if (view == nullptr || !isPassthrough()) {
       return std::nullopt;
     }
     wlr_seat* seat = m_server->seat()->wlr();
     wlr_surface* focused = seat->pointer_state.focused_surface;
-    if (seatClient->seat != seat
-        || seat->drag != nullptr
+    if (seat->drag != nullptr
         || wlr_seat_pointer_has_grab(seat)
         || focused == nullptr
-        || wlr_surface_get_root_surface(focused) != view->toplevel()->base->surface
-        || !wlr_seat_validate_pointer_grab_serial(seat, focused, serial)) {
+        || wlr_surface_get_root_surface(focused) != view->rootSurface()
+        || seat->pointer_state.button_count != 1) {
+      return std::nullopt;
+    }
+    // X11 requests carry no seat client or serial; the pressed pointer on the window is their only credential.
+    if (seatClient == nullptr) {
+      return view->xwayland() ? std::optional(seat->pointer_state.grab_button) : std::nullopt;
+    }
+    if (seatClient->seat != seat || !wlr_seat_validate_pointer_grab_serial(seat, focused, serial)) {
       return std::nullopt;
     }
     return seat->pointer_state.grab_button;
@@ -1133,7 +1292,8 @@ namespace umbriel {
         if (!isXdgPopupSurface(surface)) {
           m_server->focusView(view, FocusReason::PointerPress);
         }
-      } else {
+      } else if (surface == nullptr || wlr_xwayland_surface_try_from_wlr_surface(surface) == nullptr) {
+        // A press on an override-redirect X11 menu leaves the keyboard with the menu.
         wlr_output* wlrOutput = wlr_output_layout_output_at(m_server->outputLayout(), m_cursor->x, m_cursor->y);
         m_server->refocusExplicit(m_server->outputFromWlr(wlrOutput));
       }
@@ -1362,7 +1522,7 @@ namespace umbriel {
 
     double sx = 0;
     double sy = 0;
-    if (!surfaceLocalCoordinates(m_server->scene(), point->surface, lx, ly, &sx, &sy)) {
+    if (!surfaceLocalCoordinates(m_server->scene(), point->surface, surfaceScale(point->surface), lx, ly, &sx, &sy)) {
       kLog.warn(
           "touch motion id={} could not map target surface {} at layout=({}, {})", event->touch_id,
           static_cast<void*>(point->surface), lx, ly
@@ -1473,14 +1633,16 @@ namespace umbriel {
     }
 
     wlr_seat* seat = m_server->seat()->wlr();
+    updateDataDragEdgeScroll();
     if (seat->drag == nullptr
         && seat->pointer_state.button_count > 0
         && seat->pointer_state.focused_surface != nullptr) {
       // Keep an implicit grab in the coordinate space established by the press. Re-resolving against the scene
       // would turn compositor-driven window animation into apparent pointer travel and make small clicks look like
       // client drags.
-      const double sx = seat->pointer_state.sx + (m_cursor->x - oldX);
-      const double sy = seat->pointer_state.sy + (m_cursor->y - oldY);
+      const double scale = surfaceScale(seat->pointer_state.focused_surface);
+      const double sx = seat->pointer_state.sx + ((m_cursor->x - oldX) * scale);
+      const double sy = seat->pointer_state.sy + ((m_cursor->y - oldY) * scale);
       wlr_seat_pointer_notify_motion(seat, timeMsec, sx, sy);
       updateConstraintForSurface(seat->pointer_state.focused_surface);
       return;
@@ -1682,7 +1844,8 @@ namespace umbriel {
     if (state->v2->focused_surface != nullptr && (state->tipDown || wlr_tablet_tool_v2_has_implicit_grab(state->v2))) {
       double sx = 0;
       double sy = 0;
-      surfaceLocalCoordinates(m_server->scene(), state->v2->focused_surface, m_cursor->x, m_cursor->y, &sx, &sy);
+      wlr_surface* focused = state->v2->focused_surface;
+      surfaceLocalCoordinates(m_server->scene(), focused, surfaceScale(focused), m_cursor->x, m_cursor->y, &sx, &sy);
       wlr_tablet_v2_tablet_tool_notify_motion(state->v2, sx, sy);
       forwardEffectPointer();
       return;
@@ -2128,7 +2291,7 @@ namespace umbriel {
     int newRight = grab->geometryX + grab->geometryWidth;
     int newTop = grab->geometryY;
     int newBottom = grab->geometryY + grab->geometryHeight;
-    const XdgSizeHints hints = xdgSizeHints(grab->view->toplevel());
+    const SizeHints hints = grab->view->sizeHints();
 
     if ((grab->edges & WLR_EDGE_TOP) != 0) {
       newTop = static_cast<int>(borderY);
@@ -2173,7 +2336,7 @@ namespace umbriel {
     if (view == nullptr || view->sceneTree() == nullptr) {
       return WLR_EDGE_RIGHT | WLR_EDGE_BOTTOM;
     }
-    const wlr_box& geo = view->toplevel()->base->geometry;
+    const wlr_box& geo = view->geometryBox();
     const int x = view->sceneTree()->node.x + geo.x;
     const int y = view->sceneTree()->node.y + geo.y;
     const wlr_box box{.x = x, .y = y, .width = geo.width, .height = geo.height};
@@ -2191,7 +2354,7 @@ namespace umbriel {
       if (view->sceneTree() == nullptr) {
         return 0;
       }
-      const wlr_box& geo = view->toplevel()->base->geometry;
+      const wlr_box& geo = view->geometryBox();
       const double left = view->sceneTree()->node.x + geo.x;
       const double top = view->sceneTree()->node.y + geo.y;
       const double right = left + geo.width;
@@ -2308,7 +2471,7 @@ namespace umbriel {
     if (pointerFocusPinned()) {
       return;
     }
-    wlr_seat_pointer_clear_focus(m_server->seat()->wlr());
+    wlr_seat_pointer_notify_clear_focus(m_server->seat()->wlr());
   }
 
   void Cursor::clearPointerFocusOverridingGrab() { wlr_seat_pointer_clear_focus(m_server->seat()->wlr()); }
@@ -2326,14 +2489,35 @@ namespace umbriel {
   }
 
   void Cursor::refreshPointerContents(const Output* output) {
-    const wlr_seat* seat = m_server->seat()->wlr();
+    wlr_seat* seat = m_server->seat()->wlr();
     if (output == nullptr
-        || !isPassthrough()
         || m_cursorHidden
-        || seat->drag != nullptr
-        || seat->pointer_state.button_count != 0
         || std::ranges::any_of(m_tools, [](const auto& tool) { return tool->inProximity; })
         || wlr_output_layout_output_at(m_server->outputLayout(), m_cursor->x, m_cursor->y) != output->wlr()) {
+      return;
+    }
+    if (seat->drag != nullptr) {
+      updateDataDragEdgeScroll();
+      if (m_server->sessionLocked()) {
+        wlr_seat_pointer_notify_clear_focus(seat);
+        wlr_seat_pointer_notify_frame(seat);
+        return;
+      }
+      double sx = 0;
+      double sy = 0;
+      wlr_surface* surface = nullptr;
+      m_server->viewAt(m_cursor->x, m_cursor->y, &surface, &sx, &sy);
+      if (surface != nullptr) {
+        const uint32_t timeMsec = monotonicMsec();
+        wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
+        wlr_seat_pointer_notify_motion(seat, timeMsec, sx, sy);
+      } else {
+        wlr_seat_pointer_notify_clear_focus(seat);
+      }
+      wlr_seat_pointer_notify_frame(seat);
+      return;
+    }
+    if (!isPassthrough() || seat->pointer_state.button_count != 0) {
       return;
     }
     // Content still in motion would flicker hover state on every frame. The next press resolves it regardless.
@@ -2431,7 +2615,7 @@ namespace umbriel {
     }
     const wlr_box usable = grab->workspace->tiledArea();
     grab->session->applyDelta(m_cursor->x - grab->startX, m_cursor->y - grab->startY, usable);
-    wlr_xdg_toplevel_set_maximized(grab->view->toplevel(), false);
+    grab->view->setMaximizedState(false);
     grab->workspace->markArrange(false);
   }
 

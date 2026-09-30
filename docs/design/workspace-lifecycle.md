@@ -23,6 +23,9 @@ The inventory maintains these invariants:
 - Other empty inactive anonymous workspaces are removed, except that the count
   never drops below the output's `min_workspaces`. Pruning runs from the end, so
   the surviving anonymous empties are the lowest-positioned ones.
+- An anonymous workspace recorded by a pending `spawn:` activation token is
+  neither removed nor repurposed. The hold ends when its first map is placed,
+  the token deadline passes, or the output leaves the desktop.
 - Named workspaces remain even when empty.
 - Anonymous workspaces are renamed and all workspaces are reindexed from `1` in
   their current order. Named workspaces keep their explicit names.
@@ -31,6 +34,24 @@ The inventory maintains these invariants:
 Dynamic reconciliation waits while a workspace slide is active. During the
 overview it proceeds immediately and notifies the overview so its inventory can
 be rebuilt.
+
+### Launch placement
+
+An activation token created for `spawn:` records the preferred output and its
+active workspace. A trusted client-created token records the workspace of its
+input source. Pinned and visible scratchpad sources record the active workspace
+on the output where they are presented. Umbriel associates that origin with a
+new native toplevel through XDG activation, or through a private inherited token
+for applications that do not use the protocol.
+
+Launch placement is applied at most once, and only before the toplevel's first
+map. Explicit output, workspace, and scratchpad window rules are resolved
+instead when present. If the pointer-preferred workspace has changed, the
+captured workspace receives the new window without changing focus or switching
+the user back, including when the pointer moved to another output.
+`focus_on_activate` controls the activation decision and does not select the
+recorded launch destination. Redeeming the token against an existing or
+remapping toplevel consumes it without relocation.
 
 ### Reconciling configured names
 
@@ -146,6 +167,20 @@ focus is suspended while the drag owns pointer motion, and keyboard enters are
 suppressed until the drag finishes. When the initiating button release destroys
 the grab, Umbriel reruns pointer processing at the unchanged cursor position.
 
+An active data-device drag held near a scrolling workspace edge starts a
+delayed event-loop timer. Each tick resolves the output, active workspace, drag
+state, and scrolling range again before changing the strip offset. The timer
+stops at the range boundary, when the pointer leaves the edge, or when the drag,
+workspace, overview, or session state no longer permits scrolling.
+
+Layout movement can place a new drop target beneath a pointer that has not
+moved. The output's post-arrange scene refresh therefore sends pointer enter,
+motion, or clear through wlroots' notify APIs while the data-device grab is
+active. This updates the grab's drop focus instead of only changing base pointer
+focus. Drag-icon buffers are excluded from scene hit testing, including buffers
+created later for nested subsurfaces, so the icon cannot hide the client below
+it from this refresh.
+
 With `follows_mouse` enabled, that refresh selects the window under the pointer
 when it is not already focused. Activation, border state, and keyboard focus
 then follow the drag target without requiring another border crossing. With
@@ -227,6 +262,11 @@ by
 Pending name materialization and sentinel preservation at the runtime limit are
 covered by
 [`tests/harness/checks/workspace/dynamic_named_capacity.sh`](../../tests/harness/checks/workspace/dynamic_named_capacity.sh).
+Launch workspace reservation, silent delayed mapping, and first-map-only
+consumption are covered by
+[`tests/harness/checks/session/spawn_workspace.sh`](../../tests/harness/checks/session/spawn_workspace.sh).
+Explicit launch placement rule precedence is covered by
+[`tests/harness/checks/session/spawn_workspace_rule.sh`](../../tests/harness/checks/session/spawn_workspace_rule.sh).
 Pointer isolation during a wheel-triggered workspace transition is covered by
 [`tests/harness/checks/focus/workspace_transition.sh`](../../tests/harness/checks/focus/workspace_transition.sh).
 Hover focus after a window maps under the pointer and after returning to a
@@ -256,3 +296,6 @@ Keyboard-focus replay after a logical focus change during a drag is covered by
 [`tests/harness/checks/drag/data_drag_focus.sh`](../../tests/harness/checks/drag/data_drag_focus.sh).
 Drop-target hover focus and the subsequent keyboard-focus handoff are covered by
 [`tests/harness/checks/drag/data_drag_hover_focus.sh`](../../tests/harness/checks/drag/data_drag_hover_focus.sh).
+Stationary drop-target retargeting and edge scrolling to an offscreen window are
+covered by
+[`tests/harness/checks/drag/data_drag_edge_scroll.sh`](../../tests/harness/checks/drag/data_drag_edge_scroll.sh).
