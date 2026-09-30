@@ -141,7 +141,8 @@ neighbor focus came from cannot share the viewport, and a width change that
 makes them fit puts the pair back side by side at the edge focus came from.
 Closing the focused column runs the same rule with the column that took its
 place. Moving or resizing the focused column does too, as does going fullscreen
-or maximized to edges.
+or maximized to edges. A lone column has no such pair, so it never centers
+itself; `center_underfull_strip` decides where it rests.
 
 Closing a focused column moves focus to the nearest surviving column. When that
 column contains stacked windows, Umbriel restores its most recently focused
