@@ -1088,9 +1088,9 @@ UMBRIEL_TEST(onOverflowJudgesTheSurvivorOfAClosedColumnAgainstItsReplacement) {
   CHECK(fixture.layout.centeredRest());
 }
 
-// Sending the focused column away leaves a lone survivor, which has no pair left to overflow against. It rests at the
+// Removing the focused column can leave a lone survivor, which has no pair left to overflow against. It rests at the
 // strip start, so center_underfull_strip alone decides whether it ends up centered or flush left.
-UMBRIEL_TEST(onOverflowRestsTheLoneSurvivorOfAMovedColumnAtTheStripStart) {
+UMBRIEL_TEST(onOverflowRestsTheLoneSurvivorOfARemovedColumnAtTheStripStart) {
   for (const bool centerUnderfullStrip : {false, true}) {
     Fixture fixture;
     fixture.config.scrolling.centerFocused = CenterFocusedColumn::OnOverflow;
