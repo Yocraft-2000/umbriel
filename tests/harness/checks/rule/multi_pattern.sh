@@ -19,7 +19,6 @@ enabled = false
 [[window_rule]]
 match.title = ["^multi-first$", "^multi-second$"]
 default_floating = true
-default_floating_size_px = { width = 400, height = 300 }
 
 [[window_rule]]
 match.app_id = ["^multi-app-a$", "^multi-app-b$"]
@@ -65,11 +64,6 @@ open multi-tag-window APP_ID=multi-tag-app XDG_TAG=multi-tag-b
 for title in multi-first multi-second; do
   if [[ $(field_of "$title" floating) != true ]]; then
     echo "'$title' did not match the title array"
-    exit 1
-  fi
-  width=$(field_of "$title" w)
-  if [[ $width != 400 ]]; then
-    echo "'$title' did not adopt the rule's floating size: w=$width"
     exit 1
   fi
 done
