@@ -356,6 +356,8 @@ namespace umbriel {
     bool pinned = false;
     bool scratchpad = false;
     bool alone = false;
+    // Stricter than alone: floating windows are included.
+    bool onlyWindow = false;
 
     [[nodiscard]] bool operator==(const WindowRuleState& other) const = default;
   };
@@ -389,6 +391,7 @@ namespace umbriel {
     std::optional<bool> matchPinned;
     std::optional<bool> matchScratchpad;
     std::optional<bool> matchAlone;
+    std::optional<bool> matchOnlyWindow;
     std::optional<bool> matchAtStartup;
     std::optional<std::string> defaultOutput;
     std::optional<bool> defaultFloating;
@@ -445,6 +448,7 @@ namespace umbriel {
           && matchPinned == other.matchPinned
           && matchScratchpad == other.matchScratchpad
           && matchAlone == other.matchAlone
+          && matchOnlyWindow == other.matchOnlyWindow
           && matchAtStartup == other.matchAtStartup
           && defaultOutput == other.defaultOutput
           && defaultFloating == other.defaultFloating
