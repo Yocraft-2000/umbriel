@@ -276,6 +276,31 @@ moves the cursor regardless of this setting. Active-workspace output swaps keep
 the cursor and seat focus on the invoking output when this setting is false;
 when it is true, both follow the previously focused window to its new output.
 
+### Drag edge scroll
+
+```toml
+[input.drag_edge_scroll]
+enabled = true
+trigger_zone = 30
+delay_ms = 100
+max_speed = 1500.0
+```
+
+While a drag-and-drop is held near either end of a scrolling layout, the
+layout scrolls so offscreen columns can be reached.
+
+| Key | Range or values | Description |
+| --- | --- | --- |
+| `enabled` | bool | Enable edge scrolling during a data drag. |
+| `trigger_zone` | 1 to 1000 | Width of the zone at each end, in logical pixels. |
+| `delay_ms` | 0 to 10000 | Time inside the zone before scrolling starts. |
+| `max_speed` | 1.0 to 100000.0 | Peak scroll speed in logical pixels per second. |
+
+Speed rises from zero at the inner edge of the trigger zone to `max_speed` at
+the outer edge of the layout, so scrolling accelerates as the pointer pushes
+further in. The zone is clamped to half the viewport, so the two zones never
+overlap. `enabled = false` turns the behavior off entirely.
+
 ### Focus
 
 ```toml
