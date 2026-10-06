@@ -834,9 +834,7 @@ namespace umbriel {
       view->refreshStartupRuleEffects();
     }
     for (const auto& layer : self->m_layerSurfaces) {
-      if (layer->mapped()) {
-        layer->applyConfig();
-      }
+      layer->refreshStartupRuleEffects();
     }
     return 0;
   }

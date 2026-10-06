@@ -338,6 +338,15 @@ namespace umbriel {
     updateBlur();
   }
 
+  void LayerSurface::refreshStartupRuleEffects() {
+    m_rule = resolveLayerRules(
+        config(), ruleText(m_layerSurface->namespace_), layerOf(m_layerSurface->current.layer), m_server->uptimeMs()
+    );
+    if (m_mapped) {
+      updateBlur();
+    }
+  }
+
   void LayerSurface::onMap(wl_listener* listener, void* /*data*/) {
     LayerSurface* self;
     self = wl_container_of(listener, self, m_map);
