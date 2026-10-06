@@ -1163,6 +1163,32 @@ UMBRIEL_TEST(layerRulesMatchLayerAndStartupSelectors) {
   CHECK(!afterStartup.optimized);
 }
 
+UMBRIEL_TEST(layerRuleStartupBoundaryFlipsForExistingSurface) {
+  Config config;
+
+  LayerRule duringStartup;
+  duringStartup.matchAtStartup = true;
+  duringStartup.optimized = true;
+  config.layerRules.push_back(std::move(duringStartup));
+
+  LayerRule afterStartup;
+  afterStartup.matchAtStartup = false;
+  afterStartup.blur = true;
+  config.layerRules.push_back(std::move(afterStartup));
+
+  // The startup timer re-resolves surfaces that are still alive, so the same panel crossing the boundary must drop the
+  // startup-only rule and pick the opposite one without a layer change or client restart.
+  const auto during =
+      umbriel::resolveLayerRules(config, "panel", umbriel::LayerShellLayer::Top, umbriel::kStartupRuleDurationMs - 1);
+  CHECK(during.optimized && *during.optimized);
+  CHECK(!during.blur);
+
+  const auto past =
+      umbriel::resolveLayerRules(config, "panel", umbriel::LayerShellLayer::Top, umbriel::kStartupRuleDurationMs);
+  CHECK(!past.optimized);
+  CHECK(past.blur && *past.blur);
+}
+
 UMBRIEL_TEST(securityContextRulesAcceptSeveralPatternsPerSelector) {
   Config config;
 
