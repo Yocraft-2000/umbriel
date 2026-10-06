@@ -299,7 +299,8 @@ layout scrolls so offscreen columns can be reached.
 Speed rises from zero at the inner edge of the trigger zone to `max_speed` at
 the outer edge of the layout, so scrolling accelerates as the pointer pushes
 further in. The zone is clamped to half the viewport, so the two zones never
-overlap. `enabled = false` turns the behavior off entirely.
+overlap. `delay_ms = 0` starts scrolling as soon as the pointer enters the
+zone. `enabled = false` turns the behavior off entirely.
 
 ### Focus
 

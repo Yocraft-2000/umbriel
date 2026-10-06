@@ -548,7 +548,11 @@ namespace umbriel {
     m_dataDragEdgeScrollSpeed = speed;
     m_dataDragEdgeScrollLastMsec = 0;
     m_dataDragEdgeScrollPending = true;
-    wl_event_source_timer_update(m_dataDragEdgeScrollTimer, edge.delayMs);
+    if (edge.delayMs > 0) {
+      wl_event_source_timer_update(m_dataDragEdgeScrollTimer, edge.delayMs);
+    } else {
+      handleDataDragEdgeScrollTimer();
+    }
   }
 
   void Cursor::cancelDataDragEdgeScroll() {
