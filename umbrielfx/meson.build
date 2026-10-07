@@ -40,6 +40,7 @@ umbrielfx_sources = files(
   'render/fx_renderer/util.c',
   'types/fx/blur_data.c',
   'types/fx/clipped_region.c',
+  'types/linux_drm_syncobj.c',
   'types/output/output.c',
   'types/scene/drag_icon.c',
   'types/scene/layer_shell_v1.c',

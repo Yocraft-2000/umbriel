@@ -27,6 +27,7 @@
 #include "server/allocator.h"
 #include "server/backend_manager.h"
 #include "server/ipc.h"
+#include "server/syncobj_unmap_release.h"
 #include "server/wine_color_manager.h"
 #include "view/view.h"
 #include "wlr.h"
@@ -218,7 +219,7 @@ namespace umbriel {
           configuredAssignments.empty() ? "" : " && systemctl --user set-environment" + configuredAssignments;
       std::string command =
           "variables='WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE "
-          "UMBRIEL_SOCKET'; systemd_ready=false; "
+          "XCURSOR_THEME XCURSOR_SIZE UMBRIEL_SOCKET'; systemd_ready=false; "
           "if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then "
           "if systemctl --user import-environment $variables";
       command += publishConfigured;
@@ -456,7 +457,8 @@ namespace umbriel {
       }
     }
 
-    if (drmFd >= 0 && m_renderer->features.timeline && m_backend->features.timeline) {
+    const bool explicitSync = drmFd >= 0 && m_renderer->features.timeline && m_backend->features.timeline;
+    if (explicitSync) {
       if (wlr_linux_drm_syncobj_manager_v1_create(m_display, 1, drmFd) == nullptr) {
         throw std::runtime_error("failed to create linux-drm-syncobj manager");
       }
@@ -475,6 +477,9 @@ namespace umbriel {
     resolveEffectSlot(m_cursorEffectSlot, EffectKind::Cursor);
     effectRegistry().prepare(m_renderer);
     m_compositor = wlr_compositor_create(m_display, 5, m_renderer);
+    if (explicitSync) {
+      m_syncobjUnmapRelease = std::make_unique<SyncobjUnmapRelease>(m_compositor);
+    }
     wlr_subcompositor_create(m_display);
     wlr_data_device_manager_create(m_display);
     if (wlr_primary_selection_v1_device_manager_create(m_display) == nullptr) {
@@ -887,6 +892,7 @@ namespace umbriel {
     }
     wl_display_destroy_clients(m_display);
     m_wineColorManager.reset();
+    m_syncobjUnmapRelease.reset();
     // Chrome components destroy scene nodes in their destructors, so they must go before the scene tree does; otherwise
     // the destructor body frees the nodes and the member destructors touch already-freed memory.
     m_quitConfirm.reset();
@@ -963,6 +969,21 @@ namespace umbriel {
       return false;
     }
     m_backendManager->markStarted();
+
+    // Move the mouse cursor to the first output with "focus_at_startup" enabled, if any.
+    for (const auto& output : m_outputs) {
+      const OutputRule* rule = findOutputRule(config(), output->identity());
+      if (rule == nullptr || !rule->focusAtStartup || !output->desktopEnabled()) {
+        continue;
+      }
+      wlr_box box{};
+      wlr_output_layout_get_box(m_outputLayout, output->wlr(), &box);
+      if (box.width <= 0 || box.height <= 0) {
+        continue;
+      }
+      m_cursor->warpToPreservingFocus(box.x + box.width / 2.0, box.y + box.height / 2.0);
+      break;
+    }
 
     // These are delivered through the event loop, not a signal handler, so the shutdown path is ordinary code. Note the
     // side effect: wl_event_loop_add_signal blocks the signal process-wide, and a blocked mask survives fork and exec,
@@ -1048,7 +1069,7 @@ namespace umbriel {
     m_startTime = std::chrono::steady_clock::now();
     m_startupRulesTimer = wl_event_loop_add_timer(loop, onStartupRulesTimer, this);
     if (m_startupRulesTimer != nullptr) {
-      wl_event_source_timer_update(m_startupRulesTimer, kStartupWindowRuleDurationMs);
+      wl_event_source_timer_update(m_startupRulesTimer, kStartupRuleDurationMs);
     }
 
     if (startupCmd != nullptr) {

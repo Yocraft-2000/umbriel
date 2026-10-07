@@ -30,6 +30,8 @@ unit_tests = [
   ['cursor-plane-pace', ['unit/cursor_plane_pace.cpp'], []],
   ['output-frame-schedule', ['unit/output_frame_schedule.cpp'], []],
   ['output-format-sequence', ['unit/output_format_sequence.cpp'], []],
+  ['output-gamma-transition', ['unit/output_gamma_transition.cpp'], []],
+  ['hdr-metadata', ['unit/hdr_metadata.cpp'], [umbriel_core_dep]],
   ['hdr-format', ['unit/hdr_format.cpp'], []],
   ['sdr-format', ['unit/sdr_format.cpp'], []],
   ['layout-struts', ['unit/layout_struts.cpp'], []],
@@ -279,6 +281,22 @@ fractional_client = executable(
   dependencies: [wayland_client_dep],
 )
 
+# Harness helper that maps one explicitly synchronized dmabuf, unmaps it, and
+# waits for the compositor to signal the buffer's release point.
+syncobj_client = executable(
+  'syncobj-client',
+  [
+    'harness/clients/syncobj_client.cpp',
+    xdg_shell_client_h,
+    xdg_shell_client_c,
+    linux_dmabuf_client_h,
+    linux_dmabuf_client_c,
+    linux_drm_syncobj_client_h,
+    linux_drm_syncobj_client_c,
+  ],
+  dependencies: [wayland_client_dep, libdrm_dep, dependency('gbm')],
+)
+
 # Harness helper that keeps an idle inhibitor attached to a mapped toplevel and
 # reports when the compositor starts honoring its idle notification.
 idle_inhibit_client = executable(
@@ -413,6 +431,7 @@ harness_client_targets = [
   popup_client,
   subsurface_client,
   fractional_client,
+  syncobj_client,
   idle_inhibit_client,
   lock_client,
   security_context_client,

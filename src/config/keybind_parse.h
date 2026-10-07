@@ -62,6 +62,8 @@ namespace umbriel {
     WindowConsumeOrExpelLeft,
     WindowConsumeRight,
     WindowConsumeOrExpelRight,
+    WindowConsumeFromLeft,
+    WindowConsumeFromRight,
     WindowCyclePrimaryExtent,
     WindowCyclePrimaryExtentBack,
     WindowSetPrimaryExtent,
@@ -194,6 +196,8 @@ namespace umbriel {
     ColumnToggleTabBar,
     ColumnShowTabBar,
     ColumnHideTabBar,
+    ScratchpadWindowShowNext,
+    ScratchpadWindowShowPrevious,
     Count,
   };
 

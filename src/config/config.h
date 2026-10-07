@@ -273,6 +273,7 @@ namespace umbriel {
     std::optional<double> scale;
     std::optional<int> transform;
     VrrMode vrr = VrrMode::Disabled;
+    bool focusAtStartup = false;
     // Global safety gate. Even a client async hint or a window-rule override
     // cannot request tearing unless the owning output enables it.
     bool allowTearing = false;
@@ -532,8 +533,18 @@ namespace umbriel {
     bool operator==(const ResolvedWindowRule&) const = default;
   };
 
+  // The layer-shell layers a `[[layer_rule]]` can select with `match.layer`.
+  enum class LayerShellLayer {
+    Background,
+    Bottom,
+    Top,
+    Overlay,
+  };
+
   struct LayerRule {
     RegexPatterns namespacePatterns;
+    std::optional<LayerShellLayer> matchLayer;
+    std::optional<bool> matchAtStartup;
     std::optional<bool> blur;
     std::optional<bool> blurPopups;
     std::optional<double> ignoreAlpha;
@@ -542,6 +553,8 @@ namespace umbriel {
     // See WindowRule: the regexes are derived from the patterns.
     [[nodiscard]] bool operator==(const LayerRule& other) const {
       return namespacePatterns == other.namespacePatterns
+          && matchLayer == other.matchLayer
+          && matchAtStartup == other.matchAtStartup
           && blur == other.blur
           && blurPopups == other.blurPopups
           && ignoreAlpha == other.ignoreAlpha
@@ -1031,6 +1044,15 @@ namespace umbriel {
         int hideTimeoutMs = 0;
         bool operator==(const Cursor&) const = default;
       } cursor;
+
+      // Auto-scroll a scrolling layout while a data drag sits near one of its ends.
+      struct DragEdgeScroll {
+        bool enabled = true;
+        int triggerZone = 30;
+        int delayMs = 100;
+        double maxSpeed = 1500.0;
+        bool operator==(const DragEdgeScroll&) const = default;
+      } dragEdgeScroll;
 
       struct Focus {
         bool followsMouse = false;

@@ -11,6 +11,8 @@
 #include "output/cursor_plane_pace.h"
 #include "output/format_sequence.h"
 #include "output/frame_schedule.h"
+#include "output/gamma_transition.h"
+#include "output/hdr_metadata.h"
 #include "output/identity.h"
 #include "output/mode_selection.h"
 #include "output/sdr_format.h"
@@ -64,7 +66,8 @@ namespace umbriel {
   }
 
   Output::Output(Server& server, wlr_output* output)
-      : m_server(&server), m_output(output), m_defaultScale(output->scale) {
+      : m_server(&server), m_output(output), m_defaultScale(output->scale),
+        m_hdrStaticMetadata(hdrStaticMetadataForOutput(output)) {
     m_output->data = this;
     wlr_output_init_render(m_output, m_server->allocator(), m_server->renderer());
 
@@ -363,17 +366,6 @@ namespace umbriel {
     wlr_scene_output_set_sdr_white_level(m_sceneOutput, sdrWhite);
   }
 
-  void Output::rejectGammaControl(wlr_gamma_control_v1* control) {
-    if (control != nullptr) {
-      wlr_gamma_control_v1_send_failed_and_destroy(control);
-      if (!m_hdrGammaWarningLogged) {
-        kLog.warn("output '{}': gamma control is unavailable while HDR is active", m_output->name);
-        m_hdrGammaWarningLogged = true;
-      }
-    }
-    m_gammaDirty = false;
-  }
-
   bool Output::applyConfiguredState() {
     const OutputRule* rule = findOutputRule(config(), identity());
     const std::optional<double> configuredScale = rule != nullptr ? rule->scale : std::nullopt;
@@ -442,14 +434,7 @@ namespace umbriel {
       } else if (!m_server->renderer()->features.output_color_transform) {
         earlyHdrFail = "renderer lacks FP16 output transform";
       } else {
-        hdrDescription = {
-            .primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
-            .transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
-            .mastering_display_primaries = {},
-            .mastering_luminance = {},
-            .max_cll = 0,
-            .max_fall = 0,
-        };
+        hdrDescription = makeHdrOutputDescription(m_output->default_primaries, m_hdrStaticMetadata);
 
         if (!wlr_output_state_set_image_description(&state, &hdrDescription)) {
           earlyHdrFail = "failed to stage HDR image description";
@@ -473,12 +458,28 @@ namespace umbriel {
         wlr_output_state_set_adaptive_sync_enabled(&state, vrr);
       }
     };
+    const GammaTransitionOps gammaOps{
+        .clear = [&] { wlr_output_state_set_color_transform(&state, nullptr); },
+        .apply =
+            [&] {
+              wlr_gamma_control_v1* control =
+                  wlr_gamma_control_manager_v1_get_control(m_server->gammaManager(), m_output);
+              if (wlr_gamma_control_v1_apply(control, &state)) {
+                return true;
+              }
+              if (control != nullptr) {
+                wlr_gamma_control_v1_send_failed_and_destroy(control);
+              }
+              return false;
+            },
+    };
 
     const auto stageHdr = [&](uint32_t fmt, bool vrr) -> bool {
       if (!isPrimaryFormat(fmt)) {
         return false;
       }
       stageVrr(vrr);
+      (void)stageGammaForOutputMode(GammaOutputMode::Hdr, gammaOps);
       wlr_output_state_set_image_description(&state, &hdrDescription);
       wlr_output_state_set_render_format(&state, fmt);
       return true;
@@ -489,6 +490,7 @@ namespace umbriel {
         return false;
       }
       stageVrr(vrr);
+      (void)stageGammaForOutputMode(GammaOutputMode::Sdr, gammaOps);
       wlr_output_state_set_render_format(&state, fmt);
       return true;
     };
@@ -587,20 +589,20 @@ namespace umbriel {
     if (enabled && scaleStaged) {
       m_appliedConfiguredScale = configuredScale.has_value();
     }
+    if (enabled) {
+      // Every successful enabled-state commit above staged either an HDR bypass
+      // or the latest SDR gamma table.
+      m_gammaDirty = false;
+    }
     const bool hdrIsActive = hdrActive();
     if (hdrIsActive) {
       setHdrFallbackReason({});
-      rejectGammaControl(wlr_gamma_control_manager_v1_get_control(m_server->gammaManager(), m_output));
     } else {
       if (!hdrRequested) {
         setHdrFallbackReason({});
       } else if (enabled) {
         setHdrFallbackReason(pendingHdrFail);
       }
-      if (hdrWasActive) {
-        m_gammaDirty = true;
-      }
-      m_hdrGammaWarningLogged = false;
     }
     if (!enabled || bitDepthActive() || hdrIsActive || bitDepth != 10) {
       setBitDepthFallbackReason({});
@@ -1143,9 +1145,11 @@ namespace umbriel {
     }
   }
 
-  void Output::onGammaChanged(wlr_gamma_control_v1* control) {
+  void Output::onGammaChanged(wlr_gamma_control_v1* /*control*/) {
     if (hdrActive()) {
-      rejectGammaControl(control);
+      // wlroots has already retained the client's latest table. Keep it for
+      // the next SDR transition without applying an SDR LUT to HDR output.
+      m_gammaDirty = false;
       return;
     }
     // DRM gamma LUT upload is expensive; apply once on change, not every frame.
@@ -1457,7 +1461,7 @@ namespace umbriel {
         bool gammaPending = false;
         if (m_gammaDirty) {
           if (hdrActive()) {
-            rejectGammaControl(wlr_gamma_control_manager_v1_get_control(m_server->gammaManager(), m_output));
+            m_gammaDirty = false;
           } else if (wlr_output_get_gamma_size(m_output) > 0) {
             wlr_gamma_control_v1* control =
                 wlr_gamma_control_manager_v1_get_control(m_server->gammaManager(), m_output);

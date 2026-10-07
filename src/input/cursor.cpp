@@ -39,9 +39,6 @@ namespace umbriel {
   namespace {
     constexpr Logger kLog("cursor");
     constexpr double kHotCornerExtent = 8.0;
-    constexpr double kDataDragEdgeScrollTrigger = 30.0;
-    constexpr double kDataDragEdgeScrollMaxSpeed = 1500.0;
-    constexpr int kDataDragEdgeScrollDelayMs = 100;
     constexpr int kDataDragEdgeScrollTickMs = 16;
     constexpr uint32_t kDataDragEdgeScrollMaxElapsedMs = 50;
 
@@ -473,10 +470,17 @@ namespace umbriel {
     return 0;
   }
 
+  bool Cursor::tiledMoveDragActive() const {
+    const auto* grab = std::get_if<MoveGrab>(&m_grab);
+    return grab != nullptr && grab->view != nullptr && !grab->pending && grab->target == DragTarget::Tiled;
+  }
+
   Workspace* Cursor::dataDragEdgeScrollTarget(double* speed) const {
     *speed = 0;
-    if (m_server->sessionLocked()
-        || m_server->seat()->wlr()->drag == nullptr
+    const Config::Input::DragEdgeScroll& edge = config().input.dragEdgeScroll;
+    if (!edge.enabled
+        || m_server->sessionLocked()
+        || (m_server->seat()->wlr()->drag == nullptr && !tiledMoveDragActive())
         || (m_server->overview() != nullptr && m_server->overview()->active())) {
       return nullptr;
     }
@@ -497,12 +501,12 @@ namespace umbriel {
     if (extent <= 0) {
       return nullptr;
     }
-    const double trigger = std::min(kDataDragEdgeScrollTrigger, extent / 2.0);
+    const double trigger = std::min(static_cast<double>(edge.triggerZone), extent / 2.0);
     const double position = vertical ? m_cursor->y : m_cursor->x;
     if (position < origin + trigger) {
-      *speed = -kDataDragEdgeScrollMaxSpeed * std::clamp((origin + trigger - position) / trigger, 0.0, 1.0);
+      *speed = -edge.maxSpeed * std::clamp((origin + trigger - position) / trigger, 0.0, 1.0);
     } else if (position > origin + extent - trigger) {
-      *speed = kDataDragEdgeScrollMaxSpeed * std::clamp((position - (origin + extent - trigger)) / trigger, 0.0, 1.0);
+      *speed = edge.maxSpeed * std::clamp((position - (origin + extent - trigger)) / trigger, 0.0, 1.0);
     }
     if (*speed == 0) {
       return nullptr;
@@ -520,6 +524,7 @@ namespace umbriel {
   }
 
   void Cursor::updateDataDragEdgeScroll() {
+    const Config::Input::DragEdgeScroll& edge = config().input.dragEdgeScroll;
     double speed = 0;
     Workspace* workspace = dataDragEdgeScrollTarget(&speed);
     const int direction = (speed > 0) - (speed < 0);
@@ -543,7 +548,11 @@ namespace umbriel {
     m_dataDragEdgeScrollSpeed = speed;
     m_dataDragEdgeScrollLastMsec = 0;
     m_dataDragEdgeScrollPending = true;
-    wl_event_source_timer_update(m_dataDragEdgeScrollTimer, kDataDragEdgeScrollDelayMs);
+    if (edge.delayMs > 0) {
+      wl_event_source_timer_update(m_dataDragEdgeScrollTimer, edge.delayMs);
+    } else {
+      handleDataDragEdgeScrollTimer();
+    }
   }
 
   void Cursor::cancelDataDragEdgeScroll() {
@@ -1188,6 +1197,7 @@ namespace umbriel {
 
   void Cursor::resetMode() {
     m_server->hideInsertHint();
+    cancelDataDragEdgeScroll();
     View* view = grabbedView();
     if (std::holds_alternative<ScrollDragGrab>(m_grab)) {
       m_server->gestures()->endPointerScroll(true, 0);
@@ -1960,6 +1970,7 @@ namespace umbriel {
         }
         processMove();
         updateDropTarget();
+        updateDataDragEdgeScroll();
         return;
       }
     }
@@ -2863,6 +2874,12 @@ namespace umbriel {
         wlr_seat_pointer_notify_clear_focus(seat);
       }
       wlr_seat_pointer_notify_frame(seat);
+      return;
+    }
+    if (tiledMoveDragActive()) {
+      // The compositor owns drop targeting during a window move; client pointer focus stays suspended.
+      updateDataDragEdgeScroll();
+      updateDropTarget();
       return;
     }
     if (!isPassthrough() || seat->pointer_state.button_count != 0) {

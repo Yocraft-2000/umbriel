@@ -266,7 +266,7 @@ namespace umbriel {
       if (rule.matchOnlyWindow && *rule.matchOnlyWindow != state.onlyWindow) {
         continue;
       }
-      if (rule.matchAtStartup && *rule.matchAtStartup != (uptimeMs < kStartupWindowRuleDurationMs)) {
+      if (rule.matchAtStartup && *rule.matchAtStartup != (uptimeMs < kStartupRuleDurationMs)) {
         continue;
       }
       // Last writer wins: overwrite each field the rule sets.
@@ -379,10 +379,18 @@ namespace umbriel {
     return resolved;
   }
 
-  ResolvedLayerRule resolveLayerRules(const Config& config, std::optional<std::string_view> layerNamespace) {
+  ResolvedLayerRule resolveLayerRules(
+      const Config& config, std::optional<std::string_view> layerNamespace, LayerShellLayer layer, uint64_t uptimeMs
+  ) {
     ResolvedLayerRule resolved;
     for (const auto& rule : config.layerRules) {
       if (!patternMatches(rule.namespacePatterns, layerNamespace)) {
+        continue;
+      }
+      if (rule.matchLayer && *rule.matchLayer != layer) {
+        continue;
+      }
+      if (rule.matchAtStartup && *rule.matchAtStartup != (uptimeMs < kStartupRuleDurationMs)) {
         continue;
       }
       if (rule.blur) {

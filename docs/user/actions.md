@@ -126,6 +126,8 @@ Sizing rules per layout live in [Sizing behavior](layout.md#sizing-behavior).
 | `layout-scroll-right` | Scroll the strip toward its end |
 | `layout-scroll-up` | Scroll the strip toward its start |
 | `window-center` | Center the focused floating window on its output |
+| `window-consume-from-left` | Pull the left column's window into the focused column |
+| `window-consume-from-right` | Pull the right column's window into the focused column |
 | `window-consume-left` | Stack the focused window into the column left |
 | `window-consume-or-expel-left` | Split the window out, or stack it into the column left |
 | `window-consume-or-expel-right` | Split the window out, or stack it into the column right |
@@ -183,6 +185,10 @@ Sizing rules per layout live in [Sizing behavior](layout.md#sizing-behavior).
 | `window-toggle-maximize-to-edges` | Toggle maximize without gaps, struts, or borders |
 | `window-toggle-pinned` | Pin the focused window above other windows |
 
+For Xwayland windows, fullscreen entered with `window-toggle-fullscreen`
+remains compositor-owned until an Umbriel action exits it. Fullscreen entered
+by the application remains client-controlled.
+
 ## Scratchpad
 
 Scratchpads are global named holding areas that roam between outputs.
@@ -193,6 +199,8 @@ multi-output behavior.
 |--------|--------|
 | `scratchpad-focus-next:[<scratchpad>]` | Focus the next visible scratchpad window |
 | `scratchpad-toggle:[<scratchpad>]` | Show or hide the selected scratchpad windows |
+| `scratchpad-window-show-next:[<scratchpad>]` | Show only the next scratchpad window |
+| `scratchpad-window-show-previous:[<scratchpad>]` | Show only the previous scratchpad window |
 | `window-move-to-scratchpad:[<scratchpad>]` | Move the focused window into a scratchpad |
 | `window-restore-from-scratchpad:[<scratchpad>]` | Return a scratchpad window to its saved workspace |
 | `window-toggle-scratchpad:[<scratchpad>]` | Move the focused window to or from a scratchpad |

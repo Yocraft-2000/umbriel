@@ -365,6 +365,8 @@ namespace {
     case A::WindowMoveOrWorkspaceDown:
     case A::WindowMoveOrOutputUp:
     case A::WindowMoveOrOutputDown:
+    case A::WindowConsumeFromLeft:
+    case A::WindowConsumeFromRight:
     case A::WindowConsumeLeft:
     case A::WindowConsumeOrExpelLeft:
     case A::WindowConsumeRight:
@@ -425,6 +427,8 @@ namespace {
     case A::WindowToggleScratchpad:
     case A::ScratchpadToggle:
     case A::ScratchpadFocusNext:
+    case A::ScratchpadWindowShowNext:
+    case A::ScratchpadWindowShowPrevious:
       return Group::Scratchpad;
     case A::WorkspaceSwitch:
     case A::ColumnMoveToWorkspace:

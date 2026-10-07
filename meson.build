@@ -83,6 +83,10 @@ wlr_has_drm_backend = cpp.get_define(
   prefix: '#include <wlr/config.h>',
   dependencies: wlroots_dep,
 ) == '1'
+add_project_arguments(
+  '-DUMBRIEL_HAS_DRM_BACKEND=' + wlr_has_drm_backend.to_int().to_string(),
+  language: 'cpp',
+)
 if cpp.get_define('WLR_HAS_LIBINPUT_BACKEND', prefix: '#include <wlr/config.h>', dependencies: wlroots_dep) != '1'
   error('Umbriel requires wlroots built with the libinput backend')
 endif
@@ -117,6 +121,7 @@ nlohmann_json_dep = dependency('nlohmann_json')
 cairo_dep = dependency('cairo')
 pangocairo_dep = dependency('pangocairo')
 libdrm_dep = dependency('libdrm', version: '>=2.4.129')
+libdisplay_info_dep = dependency('libdisplay-info', version: '>=0.3.0')
 libudev_dep = dependency('libudev', required: false)
 xcb_dep = dependency('xcb')
 xcb_icccm_dep = dependency('xcb-icccm')
@@ -398,6 +403,32 @@ fractional_scale_client_c = custom_target(
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+linux_dmabuf_client_h = custom_target(
+  'linux-dmabuf-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'stable/linux-dmabuf/linux-dmabuf-v1.xml',
+  output: 'linux-dmabuf-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+linux_dmabuf_client_c = custom_target(
+  'linux-dmabuf-v1-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'stable/linux-dmabuf/linux-dmabuf-v1.xml',
+  output: 'linux-dmabuf-v1-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
+linux_drm_syncobj_client_h = custom_target(
+  'linux-drm-syncobj-v1-client-protocol.h',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml',
+  output: 'linux-drm-syncobj-v1-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+linux_drm_syncobj_client_c = custom_target(
+  'linux-drm-syncobj-v1-protocol.c',
+  input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml',
+  output: 'linux-drm-syncobj-v1-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 ext_image_capture_source_client_h = custom_target(
   'ext-image-capture-source-v1-client-protocol.h',
   input: wayland_protocols_dep.get_variable(pkgconfig: 'pkgdatadir') / 'staging/ext-image-capture-source/ext-image-capture-source-v1.xml',
@@ -587,6 +618,7 @@ pure_sources = files(
   'src/output/identity.cpp',
   'src/output/enable_overrides.cpp',
   'src/output/format_sequence.cpp',
+  'src/output/gamma_transition.cpp',
   'src/output/mode_selection.cpp',
   'src/output/cursor_plane_pace.cpp',
   'src/server/allocator_policy.cpp',
@@ -654,9 +686,11 @@ core_sources = files(
   'src/server/server_events.cpp',
   'src/server/server_keybinds.cpp',
   'src/server/server_outputs.cpp',
+  'src/server/syncobj_unmap_release.cpp',
   'src/server/actions.cpp',
   'src/server/effects.cpp',
   'src/output/output.cpp',
+  'src/output/hdr_metadata.cpp',
   'src/input/seat.cpp',
   'src/input/keyboard.cpp',
   'src/input/text_input.cpp',
@@ -721,6 +755,7 @@ umbriel_core_deps = [
   cairo_dep,
   pangocairo_dep,
   libdrm_dep,
+  libdisplay_info_dep,
   native_drm_policy_deps,
   nlohmann_json_dep,
   layer_shell_protocol_dep,

@@ -8,6 +8,7 @@ monitor identity:
 mode = "3840x2160@165"
 position = [0, 0]
 scale = 1.25
+focus_at_startup = true
 ```
 
 Run `umbriel outputs` inside a session to list names and available modes. The
@@ -39,6 +40,7 @@ and positions when the output becomes available again.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | bool | `true` | Turn the monitor on or off. |
+| `focus_at_startup` | bool | `false` | Move the mouse cursor to this monitor on startup. |
 | `mode` | string | preferred | Resolution and optional refresh rate, such as `"2560x1440@165"`. |
 | `position` | `[x, y]` | automatic | Top-left position in logical coordinates. |
 | `scale` | float | `1.0` | Output scale from 0.25 to 4.0. |
@@ -214,8 +216,25 @@ Some native Wayland Proton builds require `PROTON_ENABLE_WAYLAND=1` and
 the selected runtime's documentation and fully restart Steam after changing
 session environment values.
 
+On a native DRM output, Umbriel reads the display's CTA HDR static metadata
+from its EDID. The display primaries, desired minimum and maximum content
+luminance, and desired maximum frame-average luminance are included in the
+BT.2020 PQ output description. This gives the display a valid mastering range,
+MaxCLL, and MaxFALL for its own tone mapping. Umbriel leaves any value omitted
+by the EDID undefined instead of guessing a brightness that may be wrong for
+the panel. Nested and virtual outputs have no display EDID, so their luminance
+metadata remains undefined.
+
+Run `umbriel color` to inspect the metadata in the active output description.
+The JSON form reports `mastering_display_primaries`, `mastering_luminance`,
+`max_cll`, and `max_fall` for each output.
+
 Screenshots from normal screencopy clients receive an SDR view while HDR is
 active.
+
+Gamma-control adjustments such as Night Light are suspended while HDR is
+active. Umbriel keeps the client's latest gamma table and restores it when the
+output returns to SDR.
 
 ### Bit depth
 

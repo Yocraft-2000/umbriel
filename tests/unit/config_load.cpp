@@ -1797,6 +1797,25 @@ UMBRIEL_TEST(windowStartupMatcherLoadsBoolean) {
   CHECK(!containsDiagnostic(store, "unknown key window_rule.opacity"));
 }
 
+UMBRIEL_TEST(layerMatchersLoadLayerAndStartup) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[[layer_rule]]\nmatch.layer = \"top\"\nmatch.at_startup = true\nblur = true\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().layerRules.size(), size_t{1});
+  CHECK(store.config().layerRules[0].matchLayer == umbriel::LayerShellLayer::Top);
+  CHECK(store.config().layerRules[0].matchAtStartup == true);
+  CHECK(!containsDiagnostic(store, "unknown key layer_rule.match.layer"));
+  CHECK(!containsDiagnostic(store, "unknown key layer_rule.match.at_startup"));
+
+  // A layer selector that names no layer rejects the rule, as a wrong value would blur every layer instead.
+  file.write("[[layer_rule]]\nmatch.layer = \"sideways\"\nblur = true\n");
+  CHECK(store.reload().success);
+  CHECK(store.config().layerRules.empty());
+}
+
 UMBRIEL_TEST(windowStateMatchersLoadBooleans) {
   const TempConfig file;
   ConfigStore& store = umbriel::configStore();
@@ -2051,6 +2070,30 @@ UMBRIEL_TEST(outputCyclicWorkspacesLoadsAndDefaultsOff) {
   CHECK(store.reload().success);
   CHECK(!store.config().outputs[0].cyclicWorkspaces);
   CHECK(containsDiagnostic(store, "ignoring output.DP-1.cyclic_workspaces (expected boolean)"));
+}
+
+UMBRIEL_TEST(outputFocusAtStartupLoadsAndDefaultsOff) {
+  const TempConfig file;
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+
+  file.write("[output.DP-1]\nfocus_at_startup = true\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().outputs.size(), size_t{1});
+  CHECK(store.config().outputs[0].focusAtStartup);
+
+  file.write("[output.DP-1]\nfocus_at_startup = false\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().outputs[0].focusAtStartup);
+
+  file.write("[output.DP-1]\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().outputs[0].focusAtStartup);
+
+  file.write("[output.DP-1]\nfocus_at_startup = \"yes\"\n");
+  CHECK(store.reload().success);
+  CHECK(!store.config().outputs[0].focusAtStartup);
+  CHECK(containsDiagnostic(store, "ignoring output.DP-1.focus_at_startup (expected boolean)"));
 }
 
 UMBRIEL_TEST(dynamicNamedWorkspaceDeclarationsReserveEmptySentinelCapacity) {
@@ -2656,6 +2699,39 @@ hide_timeout_ms = 1500
   CHECK(store.reload().success);
   CHECK_EQ(store.config().input.cursor.hideTimeoutMs, 0);
   CHECK(containsDiagnostic(store, "unknown key input.cursor.hide_timeout"));
+}
+
+UMBRIEL_TEST(dragEdgeScrollLoads) {
+  const umbriel::Config defaults;
+  CHECK(defaults.input.dragEdgeScroll.enabled);
+  CHECK_EQ(defaults.input.dragEdgeScroll.triggerZone, 30);
+  CHECK_EQ(defaults.input.dragEdgeScroll.delayMs, 100);
+  CHECK_EQ(defaults.input.dragEdgeScroll.maxSpeed, 1500.0);
+
+  const TempConfig file;
+  file.write(R"(
+[input.drag_edge_scroll]
+enabled = false
+trigger_zone = 48
+delay_ms = 250
+max_speed = 900.0
+)");
+
+  ConfigStore& store = umbriel::configStore();
+  store.setRootPath(file.path(), true);
+  const umbriel::ConfigReloadResult result = store.reload();
+
+  CHECK(result.success);
+  CHECK(!store.config().input.dragEdgeScroll.enabled);
+  CHECK_EQ(store.config().input.dragEdgeScroll.triggerZone, 48);
+  CHECK_EQ(store.config().input.dragEdgeScroll.delayMs, 250);
+  CHECK_EQ(store.config().input.dragEdgeScroll.maxSpeed, 900.0);
+  CHECK(!containsDiagnostic(store, "unknown key input.drag_edge_scroll.trigger_zone"));
+
+  file.write("[input.drag_edge_scroll]\ntrigger = 48\n");
+  CHECK(store.reload().success);
+  CHECK_EQ(store.config().input.dragEdgeScroll.triggerZone, 30);
+  CHECK(containsDiagnostic(store, "unknown key input.drag_edge_scroll.trigger"));
 }
 
 UMBRIEL_TEST(invalidCustomAccelerationCurveIsRejected) {

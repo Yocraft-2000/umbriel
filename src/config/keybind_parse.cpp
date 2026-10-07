@@ -279,6 +279,10 @@ namespace umbriel {
          KeybindAction::ScratchpadFocusNext, ActionArgKind::OptionalScratchpad},
         {"scratchpad-toggle", "[<scratchpad>]", "Show or hide the selected scratchpad windows",
          KeybindAction::ScratchpadToggle, ActionArgKind::OptionalScratchpad},
+        {"scratchpad-window-show-next", "[<scratchpad>]", "Show only the next scratchpad window",
+         KeybindAction::ScratchpadWindowShowNext, ActionArgKind::OptionalScratchpad},
+        {"scratchpad-window-show-previous", "[<scratchpad>]", "Show only the previous scratchpad window",
+         KeybindAction::ScratchpadWindowShowPrevious, ActionArgKind::OptionalScratchpad},
         {"screencast-clear", "", "Pause the screencast and stop following", KeybindAction::ScreenCastClear},
         {"screencast-follow-output", "", "Follow the focused output", KeybindAction::ScreenCastFollowOutput},
         {"screencast-follow-stop", "", "Stop following and keep the current target",
@@ -299,6 +303,10 @@ namespace umbriel {
         {"window-center", "", "Center the focused floating window on its output", KeybindAction::WindowCenter},
         {"window-close", "[<window-id>]", "Close the focused window, or the given window", KeybindAction::WindowClose,
          ActionArgKind::OptionalWindowId},
+        {"window-consume-from-left", "", "Pull the left column's window into the focused column",
+         KeybindAction::WindowConsumeFromLeft},
+        {"window-consume-from-right", "", "Pull the right column's window into the focused column",
+         KeybindAction::WindowConsumeFromRight},
         {"window-consume-left", "", "Stack the focused window into the column left", KeybindAction::WindowConsumeLeft},
         {"window-consume-or-expel-left", "", "Split the window out, or stack it into the column left",
          KeybindAction::WindowConsumeOrExpelLeft},
@@ -840,6 +848,8 @@ namespace umbriel {
 
     add(KeybindAction::WindowConsumeLeft, XKB_KEY_comma);
     add(KeybindAction::WindowConsumeRight, XKB_KEY_period);
+    add(KeybindAction::WindowConsumeFromLeft, XKB_KEY_comma, WLR_MODIFIER_CTRL);
+    add(KeybindAction::WindowConsumeFromRight, XKB_KEY_period, WLR_MODIFIER_CTRL);
     add(KeybindAction::WindowCyclePrimaryExtent, XKB_KEY_r);
     add(KeybindAction::WindowCyclePrimaryExtentBack, XKB_KEY_r, WLR_MODIFIER_SHIFT);
     add(KeybindAction::ToggleFullscreen, XKB_KEY_f);

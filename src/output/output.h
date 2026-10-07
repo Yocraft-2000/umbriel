@@ -3,6 +3,7 @@
 #include "core/dirty.h"
 #include "output/cursor_plane_pace.h"
 #include "output/frame_schedule.h"
+#include "output/hdr_metadata.h"
 #include "scene/effect_selection.h"
 
 #include <cstdint>
@@ -177,7 +178,6 @@ namespace umbriel {
     void setHdrFallbackReason(std::string_view reason);
     void setBitDepthFallbackReason(std::string_view reason);
     void updateSceneSdrWhite();
-    void rejectGammaControl(wlr_gamma_control_v1* control);
     void armFrameRetry();
     void armEffectFrame(uint64_t nowMsec);
     // Render locks other than this output's animation lock.
@@ -194,6 +194,7 @@ namespace umbriel {
     Server* m_server = nullptr;
     wlr_output* m_output = nullptr;
     float m_defaultScale = 1.0F;
+    std::optional<HdrStaticMetadata> m_hdrStaticMetadata;
     wlr_scene_output* m_sceneOutput = nullptr;
     wlr_scene_tree* m_layerTrees[kLayerCount]{};
     wlr_scene_tree* m_popupTree = nullptr;
@@ -218,7 +219,6 @@ namespace umbriel {
 #endif
     bool m_desktopEnabled = true;
     bool m_dpmsOff = false;
-    bool m_hdrGammaWarningLogged = false;
     bool m_modeFallbackWarned = false;
     std::optional<FormatTier> m_vrrDroppedTier;
     bool m_fullscreenHdrRequested = false;
