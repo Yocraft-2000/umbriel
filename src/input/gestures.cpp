@@ -594,7 +594,6 @@ namespace umbriel {
   void Gestures::finishScroll(bool cancelled, uint32_t timeMsec) {
     Workspace* workspace = m_scrollWorkspace;
     Output* output = m_output;
-    const ScrollSource source = m_scrollSource;
     m_state = State::Idle;
     m_scrollSource = ScrollSource::None;
     m_scrollWorkspace = nullptr;
@@ -694,17 +693,10 @@ namespace umbriel {
       // A tab group is entered on the tab it shows, as a directional focus move enters it.
       View* target = columnEntry(scrolling->columns()[static_cast<size_t>(best)]);
       m_server->focusView(target, FocusReason::Gesture);
+      workspace->markArrange(true);
     } else {
       workspace->ensureFocusedVisible();
       workspace->markArrange(true);
-    }
-
-    // A touchpad swipe leaves the pointer where it was while choosing a column beneath it. Keep that choice through
-    // release, then let the next physical pointer motion reconcile follows_mouse without requiring a border crossing.
-    // Pointer scroll-drag deliberately keeps the stronger boundary-crossing rule so release jitter cannot undo the
-    // column selected by the grab.
-    if (source == ScrollSource::Swipe) {
-      m_server->cursor()->invalidateHoverFocus();
     }
   }
 

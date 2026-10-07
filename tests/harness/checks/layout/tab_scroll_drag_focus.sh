@@ -8,6 +8,9 @@ readonly OUTPUT_W=1280
 readonly OUTPUT_H=720
 readonly BTN_MIDDLE=274
 readonly POINTER="${UMBRIEL_POINTER_CLIENT:-./build-debug/tests/pointer-client}"
+readonly CLIENT="${UMBRIEL_UNMAP_CLIENT:-./build-debug/tests/unmap-client}"
+
+source "$UMBRIEL_HARNESS_LIB"
 
 cat >> "$UMBRIEL_CONFIG" <<'EOF'
 
@@ -31,7 +34,7 @@ pointer() {
 }
 
 spawn_client() {
-  foot --title="$1" sh -c 'sleep 120' > /dev/null 2>&1 &
+  "$CLIENT" "$1" 1200 700 > /dev/null 2>&1 &
 }
 
 wait_for_windows() {
@@ -74,9 +77,20 @@ wait_for_focus tab-c
 "$UMBRIEL" settle
 
 # Pan back to the group: the drag moves the strip right, revealing the column on the left.
-pointer move 300 360 mod logo press "$BTN_MIDDLE" move 350 360 move 1200 360 release "$BTN_MIDDLE" mod none
+pointer_hold "$OUTPUT_W" "$OUTPUT_H" \
+  move 300 360 mod logo press "$BTN_MIDDLE" move 350 360 move 1200 360 \
+  -- release "$BTN_MIDDLE" mod none
+# Flush the last finger-driven position before release, so only the release transition can move the strip to its snap.
+"$UMBRIEL" settle
+held_x=$("$UMBRIEL" windows --json | jq -r '.[] | select(.title == "tab-b") | .x')
+pointer_release
 "$UMBRIEL" settle
 wait_for_focus tab-b
+released_x=$("$UMBRIEL" windows --json | jq -r '.[] | select(.title == "tab-b") | .x')
+if ((released_x >= held_x)); then
+  echo "gesture release did not arrange tab-b at its left snap: x $held_x -> $released_x"
+  exit 1
+fi
 if [[ $("$UMBRIEL" windows --json | jq -r '.[] | select(.title == "tab-a") | .tab_hidden') != true ]]; then
   echo "expected tab-a to stay hidden behind tab-b: $("$UMBRIEL" windows --json)"
   exit 1
