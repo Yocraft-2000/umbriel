@@ -58,6 +58,24 @@ The README covers routine builds and running Umbriel. Contributor checks and spe
 | `just clean <mode>` | Remove a build directory |
 | `just rebuild <mode>` | Clean and rebuild a build directory |
 
+The Nix development shell includes the clients and command-line tools used by the test suite:
+
+```sh
+nix develop
+just test                 # unit and umbrielfx suites, through Meson
+just check                # every harness check
+```
+
+Select harness checks by name or name fragment:
+
+```sh
+just check protocol/color_management                  # one check
+just check protocol/color_management protocol/tearing # several
+just check overview/                                  # every check in a group
+just check protocol/color_management -v               # keep passing-check output
+just mode=asan check protocol/color_management        # use build-asan
+```
+
 Tests live in three places, and which one a change belongs in follows from what it can observe:
 
 ```
@@ -161,6 +179,9 @@ keys. A check about how keyboards themselves arrive opts out with `# harness: ke
 
 A check that stops making progress is killed after 120 seconds, so the suite reports instead of hanging. Set
 `CHECK_TIMEOUT` to change the cap, and `CHECK_VERBOSE=1` (or `-v`) to keep the full output of passing checks.
+Passing checks emit completion messages, summarized to a single dimmed line unless verbose output is enabled.
+Failing checks print their whole output and keep their runtime directory (compositor log, config, and per-client
+logs), with its path in the report.
 
 ### Writing regression checks
 
