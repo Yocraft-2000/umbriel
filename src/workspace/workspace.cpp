@@ -2036,11 +2036,9 @@ namespace umbriel {
     m_inSwitchTransition = false;
     for (View* view : m_switchViews) {
       view->setFadeAlpha(1.0F);
-      if (!m_active) {
-        view->setNodeEnabled(false);
-      }
     }
     m_switchViews.clear();
+    applyVisibility();
     syncCloseSnapshots();
     // setSlideOffset() refreshes visibility and clips, but it does not move tiled scene nodes to their
     // authoritative horizontal strip positions. Reconcile after an interrupted switch so a fullscreen column cannot
