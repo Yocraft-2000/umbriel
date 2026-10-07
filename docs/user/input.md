@@ -286,12 +286,13 @@ delay_ms = 100
 max_speed = 1500.0
 ```
 
-While a drag-and-drop is held near either end of a scrolling layout, the
-layout scrolls so offscreen columns can be reached.
+While a drag-and-drop or a tiled window move (Mod+left-click or the tab bar)
+is held near either end of a scrolling layout, the layout scrolls so offscreen
+columns can be reached.
 
 | Key | Range or values | Description |
 | --- | --- | --- |
-| `enabled` | bool | Enable edge scrolling during a data drag. |
+| `enabled` | bool | Enable edge scrolling during a data drag or a tiled window move. |
 | `trigger_zone` | 1 to 1000 | Width of the zone at each end, in logical pixels. |
 | `delay_ms` | 0 to 10000 | Time inside the zone before scrolling starts. |
 | `max_speed` | 1.0 to 100000.0 | Peak scroll speed in logical pixels per second. |
