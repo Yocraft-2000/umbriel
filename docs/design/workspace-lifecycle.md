@@ -135,8 +135,11 @@ fall inside it. After that one refresh, hover returns to geometric
 border-crossing detection so scrolling animations cannot cascade focus through
 windows moving beneath the pointer. Explicit layout scrolling is the exception:
 the strip moves without invalidating hover, and a scroll gesture owns its focus
-choice through release. Focus follows again after the pointer crosses into
-another view.
+choice through release. A touchpad swipe then arms one hover refresh for the
+next physical pointer motion, so focus can follow the window now under the
+pointer without treating passive scene motion as input. A pointer-bound scroll
+drag keeps the gesture choice until the pointer crosses into another view,
+which prevents release jitter from undoing it.
 
 The hover decision compares against seat-global activation, not a workspace's
 remembered focus. A pinned window can retain seat focus while following the
