@@ -623,13 +623,14 @@ namespace umbriel {
     for (const auto& output : server.outputs()) {
       const wlr_output* wlrOutput = output->wlr();
       const wlr_output_image_description* description = wlrOutput->image_description;
+      const bool hdrRequested = output->hdrRequested();
       nlohmann::json entry = {
           {"name", wlrOutput->name},
           {"enabled", wlrOutput->enabled},
           {"hdr_mode", hdrModeName(output->hdrMode())},
-          {"hdr_requested", output->hdrRequested()},
+          {"hdr_requested", hdrRequested},
           {"hdr_active", output->hdrActive()},
-          {"fallback_reason", output->hdrFallbackReason()},
+          {"fallback_reason", hdrRequested ? output->hdrFallbackReason() : ""},
           {"render_format", fourccName(wlrOutput->render_format)},
           {"transfer_function", description != nullptr ? transferFunctionName(description->transfer_function) : "none"},
           {"primaries", description != nullptr ? primariesName(description->primaries) : "none"},

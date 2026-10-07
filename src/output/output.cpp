@@ -15,6 +15,7 @@
 #include "output/hdr_metadata.h"
 #include "output/identity.h"
 #include "output/mode_selection.h"
+#include "output/rendered_state_commit.h"
 #include "output/sdr_format.h"
 #include "overview/overview.h"
 #include "scene/cheatsheet.h"
@@ -31,9 +32,11 @@
 
 extern "C" {
 #include <umbrielfx/render/effect.h>
+#include <wlr/util/transform.h>
 }
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <drm_fourcc.h>
@@ -50,6 +53,31 @@ namespace umbriel {
       ~OutputFrameScope() { server.endOutputFrame(); }
       Server& server;
     };
+
+    wlr_box
+    pendingSceneBox(const wlr_output& output, const wlr_output_state& state, const wlr_scene_output& sceneOutput) {
+      int width = output.width;
+      int height = output.height;
+      if ((state.committed & WLR_OUTPUT_STATE_MODE) != 0) {
+        if (state.mode_type == WLR_OUTPUT_STATE_MODE_FIXED && state.mode != nullptr) {
+          width = state.mode->width;
+          height = state.mode->height;
+        } else if (state.mode_type == WLR_OUTPUT_STATE_MODE_CUSTOM) {
+          width = state.custom_mode.width;
+          height = state.custom_mode.height;
+        }
+      }
+
+      const wl_output_transform transform =
+          (state.committed & WLR_OUTPUT_STATE_TRANSFORM) != 0 ? state.transform : output.transform;
+      wlr_output_transform_coords(transform, &width, &height);
+      const float scale = (state.committed & WLR_OUTPUT_STATE_SCALE) != 0 ? state.scale : output.scale;
+      if (scale > 0.0F) {
+        width = static_cast<int>(std::ceil(static_cast<double>(width) / scale));
+        height = static_cast<int>(std::ceil(static_cast<double>(height) / scale));
+      }
+      return {.x = sceneOutput.x, .y = sceneOutput.y, .width = width, .height = height};
+    }
 
   } // namespace
 
@@ -70,6 +98,14 @@ namespace umbriel {
         m_hdrStaticMetadata(hdrStaticMetadataForOutput(output)) {
     m_output->data = this;
     wlr_output_init_render(m_output, m_server->allocator(), m_server->renderer());
+    // Create the scene output before the initial configuration so startup and
+    // resume modesets carry rendered content instead of wlroots' empty buffer.
+    m_sceneOutput = wlr_scene_output_create(m_server->scene(), m_output);
+    if (m_sceneOutput == nullptr) {
+      kLog.error("output '{}': failed to create scene output", m_output->name);
+      std::abort();
+    }
+    wlr_scene_output_set_direct_scanout_enabled(m_sceneOutput, configuredDirectScanoutEnabled());
 
     m_frame.notify = onFrame;
     wl_signal_add(&m_output->events.frame, &m_frame);
@@ -93,8 +129,6 @@ namespace umbriel {
       // Keeping it disabled lets a later output-enable action retry the commit.
       m_desktopEnabled = false;
     }
-    m_sceneOutput = wlr_scene_output_create(m_server->scene(), m_output);
-    wlr_scene_output_set_direct_scanout_enabled(m_sceneOutput, configuredDirectScanoutEnabled());
     updateSceneSdrWhite();
     if (desktopEnabled()) {
       wlr_output_layout_output* layoutOutput = addToLayout();
@@ -366,23 +400,42 @@ namespace umbriel {
     wlr_scene_output_set_sdr_white_level(m_sceneOutput, sdrWhite);
   }
 
-  bool Output::applyConfiguredState() {
+  wlr_scene_rect* Output::createConfiguredFrameMask(const wlr_output_state& state) const {
+    const wlr_box box = pendingSceneBox(*m_output, state, *m_sceneOutput);
+    if (box.width <= 0 || box.height <= 0) {
+      kLog.error("output '{}': configured frame has no secure logical extent", m_output->name);
+      return nullptr;
+    }
+    auto color = config().colors.backdrop;
+    color[3] = 1.0F;
+    wlr_scene_rect* mask = wlr_scene_rect_create(&m_server->scene()->tree, box.width, box.height, color.data());
+    if (mask == nullptr) {
+      kLog.error("output '{}': failed to create secure mask for configured frame", m_output->name);
+      return nullptr;
+    }
+    wlr_scene_node_set_position(&mask->node, box.x, box.y);
+    wlr_scene_node_raise_to_top(&mask->node);
+    return mask;
+  }
+
+  bool Output::applyConfiguredState(bool stageGeometry) {
     const OutputRule* rule = findOutputRule(config(), identity());
     const std::optional<double> configuredScale = rule != nullptr ? rule->scale : std::nullopt;
     const bool enabled = desktopEnabled() && !m_dpmsOff;
     wlr_output_state state{};
     wlr_output_state_init(&state);
-    wlr_output_state_set_enabled(&state, enabled);
+    if (stageGeometry) {
+      wlr_output_state_set_enabled(&state, enabled);
+    }
 
     const bool hdrWasActive = hdrActive();
     const bool hdrRequested = this->hdrRequested();
-    m_lastHdrRequested = hdrRequested;
 
     // Stage geometry.
     bool scaleStaged = false;
     const OutputMode* configuredModeSpec = nullptr;
     wlr_output_mode* stagedMode = nullptr;
-    if (enabled) {
+    if (enabled && stageGeometry) {
       if (rule != nullptr && rule->mode) {
         if (wlr_output_is_wl(m_output)) {
           kLog.info("output '{}': mode is ignored in nested sessions", m_output->name);
@@ -411,6 +464,12 @@ namespace umbriel {
       if (rule != nullptr && rule->transform) {
         wlr_output_state_set_transform(&state, static_cast<wl_output_transform>(*rule->transform));
       }
+    }
+
+    if (enabled && !stageGeometry) {
+      // Image-description and max-bpc changes may require a modeset even
+      // though the live mode and geometry stay unchanged.
+      state.allow_reconfiguration = true;
     }
 
     // VRR variants. Try with VRR first (if requested and supported), then without.
@@ -509,18 +568,96 @@ namespace umbriel {
           .currentRenderFormat = m_output->render_format,
           .bitDepth = bitDepth,
           .tryVrrOn = tryVrrOn,
-          .configuredModeSpec = configuredModeSpec,
-          .preferredMode = preferredFallbackMode(m_output, stagedMode),
+          .configuredModeSpec = stageGeometry ? configuredModeSpec : nullptr,
+          .preferredMode = stageGeometry ? preferredFallbackMode(m_output, stagedMode) : nullptr,
           .modeFallbackAlreadyWarned = m_modeFallbackWarned,
           .vrrDroppedTier = m_vrrDroppedTier,
           .earlyHdrFail = earlyHdrFail,
+      };
+
+      const auto commitStagedState = [&]() -> FormatCommitResult {
+        const bool targetHdr = state.image_description != nullptr;
+        wlr_scene_output_set_sdr_white_level(m_sceneOutput, targetHdr ? configuredSdrWhite() : 0.0F);
+        wlr_damage_ring_add_whole(&m_sceneOutput->damage_ring);
+
+        wlr_output_state frameState{};
+        wlr_output_state_init(&frameState);
+        if (!wlr_output_state_copy(&frameState, &state)) {
+          wlr_output_state_finish(&frameState);
+          return FormatCommitResult::Retry;
+        }
+
+        wlr_scene_rect* secureMask = nullptr;
+        const bool unbound = wlr_output_layout_get(m_server->outputLayout(), m_output) == nullptr;
+        if (stageGeometry && (m_server->sessionLocked() || unbound)) {
+          // An unbound scene output still samples the scene origin, and a
+          // locked geometry change can outgrow the permanent blank until the
+          // layout callback resizes it. Render this configured frame through
+          // a temporary opaque mask so neither path exposes unrelated content.
+          secureMask = createConfiguredFrameMask(frameState);
+          if (secureMask == nullptr) {
+            wlr_output_state_finish(&frameState);
+            return FormatCommitResult::Retry;
+          }
+        }
+
+        const int captureLocks = captureRenderLocks(externalRenderLocks());
+        wlr_scene_output_state_options sceneOptions{};
+        sceneOptions.capture_sdr = targetHdr && captureLocks > 0;
+        sceneOptions.effect_capture_pending = effectCapturePending(captureLocks);
+        m_effectCaptureBuilt = sceneOptions.effect_capture_pending;
+
+        const RenderedStateCommitResult commitResult = commitRenderedState(
+            frameState,
+            [&](wlr_output_state& pending) {
+              return wlr_scene_output_build_state(m_sceneOutput, &pending, &sceneOptions);
+            },
+            [&](const wlr_output_state& pending) { return wlr_output_commit_state(m_output, &pending); }
+        );
+        if (secureMask != nullptr) {
+          wlr_scene_node_destroy(&secureMask->node);
+        }
+        const bool commitAttempted = commitResult == RenderedStateCommitResult::Committed
+            || commitResult == RenderedStateCommitResult::CommitFailed;
+        const bool commitOk = commitResult == RenderedStateCommitResult::Committed;
+        if (commitResult == RenderedStateCommitResult::MissingBuffer) {
+          kLog.error("output '{}': configured scene state has no buffer", m_output->name);
+        }
+        const bool recoveringFromFailedCommit = m_tearingRecovery.regularCommitPending();
+        if (commitAttempted) {
+          m_tearingRecovery.recordCommit(false, commitOk);
+        }
+        if (commitOk) {
+          m_lastCommitTearing = false;
+          m_trackingPresentation = true;
+          m_trackedPresentationCommitSeq = m_output->commit_seq;
+          m_lastPresentationPresented.reset();
+          m_lastPresentationFlags.reset();
+          if (recoveringFromFailedCommit && !m_tearingRecovery.regularCommitPending()) {
+            m_tearingFallbackReason = "recovered with regular page flip";
+          }
+          if (SessionLock* lock = m_server->sessionLock()) {
+            lock->handleOutputCommit(*this, m_output->commit_seq);
+          }
+        }
+        wlr_output_state_finish(&frameState);
+        switch (commitResult) {
+        case RenderedStateCommitResult::Committed:
+          return FormatCommitResult::Committed;
+        case RenderedStateCommitResult::CommitFailed:
+          return FormatCommitResult::Rejected;
+        case RenderedStateCommitResult::BuildFailed:
+        case RenderedStateCommitResult::MissingBuffer:
+          return FormatCommitResult::Retry;
+        }
+        return FormatCommitResult::Retry;
       };
 
       const FormatSequenceOps seqOps{
           .stageSdr = stageSdr,
           .stageHdr = stageHdr,
           .test = [&] { return wlr_output_test_state(m_output, &state); },
-          .commit = [&] { return wlr_output_commit_state(m_output, &state); },
+          .commit = commitStagedState,
           .clearImageDescription = [&] { wlr_output_state_set_image_description(&state, nullptr); },
           .stageMode = [&](wlr_output_mode* mode) { wlr_output_state_set_mode(&state, mode); },
           .warnModeFallback =
@@ -579,11 +716,15 @@ namespace umbriel {
     }
 
     wlr_output_state_finish(&state);
+    m_hdrTransition.recordCommit(enabled, hdrRequested, anyCommitted);
     if (!anyCommitted) {
+      // A failed candidate may have prepared the scene for the requested
+      // transfer function. Keep the renderer aligned with the live output.
+      updateSceneSdrWhite();
       kLog.error("output '{}': failed to commit configured state", m_output->name);
       return false;
     }
-    if (!usedModeFallback) {
+    if (stageGeometry && !usedModeFallback) {
       m_modeFallbackWarned = false;
     }
     if (enabled && scaleStaged) {
@@ -688,8 +829,8 @@ namespace umbriel {
       m_autoHdrOwner = nullptr;
     }
 
-    if (hdrRequested() != m_lastHdrRequested && applyConfiguredState()) {
-      m_server->updateOutputManagerConfig();
+    if (m_hdrTransition.pending(m_output->enabled, hdrRequested())) {
+      scheduleFullFrame();
     }
     m_server->updateColorPreferences();
   }
@@ -701,8 +842,8 @@ namespace umbriel {
     if (m_autoHdrOwner == view) {
       m_autoHdrOwner = nullptr;
     }
-    if (hdrRequested() != m_lastHdrRequested && applyConfiguredState()) {
-      m_server->updateOutputManagerConfig();
+    if (m_hdrTransition.pending(m_output->enabled, hdrRequested())) {
+      scheduleFullFrame();
     }
     m_server->updateColorPreferences();
   }
@@ -1439,7 +1580,23 @@ namespace umbriel {
         cursor->refreshPointerContents(this);
       }
     }
-    if (sceneChanged || m_gammaDirty) {
+    const bool hdrTransitionPending = m_hdrTransition.pending(m_output->enabled, hdrRequested());
+    if (hdrTransitionPending) {
+      // Run at the frame boundary, after the previous page flip completed. The
+      // configured-state commit builds the scene into the same state as the
+      // image-description and render-format switch.
+      m_inFrame = true;
+      const bool committed = applyConfiguredState(false);
+      m_inFrame = false;
+      commitFailed = !committed;
+      if (committed) {
+        if (effectFrame) {
+          ++m_effectFrames;
+        }
+        m_server->updateOutputManagerConfig();
+      }
+    }
+    if (!hdrTransitionPending && (sceneChanged || m_gammaDirty)) {
       m_inFrame = true;
       if (effectFrame) {
         ++m_effectFrames;

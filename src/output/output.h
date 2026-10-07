@@ -4,6 +4,7 @@
 #include "output/cursor_plane_pace.h"
 #include "output/frame_schedule.h"
 #include "output/hdr_metadata.h"
+#include "output/hdr_transition.h"
 #include "scene/effect_selection.h"
 
 #include <cstdint>
@@ -15,7 +16,9 @@
 
 struct wlr_gamma_control_v1;
 struct wlr_output;
+struct wlr_output_state;
 struct wlr_output_layout_output;
+struct wlr_scene_rect;
 struct wlr_scene_output;
 struct wlr_scene_optimized_blur;
 struct wlr_scene_tree;
@@ -47,6 +50,9 @@ namespace umbriel {
     [[nodiscard]] wlr_output* wlr() const { return m_output; }
     [[nodiscard]] OutputIdentity identity() const;
     [[nodiscard]] wlr_scene_output* sceneOutput() const { return m_sceneOutput; }
+    // Create an opaque scene mask matching a pending configured state. The
+    // caller owns the returned node and must keep it through the commit.
+    [[nodiscard]] wlr_scene_rect* createConfiguredFrameMask(const wlr_output_state& state) const;
     [[nodiscard]] wlr_scene_tree* layerTree(uint32_t layer) const;
     [[nodiscard]] wlr_scene_tree* popupTree() const { return m_popupTree; }
     // Clipped roots for this output's window content. Every descendant is scissored to the output's layout box, which
@@ -171,7 +177,9 @@ namespace umbriel {
     void handleRequestState(void* data);
     void handlePresent(void* data);
     void handleDestroy();
-    [[nodiscard]] bool applyConfiguredState();
+    // Full configuration stages geometry. Frame-bound HDR transitions reuse
+    // the live geometry and carry a freshly rendered scene buffer.
+    [[nodiscard]] bool applyConfiguredState(bool stageGeometry = true);
     [[nodiscard]] bool autoHdrEligible(const View* view) const;
     [[nodiscard]] View* findAutoHdrCandidate() const;
     [[nodiscard]] bool configuredVrrEnabled() const;
@@ -222,7 +230,7 @@ namespace umbriel {
     bool m_modeFallbackWarned = false;
     std::optional<FormatTier> m_vrrDroppedTier;
     bool m_fullscreenHdrRequested = false;
-    bool m_lastHdrRequested = false;
+    HdrTransition m_hdrTransition;
     bool m_lastCommitTearing = false;
     bool m_trackingPresentation = false;
     bool m_appliedConfiguredScale = false;

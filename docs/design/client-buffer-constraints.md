@@ -70,6 +70,49 @@ is core functionality in GLES3. The capability is enabled by either the
 context version or the extension string. Framebuffer readback retains its
 separate implementation-format check.
 
+## HDR output transitions
+
+Every enabled configured-state commit must carry a scene buffer built for that
+same pending output state. This is especially important for HDR image-description
+and render-format changes. Without a buffer, wlroots may supply a cleared buffer
+for the reconfiguration, and a following nonblocking scene commit can race the
+DRM modeset and leave that cleared buffer visible.
+
+Dynamic HDR policy changes therefore schedule a full frame. At the frame
+boundary, `Output::applyConfiguredState` enables reconfiguration, damages the
+whole output, builds the scene into a copy of the staged state, requires both
+`WLR_OUTPUT_STATE_BUFFER` and a nonnull buffer, then commits the state and
+rendered frame together. Output creation also creates its scene output before
+initial configuration, preserving this invariant when DRM outputs are recreated
+after resume.
+
+Failures before the backend commit are retryable. A pending-state copy failure,
+scene build failure, missing buffer, or temporary neutral-mask failure stops the
+format sequence without trying SDR, VRR, or mode fallbacks. The requested policy
+remains pending for the delayed frame retry because none of these failures proves
+that the staged output format is unsupported.
+
+A backend commit failure is instead treated as a rejection and retains the
+existing format fallback behavior. If a fallback commits successfully,
+`HdrTransition` records the requested policy as handled and reports the fallback
+reason instead of retrying HDR every frame. If no candidate commits, the
+transition remains pending for a later frame.
+
+A full geometry commit made while the session is locked, or before the output is
+bound to the logical output layout, renders through a temporary opaque
+backdrop-colored mask. Its logical extent is derived from the pending mode,
+transform, and scale, and it remains above the scene through state building and
+the backend commit. Grouped output-management commits use the same protection.
+This prevents an unbound output from sampling the scene origin and prevents a
+geometry change from exposing content beyond a lock blank that has not yet been
+resized.
+
+`output-hdr-transition` covers transition bookkeeping, build-before-commit
+ordering, and the rendered-buffer guards. `output-format-sequence` covers the
+distinction between retryable preparation failures and backend rejection. The
+headless color-management check covers policy entry and release, but a real HDR
+monitor is still required to validate the KMS transition.
+
 ## Implicit scene-buffer primaries
 
 A raw `wlr_scene_buffer` uses zero primaries as an internal unset sentinel.

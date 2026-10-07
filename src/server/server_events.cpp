@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -3215,22 +3216,43 @@ namespace umbriel {
       wlr_output_state_set_enabled(&states[i].base, false);
     }
 
-    const auto buildSceneStates =
-        [this](wlr_output_swapchain_manager& manager, wlr_backend_output_state* pending, size_t pendingLen) {
-          for (size_t i = 0; i < pendingLen; ++i) {
-            Output* output = outputFromWlr(pending[i].output);
-            if (output == nullptr) {
-              return false;
-            }
-            wlr_scene_output_state_options options{};
-            options.swapchain = wlr_output_swapchain_manager_get_swapchain(&manager, pending[i].output);
-            if (!wlr_scene_output_build_state(output->sceneOutput(), &pending[i].base, &options)) {
-              kLog.error("failed to build output-management scene state for '{}'", pending[i].output->name);
-              return false;
-            }
+    struct SceneRectDestroy {
+      void operator()(wlr_scene_rect* rect) const {
+        if (rect != nullptr) {
+          wlr_scene_node_destroy(&rect->node);
+        }
+      }
+    };
+    std::vector<std::unique_ptr<wlr_scene_rect, SceneRectDestroy>> configuredFrameMasks;
+    const auto buildSceneStates = [this, &configuredFrameMasks](
+                                      wlr_output_swapchain_manager& manager, wlr_backend_output_state* pending,
+                                      size_t pendingLen
+                                  ) {
+      configuredFrameMasks.clear();
+      for (size_t i = 0; i < pendingLen; ++i) {
+        Output* output = outputFromWlr(pending[i].output);
+        if (output == nullptr) {
+          return false;
+        }
+        const bool enabled = (pending[i].base.committed & WLR_OUTPUT_STATE_ENABLED) != 0 ? pending[i].base.enabled
+                                                                                         : pending[i].output->enabled;
+        const bool unbound = wlr_output_layout_get(m_outputLayout, pending[i].output) == nullptr;
+        if (enabled && (m_sessionLocked || unbound)) {
+          wlr_scene_rect* mask = output->createConfiguredFrameMask(pending[i].base);
+          if (mask == nullptr) {
+            return false;
           }
-          return true;
-        };
+          configuredFrameMasks.emplace_back(mask);
+        }
+        wlr_scene_output_state_options options{};
+        options.swapchain = wlr_output_swapchain_manager_get_swapchain(&manager, pending[i].output);
+        if (!wlr_scene_output_build_state(output->sceneOutput(), &pending[i].base, &options)) {
+          kLog.error("failed to build output-management scene state for '{}'", pending[i].output->name);
+          return false;
+        }
+      }
+      return true;
+    };
 
     struct BackendSnapshot {
       wlr_output* output = nullptr;
