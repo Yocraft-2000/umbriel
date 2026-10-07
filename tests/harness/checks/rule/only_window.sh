@@ -82,10 +82,10 @@ width_of() {
   field_of only-a w
 }
 
-# Black client content over the solid green backdrop encodes green 255; at rule
-# opacity 0.5 the backdrop shows through and drops it to about 128. The sample
-# sits a quarter across and down the tile's box, clear of the float in the bottom
-# right corner.
+# Opaque black client content over the solid green backdrop encodes green 0; at
+# rule opacity 0.5 the backdrop shows through and lifts it to about 128. The
+# sample sits a quarter across and down the tile's box, clear of the float in
+# the bottom right corner.
 sample_green() {
   local x y w h
   read -r x y w h <<< "$(
@@ -101,11 +101,11 @@ expect_opacity() {
   local label=$1 want=$2 green=
   "$UMBRIEL" settle
   green=$(sample_green)
-  if [[ $want == applied ]] && ((green > 200)); then
+  if [[ $want == applied ]] && ((green < 96 || green > 160)); then
     echo "$label: the is_only_window rule did not apply (green=$green)" >&2
     exit 1
   fi
-  if [[ $want == absent ]] && ((green < 240)); then
+  if [[ $want == absent ]] && ((green > 32)); then
     echo "$label: the is_only_window rule stayed applied (green=$green)" >&2
     exit 1
   fi
